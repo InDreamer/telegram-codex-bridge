@@ -1,0 +1,11 @@
+dist
+node_modules
+.tmp-schema
+.tmp-ts
+.DS_Store
+*.log
+coverage
+*.tsbuildinfo
+.env
+.env.*
+.vscode

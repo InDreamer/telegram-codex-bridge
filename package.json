@@ -1,0 +1,23 @@
+{
+  "name": "telegram-codex-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "ctb": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "check": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=25.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}
+
