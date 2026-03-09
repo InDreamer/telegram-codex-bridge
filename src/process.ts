@@ -1,4 +1,7 @@
 import { spawn, type SpawnOptionsWithoutStdio } from "node:child_process";
+import { constants } from "node:fs";
+import { access } from "node:fs/promises";
+import { delimiter, join } from "node:path";
 
 export interface CommandResult {
   exitCode: number;
@@ -40,11 +43,22 @@ export async function runCommand(
 }
 
 export async function commandExists(command: string): Promise<boolean> {
-  try {
-    const result = await runCommand("sh", ["-lc", `command -v ${command}`]);
-    return result.exitCode === 0 && result.stdout.length > 0;
-  } catch {
-    return false;
+  const candidates = command.includes("/")
+    ? [command]
+    : (process.env.PATH ?? "")
+        .split(delimiter)
+        .filter(Boolean)
+        .map((pathEntry) => join(pathEntry, command));
+
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, constants.X_OK);
+      return true;
+    } catch {
+      continue;
+    }
   }
+
+  return false;
 }
 

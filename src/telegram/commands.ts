@@ -1,3 +1,5 @@
+import type { TelegramApi } from "./api.js";
+
 export interface TelegramCommandDefinition {
   command: string;
   description: string;
@@ -15,6 +17,11 @@ export const TELEGRAM_COMMANDS: TelegramCommandDefinition[] = [
   { command: "interrupt", description: "停止当前正在执行的操作" },
   { command: "cancel", description: "取消手动输入路径并返回" }
 ];
+
+export async function syncTelegramCommands(api: Pick<TelegramApi, "setMyCommands">): Promise<void> {
+  await api.setMyCommands(TELEGRAM_COMMANDS, { type: "default" });
+  await api.setMyCommands(TELEGRAM_COMMANDS, { type: "all_private_chats" });
+}
 
 export function buildHelpText(): string {
   return [

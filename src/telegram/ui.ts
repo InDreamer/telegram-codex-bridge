@@ -11,9 +11,7 @@ export type ParsedCallbackData =
   | { kind: "scan_more" }
   | { kind: "path_manual" }
   | { kind: "path_back" }
-  | { kind: "path_confirm"; projectKey: string }
-  | { kind: "use"; sessionId: string }
-  | { kind: "pin"; sessionId: string };
+  | { kind: "path_confirm"; projectKey: string };
 
 export function parseCommand(text: string): { name: string; args: string } | null {
   const trimmed = text.trim();
@@ -81,14 +79,6 @@ export function parseCallbackData(data: string): ParsedCallbackData | null {
 
   if (parts[1] === "path" && parts[2] === "confirm" && parts[3]) {
     return { kind: "path_confirm", projectKey: parts[3] };
-  }
-
-  if (parts[1] === "use" && parts[2]) {
-    return { kind: "use", sessionId: parts[2] };
-  }
-
-  if (parts[1] === "pin" && parts[2]) {
-    return { kind: "pin", sessionId: parts[2] };
   }
 
   return null;

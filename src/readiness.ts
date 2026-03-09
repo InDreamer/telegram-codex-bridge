@@ -21,7 +21,7 @@ function buildSnapshot(
     state,
     checkedAt: new Date().toISOString(),
     details,
-    appServerPid: appServerPid ? `${appServerPid}` : null
+    appServerPid: appServerPid === null || appServerPid === undefined ? null : `${appServerPid}`
   };
 }
 
@@ -112,9 +112,6 @@ export async function probeReadiness(options: {
     appServer = new CodexAppServerClient(config.codexBin, paths.appServerLogPath, logger);
     await appServer.initializeAndProbe();
     details.appServerAvailable = true;
-    if (appServer.pid !== null) {
-      details.appServerPid = appServer.pid;
-    }
   } catch (error) {
     details.issues.push(`${error}`);
 

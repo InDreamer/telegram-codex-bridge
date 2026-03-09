@@ -24,7 +24,7 @@ import {
   parseCallbackData,
   parseCommand
 } from "./telegram/ui.js";
-import { buildHelpText, TELEGRAM_COMMANDS } from "./telegram/commands.js";
+import { buildHelpText, syncTelegramCommands } from "./telegram/commands.js";
 import type { ProjectCandidate, ProjectPickerResult, ReadinessSnapshot, SessionRow } from "./types.js";
 import { CodexAppServerClient } from "./codex/app-server.js";
 import { buildProjectPicker, refreshProjectPicker, validateManualProjectPath } from "./project/discovery.js";
@@ -231,12 +231,6 @@ export class BridgeService {
       case "path_confirm": {
         await this.safeAnswerCallbackQuery(callbackQuery.id);
         await this.confirmManualProject(chatId, parsed.projectKey);
-        return;
-      }
-
-      case "use":
-      case "pin": {
-        await this.safeAnswerCallbackQuery(callbackQuery.id, "这个按钮已过期，请重新操作。");
         return;
       }
     }
@@ -1001,8 +995,7 @@ export class BridgeService {
     }
 
     try {
-      await this.api.setMyCommands(TELEGRAM_COMMANDS, { type: "default" });
-      await this.api.setMyCommands(TELEGRAM_COMMANDS, { type: "all_private_chats" });
+      await syncTelegramCommands(this.api);
     } catch (error) {
       await this.logger.warn("telegram command menu sync failed", {
         error: `${error}`

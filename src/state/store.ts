@@ -1050,6 +1050,14 @@ export class BridgeStateStore {
     return rows.map(mapRuntimeNotice);
   }
 
+  countRuntimeNotices(): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS count FROM runtime_notice")
+      .get() as { count: number | bigint } | undefined;
+
+    return Number(row?.count ?? 0);
+  }
+
   clearRuntimeNotice(key: string): void {
     this.db.prepare("DELETE FROM runtime_notice WHERE key = ?").run(key);
   }

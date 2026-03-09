@@ -8,7 +8,7 @@ import { commandExists, runCommand } from "./process.js";
 import { probeReadiness } from "./readiness.js";
 import { BridgeStateStore } from "./state/store.js";
 import { TelegramApi } from "./telegram/api.js";
-import { TELEGRAM_COMMANDS } from "./telegram/commands.js";
+import { syncTelegramCommands } from "./telegram/commands.js";
 import type { InstallManifest, PendingAuthorizationRow, ReadinessSnapshot } from "./types.js";
 
 async function pathExists(path: string): Promise<boolean> {
@@ -108,6 +108,10 @@ async function systemctlAvailable(): Promise<boolean> {
   return await commandExists("systemctl");
 }
 
+function countPendingRuntimeNotices(store: BridgeStateStore): number {
+  return store.countRuntimeNotices();
+}
+
 async function callSystemctl(args: string[]): Promise<void> {
   const result = await runCommand("systemctl", ["--user", ...args]);
   if (result.exitCode !== 0) {
@@ -166,8 +170,7 @@ export async function installBridge(
     }
 
     const telegramApi = new TelegramApi(config.telegramBotToken, config.telegramApiBaseUrl);
-    await telegramApi.setMyCommands(TELEGRAM_COMMANDS, { type: "default" });
-    await telegramApi.setMyCommands(TELEGRAM_COMMANDS, { type: "all_private_chats" });
+    await syncTelegramCommands(telegramApi);
   } finally {
     store.close();
   }
@@ -210,9 +213,7 @@ export async function getStatus(paths: BridgePaths): Promise<string> {
       error: async () => {}
     });
     snapshot = store.getReadinessSnapshot();
-    pendingNotices = store
-      .listNoticeChatIds()
-      .reduce((count, chatId) => count + store.listRuntimeNotices(chatId).length, 0);
+    pendingNotices = countPendingRuntimeNotices(store);
     const binding = store.listChatBindings()[0];
     const activeSession = binding?.activeSessionId ? store.getSessionById(binding.activeSessionId) : null;
     if (activeSession) {
@@ -249,13 +250,10 @@ export async function runDoctor(paths: BridgePaths, logger: Logger): Promise<str
       logger,
       persist: true
     });
-    const pendingNoticeCount = store
-      .listNoticeChatIds()
-      .reduce((count, chatId) => count + store.listRuntimeNotices(chatId).length, 0);
+    const pendingNoticeCount = countPendingRuntimeNotices(store);
     if (snapshot.details.telegramTokenValid) {
       const telegramApi = new TelegramApi(config.telegramBotToken, config.telegramApiBaseUrl);
-      await telegramApi.setMyCommands(TELEGRAM_COMMANDS, { type: "default" });
-      await telegramApi.setMyCommands(TELEGRAM_COMMANDS, { type: "all_private_chats" });
+      await syncTelegramCommands(telegramApi);
     }
     return [formatSnapshot(snapshot), `pending_runtime_notices=${pendingNoticeCount}`].join("\n");
   } finally {

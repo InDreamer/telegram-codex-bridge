@@ -27,7 +27,6 @@ export interface ReadinessDetails {
   codexLoginStatus?: string;
   telegramBotUsername?: string;
   telegramBotId?: string;
-  appServerPid?: number;
   systemdAvailable?: boolean;
 }
 
