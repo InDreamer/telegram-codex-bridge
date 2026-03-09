@@ -203,6 +203,14 @@ function mapRuntimeNotice(record: RuntimeNoticeRecord): RuntimeNotice {
   };
 }
 
+function choosePreferredActiveSessionId(bindings: ChatBindingRecord[]): string | null {
+  const preferred = bindings
+    .filter((binding) => binding.active_session_id !== null)
+    .sort((left, right) => right.updated_at.localeCompare(left.updated_at))[0];
+
+  return preferred?.active_session_id ?? null;
+}
+
 function initialSchema(): string {
   return `
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -441,6 +449,19 @@ export class BridgeStateStore {
     this.db.exec("BEGIN");
 
     try {
+      const existingBindings = this.db
+        .prepare(
+          `
+            SELECT *
+            FROM chat_binding
+            WHERE telegram_user_id = ?
+            ORDER BY updated_at DESC, created_at DESC
+          `
+        )
+        .all(candidate.telegramUserId) as unknown as ChatBindingRecord[];
+      const previousChatIds = existingBindings.map((binding) => binding.telegram_chat_id);
+      const migratedActiveSessionId = choosePreferredActiveSessionId(existingBindings);
+
       this.db
         .prepare(
           `
@@ -462,6 +483,39 @@ export class BridgeStateStore {
           timestamp
         );
 
+      if (previousChatIds.length > 0) {
+        const placeholders = previousChatIds.map(() => "?").join(", ");
+        // Rebind keeps prior sessions reachable by moving all user-owned chat data to the new chat id.
+        this.db
+          .prepare(
+            `
+              UPDATE session
+              SET telegram_chat_id = ?
+              WHERE telegram_chat_id IN (${placeholders})
+            `
+          )
+          .run(candidate.telegramChatId, ...previousChatIds);
+
+        this.db
+          .prepare(
+            `
+              UPDATE runtime_notice
+              SET telegram_chat_id = ?
+              WHERE telegram_chat_id IN (${placeholders})
+            `
+          )
+          .run(candidate.telegramChatId, ...previousChatIds);
+
+        this.db
+          .prepare(
+            `
+              DELETE FROM chat_binding
+              WHERE telegram_user_id = ?
+            `
+          )
+          .run(candidate.telegramUserId);
+      }
+
       this.db
         .prepare(
           `
@@ -472,10 +526,16 @@ export class BridgeStateStore {
               created_at,
               updated_at
             )
-            VALUES (?, ?, NULL, ?, ?)
+            VALUES (?, ?, ?, ?, ?)
           `
         )
-        .run(candidate.telegramChatId, candidate.telegramUserId, timestamp, timestamp);
+        .run(
+          candidate.telegramChatId,
+          candidate.telegramUserId,
+          migratedActiveSessionId,
+          timestamp,
+          timestamp
+        );
 
       this.db.prepare("DELETE FROM pending_authorization").run();
 

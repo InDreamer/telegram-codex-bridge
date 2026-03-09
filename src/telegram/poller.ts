@@ -1,17 +1,59 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { rename, readFile, writeFile } from "node:fs/promises";
+import { dirname, basename, join } from "node:path";
 
-import type { Logger } from "../logger.js";
 import type { BridgePaths } from "../paths.js";
 import type { BridgeConfig } from "../config.js";
+import type { Logger } from "../logger.js";
 import { TelegramApi, type TelegramUpdate } from "./api.js";
 
-async function readOffset(paths: BridgePaths): Promise<number> {
+function isValidOffset(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function buildCorruptOffsetPath(offsetPath: string): string {
+  return join(dirname(offsetPath), `${basename(offsetPath)}.corrupt.${Date.now()}`);
+}
+
+function isRecoverableOffsetError(error: unknown): boolean {
+  if (error instanceof SyntaxError) {
+    return true;
+  }
+
+  return error instanceof Error && error.message === "offset file did not contain a valid non-negative number";
+}
+
+export async function readOffset(paths: BridgePaths, logger: Logger): Promise<number> {
   try {
     const content = await readFile(paths.offsetPath, "utf8");
     const parsed = JSON.parse(content) as { offset?: number };
-    return parsed.offset ?? 0;
+    if (isValidOffset(parsed.offset)) {
+      return parsed.offset;
+    }
+
+    throw new Error("offset file did not contain a valid non-negative number");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError.code === "ENOENT") {
+      return 0;
+    }
+
+    if (isRecoverableOffsetError(error)) {
+      const corruptPath = buildCorruptOffsetPath(paths.offsetPath);
+      await logger.warn("telegram offset file invalid; resetting offset", {
+        offsetPath: paths.offsetPath,
+        corruptPath,
+        error: `${error}`
+      });
+
+      try {
+        await rename(paths.offsetPath, corruptPath);
+      } catch (renameError) {
+        const renameNodeError = renameError as NodeJS.ErrnoException;
+        if (renameNodeError.code !== "ENOENT") {
+          throw renameError;
+        }
+      }
+
       return 0;
     }
 
@@ -19,8 +61,14 @@ async function readOffset(paths: BridgePaths): Promise<number> {
   }
 }
 
-async function writeOffset(paths: BridgePaths, offset: number): Promise<void> {
-  await writeFile(paths.offsetPath, `${JSON.stringify({ offset })}\n`, "utf8");
+export async function writeOffset(paths: BridgePaths, offset: number): Promise<void> {
+  const tempPath = join(
+    dirname(paths.offsetPath),
+    `${basename(paths.offsetPath)}.${process.pid}.${Date.now()}.tmp`
+  );
+  // Rename is atomic on the same filesystem, so a crash cannot leave a half-written JSON file behind.
+  await writeFile(tempPath, `${JSON.stringify({ offset })}\n`, "utf8");
+  await rename(tempPath, paths.offsetPath);
 }
 
 export class TelegramPoller {
@@ -36,7 +84,7 @@ export class TelegramPoller {
 
   async run(): Promise<void> {
     this.running = true;
-    let offset = await readOffset(this.paths);
+    let offset = await readOffset(this.paths, this.logger);
 
     while (this.running) {
       try {

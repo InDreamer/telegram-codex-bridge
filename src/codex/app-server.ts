@@ -35,6 +35,24 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
 }
 
+interface CodexSandbox {
+  type: "dangerFullAccess";
+}
+
+interface ThreadStartParams {
+  cwd: string;
+  approvalPolicy: "never";
+  sandbox: CodexSandbox;
+}
+
+interface TurnStartParams extends ThreadStartParams {
+  threadId: string;
+  input: Array<{
+    type: "text";
+    text: string;
+  }>;
+}
+
 export interface ThreadStartResult {
   thread: { id: string };
 }
@@ -57,6 +75,26 @@ export interface TurnStartResult {
   turn: {
     id: string;
     status: string;
+  };
+}
+
+export function buildThreadStartParams(cwd: string): ThreadStartParams {
+  return {
+    cwd,
+    approvalPolicy: "never",
+    sandbox: { type: "dangerFullAccess" }
+  };
+}
+
+export function buildTurnStartParams(options: {
+  threadId: string;
+  cwd: string;
+  text: string;
+}): TurnStartParams {
+  return {
+    ...buildThreadStartParams(options.cwd),
+    threadId: options.threadId,
+    input: [{ type: "text", text: options.text }]
   };
 }
 
@@ -137,10 +175,7 @@ export class CodexAppServerClient {
   }
 
   async startThread(cwd: string): Promise<ThreadStartResult> {
-    return await this.request<ThreadStartResult>("thread/start", {
-      cwd,
-      approvalPolicy: "never"
-    });
+    return await this.request<ThreadStartResult>("thread/start", buildThreadStartParams(cwd));
   }
 
   async resumeThread(threadId: string): Promise<ThreadResumeResult> {
@@ -154,12 +189,7 @@ export class CodexAppServerClient {
     cwd: string;
     text: string;
   }): Promise<TurnStartResult> {
-    return await this.request<TurnStartResult>("turn/start", {
-      threadId: options.threadId,
-      input: [{ type: "text", text: options.text }],
-      cwd: options.cwd,
-      approvalPolicy: "never"
-    });
+    return await this.request<TurnStartResult>("turn/start", buildTurnStartParams(options));
   }
 
   async interruptTurn(threadId: string, turnId: string): Promise<void> {
