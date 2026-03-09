@@ -35,18 +35,19 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
 }
 
-interface CodexSandbox {
-  type: "dangerFullAccess";
-}
-
 interface ThreadStartParams {
   cwd: string;
   approvalPolicy: "never";
-  sandbox: CodexSandbox;
+  sandbox: "danger-full-access";
 }
 
-interface TurnStartParams extends ThreadStartParams {
+interface TurnStartParams {
   threadId: string;
+  cwd: string;
+  approvalPolicy: "never";
+  sandboxPolicy: {
+    type: "dangerFullAccess";
+  };
   input: Array<{
     type: "text";
     text: string;
@@ -82,7 +83,7 @@ export function buildThreadStartParams(cwd: string): ThreadStartParams {
   return {
     cwd,
     approvalPolicy: "never",
-    sandbox: { type: "dangerFullAccess" }
+    sandbox: "danger-full-access"
   };
 }
 
@@ -92,8 +93,10 @@ export function buildTurnStartParams(options: {
   text: string;
 }): TurnStartParams {
   return {
-    ...buildThreadStartParams(options.cwd),
     threadId: options.threadId,
+    cwd: options.cwd,
+    approvalPolicy: "never",
+    sandboxPolicy: { type: "dangerFullAccess" },
     input: [{ type: "text", text: options.text }]
   };
 }

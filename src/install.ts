@@ -4,12 +4,18 @@ import { join } from "node:path";
 import { loadConfig, withInstallOverrides, writeConfig, type BridgeConfig } from "./config.js";
 import type { Logger } from "./logger.js";
 import { ensureBridgeDirectories, type BridgePaths } from "./paths.js";
-import { commandExists, runCommand } from "./process.js";
+import { commandExists, runCommand, type CommandResult } from "./process.js";
 import { probeReadiness } from "./readiness.js";
 import { BridgeStateStore } from "./state/store.js";
 import { TelegramApi } from "./telegram/api.js";
 import { syncTelegramCommands } from "./telegram/commands.js";
 import type { InstallManifest, PendingAuthorizationRow, ReadinessSnapshot } from "./types.js";
+
+type CommandRunner = (
+  command: string,
+  args: string[],
+  options?: Parameters<typeof runCommand>[2]
+) => Promise<CommandResult>;
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -119,7 +125,21 @@ async function callSystemctl(args: string[]): Promise<void> {
   }
 }
 
-async function copyRelease(paths: BridgePaths): Promise<void> {
+async function buildRelease(paths: BridgePaths, run: CommandRunner): Promise<void> {
+  const buildResult = await run("npm", ["run", "build"], {
+    cwd: paths.repoRoot
+  });
+  if (buildResult.exitCode !== 0) {
+    throw new Error(buildResult.stderr || buildResult.stdout || "npm run build failed");
+  }
+
+  if (!(await pathExists(join(paths.repoRoot, "dist", "cli.js")))) {
+    throw new Error("npm run build completed without producing dist/cli.js");
+  }
+}
+
+export async function prepareRelease(paths: BridgePaths, run: CommandRunner = runCommand): Promise<void> {
+  await buildRelease(paths, run);
   await rm(join(paths.installRoot, "dist"), { recursive: true, force: true });
   await cp(join(paths.repoRoot, "dist"), join(paths.installRoot, "dist"), { recursive: true });
   await cp(join(paths.repoRoot, "package.json"), join(paths.installRoot, "package.json"));
@@ -149,7 +169,7 @@ export async function installBridge(
     throw new Error("missing Telegram bot token; pass --telegram-token or set TELEGRAM_BOT_TOKEN");
   }
 
-  await copyRelease(paths);
+  await prepareRelease(paths);
   await writeConfig(paths, config);
   await writeInstallManifest(paths);
   await writeWrapperScript(paths);

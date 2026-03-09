@@ -7,11 +7,11 @@ test("buildThreadStartParams requests full-access sandbox", () => {
   assert.deepEqual(buildThreadStartParams("/tmp/project"), {
     cwd: "/tmp/project",
     approvalPolicy: "never",
-    sandbox: { type: "dangerFullAccess" }
+    sandbox: "danger-full-access"
   });
 });
 
-test("buildTurnStartParams inherits full-access sandbox settings", () => {
+test("buildTurnStartParams uses turn-level sandbox overrides", () => {
   assert.deepEqual(
     buildTurnStartParams({
       threadId: "thread-1",
@@ -23,7 +23,7 @@ test("buildTurnStartParams inherits full-access sandbox settings", () => {
       cwd: "/tmp/project",
       input: [{ type: "text", text: "edit files" }],
       approvalPolicy: "never",
-      sandbox: { type: "dangerFullAccess" }
+      sandboxPolicy: { type: "dangerFullAccess" }
     }
   );
 });

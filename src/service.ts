@@ -397,8 +397,9 @@ export class BridgeService {
     for (const targetChatId of targetChatIds) {
       const notices = this.store.listRuntimeNotices(targetChatId);
       for (const notice of notices) {
-        await this.safeSendMessage(targetChatId, notice.message);
-        this.store.clearRuntimeNotice(notice.key);
+        if (await this.safeSendMessage(targetChatId, notice.message)) {
+          this.store.clearRuntimeNotice(notice.key);
+        }
       }
     }
   }
@@ -962,15 +963,17 @@ export class BridgeService {
     chatId: string,
     text: string,
     replyMarkup?: TelegramInlineKeyboardMarkup
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (!this.api) {
-      return;
+      return false;
     }
 
     try {
       await this.api.sendMessage(chatId, text, replyMarkup ? { replyMarkup } : undefined);
+      return true;
     } catch (error) {
       await this.logger.error("telegram message delivery failed", { chatId, error: `${error}` });
+      return false;
     }
   }
 
