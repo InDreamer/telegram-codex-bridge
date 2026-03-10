@@ -5,6 +5,9 @@
 Install root:
 - `~/.local/share/codex-telegram-bridge`
 
+Installed command:
+- `~/.local/share/codex-telegram-bridge/bin/ctb`
+
 State directory:
 - `~/.local/state/codex-telegram-bridge`
 
@@ -20,6 +23,15 @@ Log files:
 - `bridge.log`
 - `bootstrap.log`
 - `app-server.log`
+
+Config directory:
+- `~/.config/codex-telegram-bridge`
+
+Config file:
+- `bridge.env`
+
+Install manifest:
+- `~/.local/share/codex-telegram-bridge/install-manifest.json`
 
 ## Service Ownership Model
 
@@ -39,24 +51,27 @@ Reason:
 
 ## Local Management Commands
 
-Installer must place:
-- `~/.local/share/codex-telegram-bridge/bin/ctb`
-
 Supported subcommands:
-- `ctb install`
+- `ctb install --telegram-token <token> [--codex-bin <bin>]`
 - `ctb status`
 - `ctb restart`
 - `ctb stop`
 - `ctb start`
 - `ctb update`
-- `ctb uninstall`
+- `ctb uninstall [--purge-state]`
 - `ctb doctor`
-- `ctb authorize pending`
+- `ctb authorize pending [--latest | --select <index> | --user-id <id> | --show-expired]`
 - `ctb authorize clear`
+- `ctb service run`
 
 Authorization intent:
-- `ctb authorize pending` lists and confirms pending Telegram candidates
+- `ctb authorize pending` lists pending Telegram candidates by default
+- `ctb authorize pending --latest`, `--select <index>`, or `--user-id <id>` confirms one pending candidate
+- `--show-expired` includes expired candidates in the listing, but expired rows still need fresh Telegram contact before confirmation
 - `ctb authorize clear` clears the active binding and returns the bridge to `awaiting_authorization`
+
+Operational note:
+- `ctb service run` is the systemd entrypoint and is not the normal admin command surface
 
 ## Runtime Ownership Behavior
 
@@ -84,22 +99,42 @@ Primary operator diagnostics:
 - `journalctl --user -u codex-telegram-bridge.service -n 200`
 - `sqlite3 ~/.local/state/codex-telegram-bridge/bridge.db`
 
+`ctb status` reports:
+- install and state roots
+- config and service presence
+- systemd active state
+- installed version and timestamp
+- active session summary
+- readiness snapshot
+
+`ctb doctor` behavior:
+- reruns the readiness probe
+- persists the latest readiness snapshot
+- resyncs Telegram commands when the configured bot token is valid
+
 ## Update Behavior
 
-`ctb update` must:
-1. fetch or install the new bridge release
-2. preserve the database and logs
-3. restart the service
-4. run readiness checks
-5. print a post-update status summary
+`ctb update` currently:
+1. reads the retained `sourceRoot` from `install-manifest.json`
+2. fails if the install did not keep a usable source checkout
+3. runs `npm install` in that source checkout
+4. runs `npm run build`
+5. reruns `dist/cli.js install` with the saved bridge config
+
+Operational effect:
+- state, database, and logs remain in place
+- the reinstall path rewrites the local release files and systemd unit
+- the reinstall path reruns readiness checks and Telegram command sync
+- the CLI prints `update complete`, not a full status summary
 
 ## Uninstall Behavior
 
-`ctb uninstall` must:
+`ctb uninstall` currently:
 1. stop and disable the service
 2. remove installed bridge files
-3. keep the state directory by default
-4. support `--purge-state` for full removal
+3. remove the config directory
+4. keep the state directory by default
+5. support `--purge-state` for full removal
 
 ## Operational Failure Notes
 

@@ -26,7 +26,7 @@ Sequence:
 2. the first Telegram private message becomes a pending authorization candidate
 3. the bridge replies with `这台服务器还没有绑定 Telegram 账号，请等待管理员在本机确认。`
 4. the administrator runs `ctb authorize pending`
-5. the administrator confirms the intended candidate
+5. the administrator confirms the intended candidate with `ctb authorize pending --latest`, `--select <index>`, or `--user-id <id>`
 6. the bridge persists `authorized_user` and `chat_binding`
 7. normal operation begins
 

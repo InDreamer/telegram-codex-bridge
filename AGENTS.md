@@ -1,57 +1,56 @@
 # Project Documents Guide
 
 This file is a low-token document index for Codex and other agents.
+Read the smallest relevant document first.
 
 Read progressively:
-- Start with the smallest document that answers the current question.
+- Treat `docs/product/`, `docs/architecture/`, `docs/operations/`, and `docs/research/` as the current-state set.
+- Treat `docs/roadmap/`, `docs/future/`, `docs/plans/`, and `docs/archive/` as document-defined planning or history, not live runtime behavior.
 - Do not load every document by default.
-- Use the archive only when reconstructing earlier drafting context.
 
 ## Primary Reading Order
 
 1. `docs/product/v1-scope.md`
-   - Use this first to understand what the bridge is, what v1 explicitly includes or excludes, the trust model, and the top-level UX rules.
-   - This is the quickest way to recover project intent without loading runtime details.
+   - Use this first for product boundary, trust model, and what v1 includes or excludes.
+   - This is the fastest project-intent refresher.
 
 2. `docs/product/chat-and-project-flow.md`
-   - Use this when working on Telegram UX, authorization, session selection, project picking, callbacks, or user-facing command behavior.
-   - It defines the authorized-user model, project recommendation rules, and Telegram command semantics.
+   - Use this for Telegram UX, authorization flow, session switching, project picking, and callback behavior.
+   - It is the user-facing command contract.
 
 3. `docs/architecture/runtime-and-state.md`
-   - Use this when changing the bridge runtime, Codex app-server integration, persistence, concurrency rules, or failure handling.
-   - It is the main technical contract for how the service runs.
+   - Use this for bridge runtime shape, app-server integration, persistence, recovery, and concurrency.
+   - It is the main technical contract for service behavior.
 
 4. `docs/operations/install-and-admin.md`
-   - Use this for installer behavior, local paths, systemd ownership, `ctb` commands, diagnostics, updates, and uninstall behavior.
+   - Use this for install paths, systemd ownership, `ctb` commands, update behavior, and diagnostics.
    - Read this before changing deployment or operator workflows.
 
 5. `docs/roadmap/phase-1-delivery.md`
-   - Use this for acceptance criteria, implementation order, and near-term scope checks.
-   - Read this when planning work or validating whether a change still fits v1.
+   - Use this for acceptance criteria and delivery sequencing.
+   - Treat it as roadmap intent, not proof that a behavior is already shipped.
 
 6. `docs/research/app-server-phase-0-verification.md`
-   - Use this when touching the Codex protocol adapter or verifying event names, payload fields, startup behavior, or final-answer extraction.
-   - This is the evidence-backed source of truth for the observed `codex app-server` protocol.
+   - Use this when touching the Codex protocol adapter or checking verified event names and payload fields.
+   - This is the evidence-backed protocol reference.
 
-## Future Drafts
+## Future And History
 
 - `docs/future/v2-prd.md`
-  - Product draft for a possible V2 focused on activity visibility, richer session management, and platform hardening.
-  - Read this only when planning future-scope work, not when implementing the current v1 baseline.
+  - Future product draft for activity visibility, richer session management, and platform hardening.
+  - Do not treat it as current behavior.
 
 - `docs/future/v2-engineering-evaluation-template.md`
-  - Template for engineering feasibility review of the V2 PRD.
-  - Use this when turning the V2 draft into a scoped engineering assessment.
-
-## Process And History
+  - Template for evaluating the V2 PRD.
+  - Use it only for future-scope engineering review.
 
 - `docs/plans/2026-03-10-documentation-information-architecture.md`
-  - Process note for the documentation split and AGENTS index design.
+  - Process note for the docs split and AGENTS index design.
   - Read this only when maintaining the documentation system itself.
 
 - `docs/archive/legacy-v1-engineering-plan-draft.md`
-  - Historical note for the earlier monolithic draft location.
-  - Do not use this as the primary project source unless you need drafting history.
+  - Historical note for the retired monolithic draft.
+  - Use this only when reconstructing drafting history.
 
 ## Fast Lookup
 
@@ -66,6 +65,10 @@ Read progressively:
 
 - "How is the service installed, managed, updated, or diagnosed?"
   - `docs/operations/install-and-admin.md`
+
+- "Which docs describe current implementation versus planning?"
+  - Current state: `docs/product/`, `docs/architecture/`, `docs/operations/`, `docs/research/`
+  - Planning and history: `docs/roadmap/`, `docs/future/`, `docs/plans/`, `docs/archive/`
 
 - "What does Phase 1 need to ship?"
   - `docs/roadmap/phase-1-delivery.md`
