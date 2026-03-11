@@ -136,3 +136,104 @@ test("flushRuntimeNotices retains notices after a failed delivery and retries la
     await cleanup();
   }
 });
+
+test("handleProjectPick clears picker state after a successful selection", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const chatId = "chat-1";
+  const delivered: string[] = [];
+  const candidate = {
+    projectKey: "project-1",
+    projectPath: "/tmp/project-one",
+    projectName: "Project One",
+    score: 100,
+    pinned: false,
+    hasExistingSession: false,
+    lastUsedAt: null,
+    lastSuccessAt: null,
+    accessible: true,
+    fromScan: false,
+    detectedMarkers: []
+  };
+
+  try {
+    (service as any).api = {
+      sendMessage: async (targetChatId: string, text: string) => {
+        delivered.push(`${targetChatId}:${text}`);
+      }
+    };
+
+    (service as any).pickerStates.set(chatId, {
+      picker: {
+        title: "选择项目",
+        emptyText: null,
+        primary: candidate,
+        frequent: [],
+        partial: false,
+        allRootsFailed: false,
+        projectMap: new Map([[candidate.projectKey, candidate]])
+      },
+      awaitingManualProjectPath: false,
+      resolved: false
+    });
+
+    await (service as any).handleProjectPick(chatId, candidate.projectKey);
+
+    assert.equal(store.listSessions(chatId).length, 1);
+    assert.deepEqual(delivered, [`${chatId}:当前项目：Project One`]);
+    assert.equal((service as any).pickerStates.has(chatId), false);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("confirmManualProject creates a session and clears picker state", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const chatId = "chat-1";
+  const delivered: string[] = [];
+  const candidate = {
+    projectKey: "project-1",
+    projectPath: "/tmp/project-one",
+    projectName: "Project One",
+    score: 100,
+    pinned: false,
+    hasExistingSession: false,
+    lastUsedAt: null,
+    lastSuccessAt: null,
+    accessible: true,
+    fromScan: false,
+    detectedMarkers: []
+  };
+
+  try {
+    (service as any).api = {
+      sendMessage: async (targetChatId: string, text: string) => {
+        delivered.push(`${targetChatId}:${text}`);
+      }
+    };
+
+    (service as any).pickerStates.set(chatId, {
+      picker: {
+        title: "选择项目",
+        emptyText: null,
+        primary: candidate,
+        frequent: [],
+        partial: false,
+        allRootsFailed: false,
+        projectMap: new Map([[candidate.projectKey, candidate]])
+      },
+      awaitingManualProjectPath: true,
+      resolved: false
+    });
+
+    await (service as any).confirmManualProject(chatId, candidate.projectKey);
+
+    const [session] = store.listSessions(chatId);
+    assert.equal(store.listSessions(chatId).length, 1);
+    assert.equal(session?.projectName, candidate.projectName);
+    assert.equal(session?.projectPath, candidate.projectPath);
+    assert.deepEqual(delivered, [`${chatId}:当前项目：Project One`]);
+    assert.equal((service as any).pickerStates.has(chatId), false);
+  } finally {
+    await cleanup();
+  }
+});

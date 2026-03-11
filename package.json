@@ -10,7 +10,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/cli.ts",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test src/codex/app-server.test.ts src/install.test.ts src/service.test.ts src/state/store.test.ts src/telegram/poller.test.ts"
+    "test": "node --import tsx --test src/codex/app-server.test.ts src/install.test.ts src/logger.test.ts src/service.test.ts src/state/store.test.ts src/telegram/poller.test.ts"
   },
   "engines": {
     "node": ">=25.0.0"

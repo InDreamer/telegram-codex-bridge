@@ -4,7 +4,7 @@ import { dirname, basename, join } from "node:path";
 import type { BridgePaths } from "../paths.js";
 import type { BridgeConfig } from "../config.js";
 import type { Logger } from "../logger.js";
-import { TelegramApi, type TelegramUpdate } from "./api.js";
+import type { TelegramApi, TelegramUpdate } from "./api.js";
 
 function isValidOffset(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
@@ -71,11 +71,13 @@ export async function writeOffset(paths: BridgePaths, offset: number): Promise<v
   await rename(tempPath, paths.offsetPath);
 }
 
+type PollerApi = Pick<TelegramApi, "getUpdates">;
+
 export class TelegramPoller {
   private running = false;
 
   constructor(
-    private readonly api: TelegramApi,
+    private readonly api: PollerApi,
     private readonly config: BridgeConfig,
     private readonly paths: BridgePaths,
     private readonly logger: Logger,
@@ -90,10 +92,27 @@ export class TelegramPoller {
       try {
         const updates = await this.api.getUpdates(offset, this.config.telegramPollTimeoutSeconds);
 
+        let nextOffset = offset;
+        let processingError: unknown;
+        let hasProcessingError = false;
         for (const update of updates) {
-          await this.onUpdate(update);
-          offset = update.update_id + 1;
-          await writeOffset(this.paths, offset);
+          try {
+            await this.onUpdate(update);
+            nextOffset = update.update_id + 1;
+          } catch (error) {
+            processingError = error;
+            hasProcessingError = true;
+            break;
+          }
+        }
+
+        if (nextOffset !== offset) {
+          await this.persistOffset(nextOffset);
+          offset = nextOffset;
+        }
+
+        if (hasProcessingError) {
+          throw processingError;
         }
 
         if (updates.length === 0) {
@@ -108,6 +127,10 @@ export class TelegramPoller {
 
   stop(): void {
     this.running = false;
+  }
+
+  protected async persistOffset(offset: number): Promise<void> {
+    await writeOffset(this.paths, offset);
   }
 }
 

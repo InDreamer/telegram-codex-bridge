@@ -478,8 +478,7 @@ export class BridgeService {
       projectPath: candidate.projectPath
     });
 
-    pickerState.resolved = true;
-    pickerState.awaitingManualProjectPath = false;
+    this.pickerStates.delete(chatId);
     await this.safeSendMessage(chatId, buildProjectSelectedText(candidate.projectName));
   }
 
@@ -548,42 +547,7 @@ export class BridgeService {
   }
 
   private async confirmManualProject(chatId: string, projectKey: string): Promise<void> {
-    if (!this.store) {
-      return;
-    }
-
-    const pickerState = this.pickerStates.get(chatId);
-    if (!pickerState) {
-      await this.safeSendMessage(chatId, "这个按钮已过期，请重新操作。");
-      return;
-    }
-
-    if (pickerState.resolved) {
-      await this.safeSendMessage(chatId, "这个操作已处理。");
-      return;
-    }
-
-    const candidate = pickerState.picker.projectMap.get(projectKey);
-    if (!candidate) {
-      await this.safeSendMessage(chatId, "这个按钮已过期，请重新操作。");
-      return;
-    }
-
-    const activeSession = this.store.getActiveSession(chatId);
-    if (activeSession?.status === "running") {
-      await this.safeSendMessage(chatId, "当前项目仍在执行，请先等待完成或停止当前操作。");
-      return;
-    }
-
-    this.store.createSession({
-      telegramChatId: chatId,
-      projectName: candidate.projectName,
-      projectPath: candidate.projectPath
-    });
-
-    pickerState.resolved = true;
-    pickerState.awaitingManualProjectPath = false;
-    await this.safeSendMessage(chatId, buildProjectSelectedText(candidate.projectName));
+    await this.handleProjectPick(chatId, projectKey);
   }
 
   private async returnToProjectPicker(chatId: string): Promise<void> {
