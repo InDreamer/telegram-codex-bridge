@@ -67,13 +67,13 @@ Engineering reviewed the requested sources plus current implementation evidence.
   - official pages fetched successfully on 2026-03-10 via `markdown.new` mirror because the direct browser capture was incomplete
 - Path note:
   - the user message referenced `docs/telegram-codex-bridge-v2-prd.md` and `docs/telegram-codex-bridge-v2-engineering-eval-template.md`
-  - in the current repo information architecture, the live future-scope sources are actually `docs/future/v2-prd.md` and `docs/future/v2-engineering-evaluation-template.md`
+  - in the current repo information architecture, the live future-scope sources are `docs/future/v2-prd.md`, `docs/future/v2-engineering-evaluation-template.md`, and this document at `docs/future/v2-engineering-evaluation.md`
 
 ### Evidence register
 
 | Evidence type | Link / path / command | Key finding |
 |---|---|---|
-| v1 plan | `/home/ubuntu/Repo/docs/plans/telegram-codex-bridge-plan-draft.md` | Frozen v1 trust boundary remains `operator-managed full access / no-Telegram-approval` |
+| v1 planning baseline | `docs/archive/legacy-v1-engineering-plan-draft.md` | The earlier monolithic draft was retired; the split v1 docs preserve the same frozen trust boundary |
 | PRD | `docs/future/v2-prd.md` | Priority order is fixed: activity visibility > session management > platform/stability |
 | current code | `src/service.ts`, `src/state/store.ts`, `src/install.ts`, `src/readiness.ts`, `src/telegram/ui.ts` | Current implementation is solid v1 infrastructure but still final-answer-centric |
 | tests | `npm test` on 2026-03-10 | 12/12 tests passed; current baseline is stable for evaluation |

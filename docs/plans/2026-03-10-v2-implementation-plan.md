@@ -6,9 +6,9 @@
 优先级：结构化活动流 > 会话管理增强 > 平台与稳定性补齐
 
 相关文档：
-- 主依据：`/home/ubuntu/Repo/docs/plans/telegram-codex-bridge-plan-draft.md`
+- 当前 v1 基线：`docs/product/v1-scope.md`、`docs/product/chat-and-project-flow.md`、`docs/architecture/runtime-and-state.md`、`docs/operations/install-and-admin.md`、`docs/research/app-server-phase-0-verification.md`
 - V2 PRD：`docs/future/v2-prd.md`
-- V2 工程评估：`docs/telegram-codex-bridge-v2-engineering-eval.md`
+- V2 工程评估：`docs/future/v2-engineering-evaluation.md`
 - 2A 详细设计：`docs/plans/2026-03-10-v2-2a-detailed-design.md`
 
 ---

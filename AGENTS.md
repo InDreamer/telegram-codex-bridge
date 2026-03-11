@@ -4,7 +4,7 @@ This file is a low-token document index for Codex and other agents.
 Read the smallest relevant document first.
 
 Read progressively:
-- Treat `docs/product/`, `docs/architecture/`, `docs/operations/`, and `docs/research/` as the current-state set.
+- Treat `docs/product/`, `docs/architecture/`, `docs/operations/`, and `docs/research/` as the current-state set derived from code, config, and verified runtime behavior.
 - Treat `docs/roadmap/`, `docs/future/`, `docs/plans/`, and `docs/archive/` as document-defined planning or history, not live runtime behavior.
 - Do not load every document by default.
 
@@ -26,27 +26,41 @@ Read progressively:
    - Use this for install paths, systemd ownership, `ctb` commands, update behavior, and diagnostics.
    - Read this before changing deployment or operator workflows.
 
-5. `docs/roadmap/phase-1-delivery.md`
-   - Use this for acceptance criteria and delivery sequencing.
-   - Treat it as roadmap intent, not proof that a behavior is already shipped.
-
-6. `docs/research/app-server-phase-0-verification.md`
+5. `docs/research/app-server-phase-0-verification.md`
    - Use this when touching the Codex protocol adapter or checking verified event names and payload fields.
    - This is the evidence-backed protocol reference.
 
-## Future And History
+6. `docs/roadmap/phase-1-delivery.md`
+   - Use this for acceptance criteria and delivery sequencing.
+   - Treat it as roadmap intent, not proof that a behavior is already shipped.
+
+## Future And Plans
 
 - `docs/future/v2-prd.md`
   - Future product draft for activity visibility, richer session management, and platform hardening.
   - Do not treat it as current behavior.
 
+- `docs/future/v2-engineering-evaluation.md`
+  - Completed engineering evaluation for the V2 PRD, including feasibility, cut line, and recommended sequencing.
+  - Read this before starting or re-scoping V2 implementation work.
+
 - `docs/future/v2-engineering-evaluation-template.md`
   - Template for evaluating the V2 PRD.
   - Use it only for future-scope engineering review.
 
+- `docs/plans/2026-03-10-v2-implementation-plan.md`
+  - Execution-oriented V2 rollout plan with phase ordering and cut-line guidance.
+  - Use this when coordinating V2 work; it is a plan, not proof that work is shipped.
+
+- `docs/plans/2026-03-10-v2-2a-detailed-design.md`
+  - Detailed implementation handoff for V2 Phase 2A structured activity visibility.
+  - Read this when building or reviewing 2A-specific changes.
+
 - `docs/plans/2026-03-10-documentation-information-architecture.md`
   - Process note for the docs split and AGENTS index design.
   - Read this only when maintaining the documentation system itself.
+
+## History
 
 - `docs/archive/legacy-v1-engineering-plan-draft.md`
   - Historical note for the retired monolithic draft.
@@ -66,6 +80,9 @@ Read progressively:
 - "How is the service installed, managed, updated, or diagnosed?"
   - `docs/operations/install-and-admin.md`
 
+- "What exact app-server methods and fields were verified on March 9, 2026?"
+  - `docs/research/app-server-phase-0-verification.md`
+
 - "Which docs describe current implementation versus planning?"
   - Current state: `docs/product/`, `docs/architecture/`, `docs/operations/`, `docs/research/`
   - Planning and history: `docs/roadmap/`, `docs/future/`, `docs/plans/`, `docs/archive/`
@@ -73,9 +90,17 @@ Read progressively:
 - "What does Phase 1 need to ship?"
   - `docs/roadmap/phase-1-delivery.md`
 
-- "What exact app-server methods and fields were verified on March 9, 2026?"
-  - `docs/research/app-server-phase-0-verification.md`
-
-- "What is planned for a future V2, and how should engineering evaluate it?"
+- "What is planned for a future V2?"
   - `docs/future/v2-prd.md`
+
+- "What is the current evaluated engineering recommendation for V2?"
+  - `docs/future/v2-engineering-evaluation.md`
+
+- "How should engineering evaluate the V2 PRD from scratch?"
   - `docs/future/v2-engineering-evaluation-template.md`
+
+- "What should V2 implementation build next, and in what order?"
+  - `docs/plans/2026-03-10-v2-implementation-plan.md`
+
+- "What exactly should Phase 2A implement?"
+  - `docs/plans/2026-03-10-v2-2a-detailed-design.md`

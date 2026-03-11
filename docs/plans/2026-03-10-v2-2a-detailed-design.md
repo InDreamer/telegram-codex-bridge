@@ -15,7 +15,7 @@ Related documents:
 - Future-scope product/evaluation docs:
   - `docs/future/v2-prd.md`
   - `docs/future/v2-engineering-evaluation-template.md`
-  - `docs/telegram-codex-bridge-v2-engineering-eval.md`
+  - `docs/future/v2-engineering-evaluation.md`
 
 ---
 
@@ -55,19 +55,19 @@ Use the following path convention going forward:
 
 To avoid more path drift in the current round:
 - treat `docs/future/v2-prd.md` as the only product source for V2 intent
-- treat `docs/telegram-codex-bridge-v2-engineering-eval.md` as the current evaluated engineering output
+- treat `docs/future/v2-engineering-evaluation.md` as the current evaluated engineering output
 - place this 2A design under `docs/plans/`
 
-### 2.3 Recommended cleanup after 2A starts
+### 2.3 Maintenance rule after this cleanup
 
-Not required to begin 2A implementation, but recommended:
-- normalize the filled evaluation doc into `docs/future/` in a later docs-only cleanup
-- then update `AGENTS.md` to list:
+After this cleanup:
+- keep `AGENTS.md` listing:
   - V2 PRD
   - V2 engineering evaluation
   - current 2A design
+- keep future-scope docs under `docs/future/` and execution handoff docs under `docs/plans/`
 
-Until that cleanup happens, all new docs should reference the actual current path explicitly instead of inventing a new unofficial root path.
+All new docs should keep using the canonical layered paths instead of inventing unofficial root-level variants.
 
 ---
 
