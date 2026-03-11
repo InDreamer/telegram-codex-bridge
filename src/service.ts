@@ -1,4 +1,5 @@
 import { createLogger, type Logger } from "./logger.js";
+import { TurnDebugJournal, type DebugJournalWriter } from "./activity/debug-journal.js";
 import { ensureBridgeDirectories, getBridgePaths, type BridgePaths } from "./paths.js";
 import { loadConfig, type BridgeConfig } from "./config.js";
 import { probeReadiness } from "./readiness.js";
@@ -11,7 +12,11 @@ import {
   type TelegramUpdate
 } from "./telegram/api.js";
 import { TelegramPoller } from "./telegram/poller.js";
+import { ActivityTracker } from "./activity/tracker.js";
+import type { ActivityStatus, DebugJournalRecord } from "./activity/types.js";
+import { classifyNotification } from "./codex/notification-classifier.js";
 import {
+  buildInspectText,
   buildManualPathConfirmMessage,
   buildManualPathPrompt,
   buildNoNewProjectsMessage,
@@ -19,6 +24,7 @@ import {
   buildProjectSelectedText,
   buildSessionsText,
   buildStatusText,
+  buildTurnStatusCard,
   buildUnsupportedCommandText,
   buildWhereText,
   parseCallbackData,
@@ -41,7 +47,21 @@ interface ActiveTurnState {
   threadId: string;
   turnId: string;
   finalMessage: string | null;
+  tracker: ActivityTracker;
+  debugJournal: DebugJournalWriter;
+  statusCard: {
+    messageId: number;
+    lastRenderedText: string;
+    lastSentAt: number;
+    editBlockedUntil: number | null;
+  } | null;
+  statusCardQueue: Promise<void>;
 }
+
+type TelegramEditResult =
+  | { outcome: "edited" }
+  | { outcome: "rate_limited"; retryAfterMs: number }
+  | { outcome: "failed" };
 
 function displayName(message: TelegramMessage): string | null {
   if (!message.from) {
@@ -63,6 +83,7 @@ export class BridgeService {
   private readonly unauthorizedReplyAt = new Map<string, number>();
   private readonly pickerStates = new Map<string, PickerState>();
   private readonly pendingRenameSessionIds = new Map<string, string>();
+  private readonly recentActivityBySessionId = new Map<string, { tracker: ActivityTracker; debugFilePath: string | null }>();
   private activeTurn: ActiveTurnState | null = null;
   private stopping = false;
 
@@ -361,6 +382,11 @@ export class BridgeService {
 
       case "interrupt": {
         await this.handleInterrupt(chatId);
+        return;
+      }
+
+      case "inspect": {
+        await this.handleInspect(chatId);
         return;
       }
 
@@ -766,12 +792,28 @@ export class BridgeService {
         chatId,
         threadId,
         turnId: turn.turn.id,
-        finalMessage: null
+        finalMessage: null,
+        tracker: new ActivityTracker({
+          threadId,
+          turnId: turn.turn.id
+        }),
+        debugJournal: new TurnDebugJournal({
+          debugRootDir: this.paths.debugRuntimeDir,
+          threadId,
+          turnId: turn.turn.id
+        }),
+        statusCard: null,
+        statusCardQueue: Promise.resolve()
       };
+      this.recentActivityBySessionId.set(session.sessionId, {
+        tracker: this.activeTurn.tracker,
+        debugFilePath: this.activeTurn.debugJournal.filePath
+      });
       this.store.updateSessionStatus(session.sessionId, "running", {
         lastTurnId: turn.turn.id,
         lastTurnStatus: turn.turn.status
       });
+      await this.ensureStatusCard(this.activeTurn);
     } catch (error) {
       await this.logger.error("turn start failed", {
         sessionId: session.sessionId,
@@ -824,31 +866,33 @@ export class BridgeService {
       return;
     }
 
+    const activeTurn = this.activeTurn;
+    await this.appendDebugJournal(activeTurn, method, params);
+    const before = activeTurn.tracker.getStatus();
+    const classified = classifyNotification(method, params);
+
     if (method === "codex/event/task_complete") {
       const message = extractTaskCompleteFinalMessage(params);
       if (message) {
-        this.activeTurn.finalMessage = message;
+        activeTurn.finalMessage = message;
       }
+    }
+
+    activeTurn.tracker.apply(classified);
+    const after = activeTurn.tracker.getStatus();
+    await this.updateStatusCard(activeTurn, before, after);
+
+    if (classified.kind !== "turn_completed" || (classified.turnId && classified.turnId !== activeTurn.turnId)) {
       return;
     }
 
-    if (method !== "turn/completed") {
-      return;
-    }
-
-    const completion = extractTurnCompletion(params);
-    if (!completion || completion.turnId !== this.activeTurn.turnId) {
-      return;
-    }
-
-    const activeTurn = this.activeTurn;
     this.activeTurn = null;
 
     if (!this.store) {
       return;
     }
 
-    if (completion.status === "completed") {
+    if (classified.status === "completed") {
       let finalMessage = activeTurn.finalMessage;
       if (!finalMessage && this.appServer) {
         finalMessage = await extractFinalAnswerFromHistory(this.appServer, activeTurn.threadId, activeTurn.turnId);
@@ -859,7 +903,7 @@ export class BridgeService {
       return;
     }
 
-    if (completion.status === "interrupted") {
+    if (classified.status === "interrupted") {
       this.store.updateSessionStatus(activeTurn.sessionId, "interrupted", {
         lastTurnId: activeTurn.turnId,
         lastTurnStatus: "interrupted"
@@ -870,9 +914,41 @@ export class BridgeService {
     this.store.updateSessionStatus(activeTurn.sessionId, "failed", {
       failureReason: "turn_failed",
       lastTurnId: activeTurn.turnId,
-      lastTurnStatus: completion.status
+      lastTurnStatus: classified.status
     });
     await this.safeSendMessage(activeTurn.chatId, "这次操作未成功完成，请重试。");
+  }
+
+  private async handleInspect(chatId: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession) {
+      await this.safeSendMessage(chatId, "当前没有活动会话。");
+      return;
+    }
+
+    const activity = this.activeTurn?.sessionId === activeSession.sessionId
+      ? {
+          tracker: this.activeTurn.tracker,
+          debugFilePath: this.activeTurn.debugJournal.filePath
+        }
+      : this.recentActivityBySessionId.get(activeSession.sessionId);
+
+    if (!activity) {
+      await this.safeSendMessage(chatId, "当前没有可用的活动详情。");
+      return;
+    }
+
+    const snapshot = activity.tracker.getInspectSnapshot();
+    if (!snapshot.inspectAvailable && snapshot.turnStatus === "starting") {
+      await this.safeSendMessage(chatId, "当前没有可用的活动详情。");
+      return;
+    }
+
+    await this.safeSendMessage(chatId, buildInspectText(snapshot, { debugFilePath: activity.debugFilePath }));
   }
 
   private async handleAppServerExit(error: Error): Promise<void> {
@@ -959,21 +1035,182 @@ export class BridgeService {
     }
   }
 
+  private async ensureStatusCard(activeTurn: ActiveTurnState): Promise<void> {
+    await this.runStatusCardOperation(activeTurn, async () => {
+      if (activeTurn.statusCard) {
+        return;
+      }
+
+      const renderedText = buildTurnStatusCard(activeTurn.tracker.getStatus());
+      const sent = await this.safeSendMessageResult(activeTurn.chatId, renderedText);
+      if (!sent) {
+        return;
+      }
+
+      activeTurn.statusCard = {
+        messageId: sent.message_id,
+        lastRenderedText: renderedText,
+        lastSentAt: Date.now(),
+        editBlockedUntil: null
+      };
+    });
+  }
+
+  private async appendDebugJournal(activeTurn: ActiveTurnState, method: string, params: unknown): Promise<void> {
+    const record: DebugJournalRecord = {
+      receivedAt: new Date().toISOString(),
+      threadId: activeTurn.threadId,
+      turnId: activeTurn.turnId,
+      method,
+      params
+    };
+
+    try {
+      await activeTurn.debugJournal.append(record);
+    } catch (error) {
+      await this.logger.warn("debug journal append failed", {
+        sessionId: activeTurn.sessionId,
+        turnId: activeTurn.turnId,
+        error: `${error}`
+      });
+    }
+  }
+
+  private async updateStatusCard(
+    activeTurn: ActiveTurnState,
+    previousStatus: ActivityStatus,
+    nextStatus: ActivityStatus
+  ): Promise<void> {
+    await this.runStatusCardOperation(activeTurn, async () => {
+      const renderedText = buildTurnStatusCard(nextStatus);
+
+      if (!this.shouldUpdateStatusCard(activeTurn, previousStatus, nextStatus, renderedText)) {
+        return;
+      }
+
+      if (!activeTurn.statusCard) {
+        const sent = await this.safeSendMessageResult(activeTurn.chatId, renderedText);
+        if (!sent) {
+          return;
+        }
+
+        activeTurn.statusCard = {
+          messageId: sent.message_id,
+          lastRenderedText: renderedText,
+          lastSentAt: Date.now(),
+          editBlockedUntil: null
+        };
+        return;
+      }
+
+      const editResult = await this.safeEditMessageText(activeTurn.chatId, activeTurn.statusCard.messageId, renderedText);
+      if (editResult.outcome === "edited") {
+        activeTurn.statusCard.lastRenderedText = renderedText;
+        activeTurn.statusCard.lastSentAt = Date.now();
+        activeTurn.statusCard.editBlockedUntil = null;
+        return;
+      }
+
+      if (editResult.outcome === "rate_limited") {
+        activeTurn.statusCard.editBlockedUntil = Date.now() + editResult.retryAfterMs;
+        return;
+      }
+
+      const fallback = await this.safeSendMessageResult(activeTurn.chatId, renderedText);
+      if (!fallback) {
+        return;
+      }
+
+      activeTurn.statusCard = {
+        messageId: fallback.message_id,
+        lastRenderedText: renderedText,
+        lastSentAt: Date.now(),
+        editBlockedUntil: null
+      };
+    });
+  }
+
+  private async runStatusCardOperation(activeTurn: ActiveTurnState, operation: () => Promise<void>): Promise<void> {
+    const queuedOperation = activeTurn.statusCardQueue.then(operation, operation);
+    activeTurn.statusCardQueue = queuedOperation.catch(() => {});
+    await queuedOperation;
+  }
+
+  private shouldUpdateStatusCard(
+    activeTurn: ActiveTurnState,
+    previousStatus: ActivityStatus,
+    nextStatus: ActivityStatus,
+    renderedText: string
+  ): boolean {
+    if (!activeTurn.statusCard) {
+      return true;
+    }
+
+    if (renderedText === activeTurn.statusCard.lastRenderedText) {
+      return false;
+    }
+
+    if (
+      activeTurn.statusCard.editBlockedUntil !== null &&
+      Date.now() < activeTurn.statusCard.editBlockedUntil
+    ) {
+      return false;
+    }
+
+    if (
+      previousStatus.turnStatus !== nextStatus.turnStatus ||
+      previousStatus.threadBlockedReason !== nextStatus.threadBlockedReason ||
+      previousStatus.lastHighValueEventType !== nextStatus.lastHighValueEventType ||
+      previousStatus.lastHighValueTitle !== nextStatus.lastHighValueTitle ||
+      previousStatus.lastHighValueDetail !== nextStatus.lastHighValueDetail
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
   private async safeSendMessage(
     chatId: string,
     text: string,
     replyMarkup?: TelegramInlineKeyboardMarkup
   ): Promise<boolean> {
+    return (await this.safeSendMessageResult(chatId, text, replyMarkup)) !== null;
+  }
+
+  private async safeSendMessageResult(
+    chatId: string,
+    text: string,
+    replyMarkup?: TelegramInlineKeyboardMarkup
+  ): Promise<TelegramMessage | null> {
     if (!this.api) {
-      return false;
+      return null;
     }
 
     try {
-      await this.api.sendMessage(chatId, text, replyMarkup ? { replyMarkup } : undefined);
-      return true;
+      return await this.api.sendMessage(chatId, text, replyMarkup ? { replyMarkup } : undefined);
     } catch (error) {
       await this.logger.error("telegram message delivery failed", { chatId, error: `${error}` });
-      return false;
+      return null;
+    }
+  }
+
+  private async safeEditMessageText(chatId: string, messageId: number, text: string): Promise<TelegramEditResult> {
+    if (!this.api?.editMessageText) {
+      return { outcome: "failed" };
+    }
+
+    try {
+      await this.api.editMessageText(chatId, messageId, text);
+      return { outcome: "edited" };
+    } catch (error) {
+      await this.logger.warn("telegram message edit failed", { chatId, messageId, error: `${error}` });
+      const retryAfterMs = parseTelegramRetryAfterMs(error);
+      if (retryAfterMs !== null) {
+        return { outcome: "rate_limited", retryAfterMs };
+      }
+
+      return { outcome: "failed" };
     }
   }
 
@@ -1035,6 +1272,23 @@ function extractTaskCompleteFinalMessage(params: unknown): string | null {
 
   const msg = (params as { msg?: { last_agent_message?: unknown } }).msg;
   return typeof msg?.last_agent_message === "string" ? msg.last_agent_message : null;
+}
+
+function parseTelegramRetryAfterMs(error: unknown): number | null {
+  const message = `${error}`;
+  const retryAfterMatch = message.match(/retry after\s+(\d+)/iu);
+  if (retryAfterMatch) {
+    const retryAfterSeconds = Number.parseInt(retryAfterMatch[1] ?? "", 10);
+    if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+      return retryAfterSeconds * 1000;
+    }
+  }
+
+  if (/too many requests/iu.test(message)) {
+    return 30_000;
+  }
+
+  return null;
 }
 
 function extractTurnCompletion(params: unknown): { turnId: string; status: string } | null {

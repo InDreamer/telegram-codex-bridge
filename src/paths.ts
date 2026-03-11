@@ -12,6 +12,7 @@ export interface BridgePaths {
   logsDir: string;
   runtimeDir: string;
   cacheDir: string;
+  debugRuntimeDir: string;
   dbPath: string;
   envPath: string;
   servicePath: string;
@@ -34,6 +35,7 @@ export function getBridgePaths(importMetaUrl: string, homeDir = homedir()): Brid
   const logsDir = join(stateRoot, "logs");
   const runtimeDir = join(stateRoot, "runtime");
   const cacheDir = join(stateRoot, "cache");
+  const debugRuntimeDir = join(runtimeDir, "debug");
 
   return {
     homeDir,
@@ -44,6 +46,7 @@ export function getBridgePaths(importMetaUrl: string, homeDir = homedir()): Brid
     logsDir,
     runtimeDir,
     cacheDir,
+    debugRuntimeDir,
     dbPath: join(stateRoot, "bridge.db"),
     envPath: join(configRoot, "bridge.env"),
     servicePath: join(homeDir, ".config", "systemd", "user", "codex-telegram-bridge.service"),
@@ -64,8 +67,8 @@ export async function ensureBridgeDirectories(paths: BridgePaths): Promise<void>
     mkdir(paths.logsDir, { recursive: true }),
     mkdir(paths.runtimeDir, { recursive: true }),
     mkdir(paths.cacheDir, { recursive: true }),
+    mkdir(paths.debugRuntimeDir, { recursive: true }),
     mkdir(dirname(paths.servicePath), { recursive: true }),
     mkdir(dirname(paths.binPath), { recursive: true })
   ]);
 }
-

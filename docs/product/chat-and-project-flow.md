@@ -172,6 +172,19 @@ Shows:
 - current project path
 - session status
 
+### `/inspect`
+
+Shows a structured activity snapshot for the active session.
+
+Responses:
+- with activity data:
+  - turn status
+  - current active item type
+  - latest progress summary if available
+  - recent activity timeline
+  - recent command, file-change, MCP, and web-search summaries when available
+- with no activity data: `当前没有可用的活动详情。`
+
 ### `/interrupt`
 
 Responses:
@@ -214,6 +227,12 @@ Final-answer handling:
 Edit versus new message:
 - edit existing messages only for bridge-owned in-progress status cards
 - send new messages for final answers, status views, refreshed pickers, and manual-path flows
+
+While a turn is running:
+- keep one bridge-owned in-progress status card in the chat
+- edit that card when the turn status or active item materially changes
+- throttle repeated progress-only edits to avoid Telegram spam
+- let `/inspect` return a snapshot on demand instead of pushing extra detail automatically
 
 While a turn is running:
 - do not queue a second turn

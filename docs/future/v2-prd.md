@@ -115,6 +115,30 @@ That means:
 - bridge may allow the user to inspect more detail on demand
 - bridge should keep low-level debug data available for diagnostics
 
+### Refinement after protocol verification and smoke feedback
+
+After validating the real Codex app-server surface and running Telegram smoke tests, the product direction is refined as follows:
+
+- V2 should not optimize for **more status changes**.
+- V2 should optimize for **more useful information**.
+- Default Telegram output should be driven by **high-value action/result events**, not by low-information heartbeat/state churn.
+
+In practice this means:
+- Layer A should prefer short, useful events such as:
+  - `Ran cmd: <command>`
+  - `Found: <key finding>`
+  - `Changed: <key change>`
+  - `Blocked: <reason>`
+  - `Done: <result>`
+- Layer A should not repeatedly surface low-value raw status such as:
+  - `starting`
+  - `running`
+  - elapsed time only
+  - `other`
+- Layer B should carry more of the useful execution detail that users actually want to inspect.
+- Reasoning should remain outside user-facing product surfaces.
+- Commentary-like execution narration may be used only as **best-effort enrichment**, not as a hard product contract.
+
 ### Explicit non-goal for V2
 
 V2 does **not** aim to generate polished stage copy such as:
@@ -222,7 +246,7 @@ There must be a clear distinction between:
 
 ### 7.5 Long tasks must look alive
 
-For long-running tasks, the product should provide enough structured activity to reassure the user that work is continuing, without flooding them.
+For long-running tasks, the product should provide enough **useful structured activity** to reassure the user that meaningful work is continuing, without flooding them with status churn.
 
 ### 7.6 Session continuity must be defined precisely
 
@@ -251,27 +275,25 @@ Purpose:
 - provide minimal, useful, low-noise visibility
 
 This layer should answer only:
-1. has the turn started,
-2. is it still active,
-3. what kind of work is currently active,
-4. when was the last observable activity,
-5. did it complete / fail / get interrupted.
+1. what meaningful action just happened,
+2. what useful result or finding is now known,
+3. whether the task is blocked / failed / completed,
+4. where the user can inspect more detail if needed.
 
 #### Expected content in default layer
 
-- turn state
-- current active item/activity type
-- last activity timestamp / relative age
-- current activity duration (if useful and stable)
-- latest human-readable native progress message when available and low-noise (for example MCP progress)
+- high-value action/result events
+- explicit blocked/failure/completion events
+- at most a compact start signal when useful
+- optional low-noise native progress only when it carries real information value
 
 #### Examples of acceptable default outputs
 
-- `turn: running`
-- `active: commandExecution`
-- `last activity: 12s ago`
-- `active: webSearch`
-- `turn: interrupted`
+- `Ran cmd: pnpm test — 26/26 tests passed`
+- `Found: located active bridge session and verified ready state`
+- `Changed: added rate-limit cooldown handling for Telegram edits`
+- `Blocked: Codex app-server unavailable`
+- `Done: smoke test completed without new flood errors`
 
 This layer should stay compact.
 
@@ -285,14 +307,14 @@ Purpose:
 - provide structured operational detail without exposing raw protocol/debug noise
 
 This layer should include structured summaries such as:
-- activity timeline
-- recent activity transitions
-- current or recent command summary
-- current or recent file-change summary
-- current or recent web-search summary
-- current or recent MCP tool-call summary
+- recent useful commands (`Ran cmd` style)
+- command/result summaries rather than raw rolling output
+- recent file-change summaries
+- recent web-search summaries
+- recent MCP tool-call summaries
 - plan snapshot when available and useful
 - recent structured activity list
+- best-effort commentary/execution-summary snippets when available
 
 This layer is for a user asking:
 - "show me what it is doing"
@@ -339,36 +361,32 @@ Engineering should classify Codex-native events into the three visibility layers
 
 By product intent, the following categories should normally be visible in Layer A:
 
-1. **Turn lifecycle**
-   - started
+1. **High-value execution events**
+   - meaningful command execution events
+   - key findings
+   - key changes
+   - explicit blocked / failed / completed events
+
+2. **Low-noise native progress with real information value**
+   - MCP progress messages
+   - other native signals only when they convey useful user-facing content
+
+3. **Lifecycle anchors**
+   - started (only if helpful)
    - completed
    - failed
    - interrupted
-
-2. **Current active work type**
-   - planning
-   - command execution
-   - file change
-   - MCP tool call
-   - web search
-   - agent message production
-   - other stable activity types confirmed by implementation
-
-3. **Low-noise progress presence**
-   - last activity time
-   - active duration
-   - limited native progress message if stable and useful
 
 ### 9.2 Inspect-visible event categories
 
 By product intent, the following should normally appear in Layer B rather than Layer A:
 
-1. activity transition history
-2. command summary (not raw rolling output)
-3. file change summary (not raw diff stream)
-4. plan snapshot / plan status when meaningful
-5. tool call summary
-6. recent structured items/events relevant to user understanding
+1. recent command summaries and command-result pairs
+2. file change summaries (not raw diff stream)
+3. plan snapshot / plan status when meaningful
+4. tool call summary
+5. recent structured items/events relevant to user understanding
+6. best-effort commentary/execution-summary snippets when available
 
 ### 9.3 Debug-only event categories
 
@@ -400,6 +418,7 @@ V2 must not depend on losing raw signal fidelity.
 
 When a user is not asking for detail:
 - show only Layer A information during execution
+- prefer low-frequency, high-value action/result events over status churn
 - keep updates compact
 - avoid noisy repeated messages
 - avoid exposing raw deltas/log tails
@@ -410,6 +429,7 @@ When a user is not asking for detail:
 When a user explicitly asks for more detail:
 - show Layer B information
 - present structured summaries rather than raw protocol data
+- prefer useful execution detail over repeated state labels
 - keep it readable in Telegram
 - make it clear that this is an expanded view, not the default view
 
@@ -532,8 +552,8 @@ V2 can be considered product-complete only if all of the following are true.
 ### 12.1 Default experience
 
 1. A long-running task no longer appears as a mostly opaque black box.
-2. A user can tell whether a turn is running, completed, failed, or interrupted.
-3. A user can see the current active work type at a high level.
+2. A user can tell whether meaningful work is progressing, blocked, completed, failed, or interrupted.
+3. Default Telegram output surfaces action/result information rather than low-value status churn.
 4. Default Telegram output remains concise and non-noisy.
 
 ### 12.2 Inspect experience

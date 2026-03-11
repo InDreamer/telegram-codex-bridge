@@ -16,6 +16,9 @@ State contents:
 - `runtime/`
 - `cache/`
 
+Structured activity debug path:
+- `~/.local/state/codex-telegram-bridge/runtime/debug/<threadId>/<turnId>.jsonl`
+
 Log directory:
 - `~/.local/state/codex-telegram-bridge/logs`
 
@@ -98,6 +101,7 @@ Primary operator diagnostics:
 - `ctb doctor`
 - `journalctl --user -u codex-telegram-bridge.service -n 200`
 - `sqlite3 ~/.local/state/codex-telegram-bridge/bridge.db`
+- inspect the per-turn JSONL files under `~/.local/state/codex-telegram-bridge/runtime/debug/`
 
 `ctb status` reports:
 - install and state roots
@@ -111,6 +115,11 @@ Primary operator diagnostics:
 - reruns the readiness probe
 - persists the latest readiness snapshot
 - resyncs Telegram commands when the configured bot token is valid
+
+Structured activity visibility:
+- the Telegram chat keeps one bridge-owned in-progress status card per running turn
+- `/inspect` shows the latest structured snapshot for the active session
+- raw native notifications stay on disk in the runtime debug journal instead of being streamed to Telegram
 
 ## Update Behavior
 

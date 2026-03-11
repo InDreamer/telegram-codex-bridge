@@ -4,6 +4,7 @@ import type {
   ReadinessSnapshot,
   SessionRow
 } from "../types.js";
+import type { ActivityStatus, InspectSnapshot } from "../activity/types.js";
 import type { TelegramInlineKeyboardMarkup } from "./api.js";
 
 export type ParsedCallbackData =
@@ -232,6 +233,77 @@ export function buildUnsupportedCommandText(): string {
   return "这个命令还没开放。";
 }
 
+export function buildTurnStatusCard(status: ActivityStatus): string {
+  const lines = [defaultActivityHeadline(status)];
+  const detail = defaultActivityDetail(status);
+  if (detail) {
+    lines.push(`结果：${detail}`);
+  }
+
+  lines.push("发送 /inspect 查看更多细节");
+  return lines.join("\n");
+}
+
+export function buildInspectText(snapshot: InspectSnapshot, options?: { debugFilePath?: string | null }): string {
+  const lines = ["当前任务详情"];
+
+  if (snapshot.lastHighValueTitle) {
+    const latestUsefulProgress = snapshot.lastHighValueDetail &&
+      snapshot.lastHighValueDetail !== snapshot.lastHighValueTitle &&
+      !snapshot.lastHighValueTitle.includes(snapshot.lastHighValueDetail)
+      ? `${snapshot.lastHighValueTitle} -> ${snapshot.lastHighValueDetail}`
+      : snapshot.lastHighValueTitle;
+    lines.push(`最近有用进展：${latestUsefulProgress}`);
+  } else {
+    lines.push(`状态：${snapshot.turnStatus}`);
+  }
+
+  if (snapshot.latestProgress) {
+    lines.push(`最近进度：${snapshot.latestProgress}`);
+  }
+
+  lines.push("", "最近活动");
+  if (snapshot.recentTransitions.length === 0) {
+    lines.push("- 无");
+  } else {
+    snapshot.recentTransitions.slice(-5).forEach((transition, index) => {
+      lines.push(`${index + 1}. ${transition.summary}`);
+    });
+  }
+
+  lines.push("", "最近命令");
+  lines.push(...formatInspectSection(snapshot.recentCommandSummaries));
+
+  lines.push("", "最近文件变更");
+  lines.push(...formatInspectSection(snapshot.recentFileChangeSummaries));
+
+  lines.push("", "最近 MCP");
+  lines.push(...formatInspectSection(snapshot.recentMcpSummaries));
+
+  lines.push("", "最近网页搜索");
+  lines.push(...formatInspectSection(snapshot.recentWebSearches));
+
+  lines.push("", "计划概览");
+  lines.push(...formatInspectSection(snapshot.planSnapshot));
+
+  if (snapshot.commentarySnippets.length > 0) {
+    lines.push("", "可选 commentary（best-effort）");
+    lines.push(...formatInspectSection(snapshot.commentarySnippets));
+  }
+
+  const notes = [...snapshot.notes];
+  if (options?.debugFilePath) {
+    notes.push(`Debug 文件：${options.debugFilePath}`);
+  }
+
+  if (notes.length > 0) {
+    lines.push("", "备注");
+    lines.push(...formatInspectSection(notes));
+  }
+
+  return lines.join("\n");
+}
+
 function formatRelativeTime(isoTime: string): string {
   const diffMs = Math.max(0, Date.now() - Date.parse(isoTime));
   const minutes = Math.floor(diffMs / 60_000);
@@ -250,4 +322,48 @@ function formatRelativeTime(isoTime: string): string {
 
   const days = Math.floor(hours / 24);
   return `${days} 天前`;
+}
+
+function defaultActivityHeadline(status: ActivityStatus): string {
+  if (status.lastHighValueTitle) {
+    return status.lastHighValueTitle;
+  }
+
+  if (status.turnStatus === "blocked" && status.threadBlockedReason) {
+    return `Blocked: ${status.threadBlockedReason}`;
+  }
+
+  if (status.turnStatus === "completed") {
+    return "Done: completed";
+  }
+
+  if (status.turnStatus === "failed") {
+    return "Blocked: turn failed";
+  }
+
+  if (status.turnStatus === "interrupted") {
+    return "Blocked: interrupted";
+  }
+
+  return "等待有用进展...";
+}
+
+function defaultActivityDetail(status: ActivityStatus): string | null {
+  if (!status.lastHighValueDetail) {
+    return null;
+  }
+
+  if (status.lastHighValueTitle?.includes(status.lastHighValueDetail)) {
+    return null;
+  }
+
+  return status.lastHighValueDetail;
+}
+
+function formatInspectSection(values: string[]): string[] {
+  if (values.length === 0) {
+    return ["- 无"];
+  }
+
+  return values.map((value) => `- ${value}`);
 }

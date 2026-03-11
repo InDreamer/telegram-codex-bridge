@@ -24,6 +24,7 @@ function createTestPaths(root: string): BridgePaths {
     logsDir: join(root, "logs"),
     runtimeDir: join(root, "runtime"),
     cacheDir: join(root, "cache"),
+    debugRuntimeDir: join(root, "runtime", "debug"),
     dbPath: join(root, "state", "bridge.db"),
     envPath: join(root, "config", "bridge.env"),
     servicePath: join(root, "service", "bridge.service"),
@@ -42,6 +43,7 @@ async function openStore(): Promise<{ paths: BridgePaths; store: BridgeStateStor
   await Promise.all([
     mkdir(paths.stateRoot, { recursive: true }),
     mkdir(paths.runtimeDir, { recursive: true }),
+    mkdir(paths.debugRuntimeDir, { recursive: true }),
     mkdir(paths.logsDir, { recursive: true }),
     mkdir(paths.configRoot, { recursive: true })
   ]);

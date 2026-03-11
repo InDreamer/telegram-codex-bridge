@@ -19,6 +19,7 @@ function createTestPaths(root: string): BridgePaths {
     logsDir: join(root, "logs"),
     runtimeDir: join(root, "runtime"),
     cacheDir: join(root, "cache"),
+    debugRuntimeDir: join(root, "runtime", "debug"),
     dbPath: join(root, "state", "bridge.db"),
     envPath: join(root, "config", "bridge.env"),
     servicePath: join(root, "service", "bridge.service"),
@@ -49,6 +50,7 @@ async function createOffsetFixture(): Promise<{ paths: BridgePaths; cleanup: () 
   const paths = createTestPaths(root);
   await Promise.all([
     mkdir(paths.runtimeDir, { recursive: true }),
+    mkdir(paths.debugRuntimeDir, { recursive: true }),
     mkdir(paths.logsDir, { recursive: true })
   ]);
 
@@ -70,7 +72,7 @@ test("writeOffset persists the offset without leaving temp files behind", async 
     assert.equal(content, `${JSON.stringify({ offset: 42 })}\n`);
 
     const runtimeFiles = await readdir(paths.runtimeDir);
-    assert.deepEqual(runtimeFiles, ["telegram-offset.json"]);
+    assert.deepEqual(runtimeFiles, ["debug", "telegram-offset.json"]);
   } finally {
     await cleanup();
   }

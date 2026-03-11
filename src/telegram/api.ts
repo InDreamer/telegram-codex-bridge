@@ -82,11 +82,19 @@ export class TelegramApi {
     options?: {
       replyMarkup?: TelegramInlineKeyboardMarkup;
     }
-  ): Promise<void> {
-    await this.call("sendMessage", {
+  ): Promise<TelegramMessage> {
+    return await this.call<TelegramMessage>("sendMessage", {
       chat_id: chatId,
       text,
       reply_markup: options?.replyMarkup
+    }, 20_000);
+  }
+
+  async editMessageText(chatId: string, messageId: number, text: string): Promise<TelegramMessage> {
+    return await this.call<TelegramMessage>("editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text
     }, 20_000);
   }
 

@@ -18,6 +18,7 @@ function createTestPaths(root: string): BridgePaths {
     logsDir: join(root, "logs"),
     runtimeDir: join(root, "runtime"),
     cacheDir: join(root, "cache"),
+    debugRuntimeDir: join(root, "runtime", "debug"),
     dbPath: join(root, "state", "bridge.db"),
     envPath: join(root, "config", "bridge.env"),
     servicePath: join(root, "service", "bridge.service"),
