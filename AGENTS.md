@@ -26,11 +26,19 @@ Read progressively:
    - Use this for install paths, systemd ownership, `ctb` commands, update behavior, and diagnostics.
    - Read this before changing deployment or operator workflows.
 
-5. `docs/research/app-server-phase-0-verification.md`
-   - Use this when touching the Codex protocol adapter or checking verified event names and payload fields.
-   - This is the evidence-backed protocol reference.
+5. `docs/research/codex-app-server-authoritative-reference.md`
+   - Use this first for current Codex app-server usage guidance, source priority, API inventory, and refresh workflow.
+   - This is the LLM-first app-server reference and should outrank older runtime samples when they disagree.
 
-6. `docs/roadmap/phase-1-delivery.md`
+6. `docs/research/codex-app-server-api-quick-reference.md`
+   - Use this for per-method app-server lookup, schema file names, required params, and approval/notification gotchas.
+   - Read this after the authoritative reference when implementation needs exact API guidance.
+
+7. `docs/research/app-server-phase-0-verification.md`
+   - Use this when touching the Codex protocol adapter or checking the dated March 9, 2026 runtime sample.
+   - This is evidence-backed historical verification, not the top source for the latest CLI surface.
+
+8. `docs/roadmap/phase-1-delivery.md`
    - Use this for acceptance criteria and delivery sequencing.
    - Treat it as roadmap intent, not proof that a behavior is already shipped.
 
@@ -82,6 +90,18 @@ Read progressively:
 
 - "What exact app-server methods and fields were verified on March 9, 2026?"
   - `docs/research/app-server-phase-0-verification.md`
+
+- "How should LLMs use Codex app-server correctly and avoid stale knowledge?"
+  - `docs/research/codex-app-server-authoritative-reference.md`
+
+- "Where is the broader current Codex app-server API inventory?"
+  - `docs/research/codex-app-server-authoritative-reference.md`
+
+- "Where is the per-method Codex app-server API quick reference?"
+  - `docs/research/codex-app-server-api-quick-reference.md`
+
+- "Which source outranks older app-server verification notes?"
+  - `docs/research/codex-app-server-authoritative-reference.md`
 
 - "Which docs describe current implementation versus planning?"
   - Current state: `docs/product/`, `docs/architecture/`, `docs/operations/`, `docs/research/`

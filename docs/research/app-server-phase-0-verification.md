@@ -1,5 +1,9 @@
 # App-Server Phase 0 Verification
 
+Read `docs/research/codex-app-server-authoritative-reference.md` first when you need the latest app-server usage guidance or broader API inventory.
+
+This document is a dated runtime sample captured on 2026-03-09 and should be treated as historical verification evidence, not the top source for the latest CLI surface.
+
 This document records the observed protocol facts gathered from the local `codex app-server` binary on 2026-03-09.
 
 Use this document as the integration source of truth when the runtime behavior matters more than earlier planning assumptions.
