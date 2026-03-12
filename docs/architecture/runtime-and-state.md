@@ -216,7 +216,8 @@ User sees:
 System behavior:
 - set readiness to `codex_not_authenticated`
 - refuse new turns
-- keep `/status` and `/doctor` available
+- keep Telegram `/status` available
+- keep local `ctb doctor` available
 
 ### `app_server_unavailable`
 

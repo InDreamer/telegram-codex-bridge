@@ -135,6 +135,8 @@ Invalid path feedback:
 - `这个路径不可用，请重新发送项目路径。`
 - `也可以发送 /cancel 返回项目列表。`
 
+`/cancel` also exits rename input mode when the bridge is waiting for a new session name.
+
 ### `/sessions`
 
 Shows:
@@ -204,8 +206,6 @@ Shows:
 
 Versioned callback formats:
 - `v1:pick:{project_key}`
-- `v1:use:{session_id}`
-- `v1:pin:{session_id}`
 - `v1:scan:more`
 - `v1:path:manual`
 - `v1:path:back`
@@ -215,6 +215,7 @@ Rules:
 - `project_key` is a stable short hash of the project path, never the raw path
 - duplicate clicks must be idempotent and return `这个操作已处理。`
 - stale callbacks must return `这个按钮已过期，请重新操作。`
+- session switching and pinning are text commands (`/use <n>` and `/pin`), not callback actions
 
 ## Message And Turn Rules
 
@@ -225,13 +226,13 @@ Final-answer handling:
 - never truncate silently
 
 Edit versus new message:
-- edit existing messages only for bridge-owned in-progress status cards
-- send new messages for final answers, status views, refreshed pickers, and manual-path flows
+- edit existing messages only for the bridge-owned running-turn status card
+- send new messages for final answers, status views, refreshed pickers, manual-path flows, and rename prompts
 
 While a turn is running:
-- keep one bridge-owned in-progress status card in the chat
-- edit that card when the turn status or active item materially changes
-- throttle repeated progress-only edits to avoid Telegram spam
+- keep one bridge-owned status card in the chat
+- update that card when the turn status or highest-value activity changes
+- if Telegram refuses an edit, fall back to sending a replacement status message
 - let `/inspect` return a snapshot on demand instead of pushing extra detail automatically
 
 While a turn is running:

@@ -1,3 +1,27 @@
+## Runtime And Tooling Floor
+
+Package manager and build scripts:
+- `npm run build`
+- `npm run dev`
+- `npm run check`
+- `npm run test`
+
+Actual admin and runtime surface:
+- `ctb ...` is the operator command surface
+- `ctb service run` is the long-lived service entrypoint used by systemd
+
+Node requirement:
+- Node `>=25.0.0`
+
+## Config Keys
+
+Supported config keys in `bridge.env`:
+- `TELEGRAM_BOT_TOKEN`
+- `CODEX_BIN`
+- `TELEGRAM_API_BASE_URL`
+- `TELEGRAM_POLL_TIMEOUT_SECONDS`
+- `TELEGRAM_POLL_INTERVAL_MS`
+
 # Install And Admin Operations
 
 ## Default Paths
@@ -117,7 +141,9 @@ Primary operator diagnostics:
 - resyncs Telegram commands when the configured bot token is valid
 
 Structured activity visibility:
-- the Telegram chat keeps one bridge-owned in-progress status card per running turn
+- the Telegram chat keeps one bridge-owned status card per running turn
+- the bridge updates that card when the turn status or highest-value activity changes
+- if Telegram refuses an edit, the bridge may send a replacement status message
 - `/inspect` shows the latest structured snapshot for the active session
 - raw native notifications stay on disk in the runtime debug journal instead of being streamed to Telegram
 
