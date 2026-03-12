@@ -62,6 +62,8 @@ export function getBridgePaths(importMetaUrl: string, homeDir = homedir()): Brid
 
 export async function ensureBridgeDirectories(paths: BridgePaths): Promise<void> {
   await Promise.all([
+    mkdir(paths.installRoot, { recursive: true }),
+    mkdir(paths.stateRoot, { recursive: true }),
     mkdir(paths.configRoot, { recursive: true }),
     mkdir(paths.logsDir, { recursive: true }),
     mkdir(paths.cacheDir, { recursive: true }),

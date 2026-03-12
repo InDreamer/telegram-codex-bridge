@@ -1,0 +1,61 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { access, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { ensureBridgeDirectories, type BridgePaths } from "./paths.js";
+
+function createCustomPaths(root: string): BridgePaths {
+  const installRoot = join(root, "install-root");
+  const stateRoot = join(root, "state-root");
+  const configRoot = join(root, "config-root");
+  const logsDir = join(root, "var", "logs");
+  const runtimeDir = join(root, "var", "runtime");
+  const cacheDir = join(root, "var", "cache");
+
+  return {
+    homeDir: root,
+    repoRoot: join(root, "repo"),
+    installRoot,
+    stateRoot,
+    configRoot,
+    logsDir,
+    runtimeDir,
+    cacheDir,
+    dbPath: join(stateRoot, "bridge.db"),
+    envPath: join(configRoot, "bridge.env"),
+    servicePath: join(root, "systemd", "bridge.service"),
+    binPath: join(root, "bin", "ctb"),
+    manifestPath: join(installRoot, "install-manifest.json"),
+    offsetPath: join(runtimeDir, "telegram-offset.json"),
+    bridgeLogPath: join(logsDir, "bridge.log"),
+    bootstrapLogPath: join(logsDir, "bootstrap.log"),
+    appServerLogPath: join(logsDir, "app-server.log")
+  };
+}
+
+async function assertExists(path: string): Promise<void> {
+  await access(path);
+}
+
+test("ensureBridgeDirectories creates install and state roots for custom path layouts", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctb-paths-test-"));
+  const paths = createCustomPaths(root);
+
+  try {
+    await ensureBridgeDirectories(paths);
+
+    await assertExists(paths.installRoot);
+    await assertExists(paths.stateRoot);
+    await assertExists(paths.configRoot);
+    await assertExists(paths.logsDir);
+    await assertExists(paths.cacheDir);
+    await assertExists(paths.runtimeDir);
+    await assertExists(join(paths.runtimeDir, "debug"));
+    await assertExists(join(root, "systemd"));
+    await assertExists(join(root, "bin"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
