@@ -27,6 +27,8 @@ const testConfig: BridgeConfig = {
 };
 
 function createTestPaths(root: string): BridgePaths {
+  const runtimeDir = join(root, "runtime");
+
   return {
     homeDir: root,
     repoRoot: root,
@@ -34,15 +36,14 @@ function createTestPaths(root: string): BridgePaths {
     stateRoot: join(root, "state"),
     configRoot: join(root, "config"),
     logsDir: join(root, "logs"),
-    runtimeDir: join(root, "runtime"),
+    runtimeDir,
     cacheDir: join(root, "cache"),
-    debugRuntimeDir: join(root, "runtime", "debug"),
     dbPath: join(root, "state", "bridge.db"),
     envPath: join(root, "config", "bridge.env"),
     servicePath: join(root, "service", "bridge.service"),
     binPath: join(root, "bin", "ctb"),
     manifestPath: join(root, "install", "install-manifest.json"),
-    offsetPath: join(root, "runtime", "telegram-offset.json"),
+    offsetPath: join(runtimeDir, "telegram-offset.json"),
     bridgeLogPath: join(root, "logs", "bridge.log"),
     bootstrapLogPath: join(root, "logs", "bootstrap.log"),
     appServerLogPath: join(root, "logs", "app-server.log")
@@ -59,8 +60,6 @@ async function createServiceContext(): Promise<{
   await Promise.all([
     mkdir(paths.installRoot, { recursive: true }),
     mkdir(paths.stateRoot, { recursive: true }),
-    mkdir(paths.runtimeDir, { recursive: true }),
-    mkdir(paths.debugRuntimeDir, { recursive: true }),
     mkdir(paths.logsDir, { recursive: true }),
     mkdir(paths.configRoot, { recursive: true })
   ]);
@@ -145,12 +144,32 @@ function createActivityStatus(overrides: Partial<ActivityStatus> = {}): Activity
   };
 }
 
-function seedRuntimeNotice(store: BridgeStateStore, chatId: string): void {
-  const session = store.createSession({
-    telegramChatId: chatId,
+function createSession(store: BridgeStateStore, telegramChatId: string) {
+  return store.createSession({
+    telegramChatId,
     projectName: "Project One",
     projectPath: "/tmp/project-one"
   });
+}
+
+function installRunningAppServer(
+  service: BridgeService,
+  threadId: string,
+  turnId: string,
+  resumeThread: (threadId: string) => Promise<unknown> = async () => ({
+    thread: { id: threadId, turns: [] }
+  })
+): void {
+  (service as any).appServer = {
+    isRunning: true,
+    startThread: async () => ({ thread: { id: threadId } }),
+    startTurn: async () => ({ turn: { id: turnId, status: "inProgress" } }),
+    resumeThread
+  };
+}
+
+function seedRuntimeNotice(store: BridgeStateStore, chatId: string): void {
+  const session = createSession(store, chatId);
   store.updateSessionStatus(session.sessionId, "running");
   store.markRunningSessionsFailedWithNotices("bridge_restart");
 }
@@ -169,6 +188,11 @@ function authorizeChat(store: BridgeStateStore, chatId: string): void {
   }
 
   store.confirmPendingAuthorization(candidate);
+}
+
+function authorizeChatWithSession(store: BridgeStateStore, chatId: string) {
+  authorizeChat(store, chatId);
+  return createSession(store, chatId);
 }
 
 test("flushRuntimeNotices clears notices after a successful Telegram delivery", async () => {
@@ -200,12 +224,7 @@ test("default activity message keeps one bridge-owned message and renders action
   let nextMessageId = 100;
 
   try {
-    authorizeChat(store, "chat-1");
-    const session = store.createSession({
-      telegramChatId: "chat-1",
-      projectName: "Project One",
-      projectPath: "/tmp/project-one"
-    });
+    const session = authorizeChatWithSession(store, "chat-1");
 
     (service as any).api = {
       sendMessage: async (chatId: string, text: string) => {
@@ -218,12 +237,7 @@ test("default activity message keeps one bridge-owned message and renders action
       }
     };
 
-    (service as any).appServer = {
-      isRunning: true,
-      startThread: async () => ({ thread: { id: "thread-1" } }),
-      startTurn: async () => ({ turn: { id: "turn-1", status: "inProgress" } }),
-      resumeThread: async () => ({ thread: { id: "thread-1", turns: [] } })
-    };
+    installRunningAppServer(service, "thread-1", "turn-1");
 
     await (service as any).startRealTurn("chat-1", session, "Do the work");
     await (service as any).handleAppServerNotification("turn/started", {
@@ -286,12 +300,7 @@ test("completed turns fall back to thread history when task_complete is missing"
   let resumeCalls = 0;
 
   try {
-    authorizeChat(store, "chat-1");
-    const session = store.createSession({
-      telegramChatId: "chat-1",
-      projectName: "Project One",
-      projectPath: "/tmp/project-one"
-    });
+    const session = authorizeChatWithSession(store, "chat-1");
 
     (service as any).api = {
       sendMessage: async (chatId: string, text: string) => {
@@ -301,32 +310,27 @@ test("completed turns fall back to thread history when task_complete is missing"
       editMessageText: async (_chatId: string, messageId: number, text: string) => createFakeTelegramMessage(messageId, text)
     };
 
-    (service as any).appServer = {
-      isRunning: true,
-      startThread: async () => ({ thread: { id: "thread-fallback" } }),
-      startTurn: async () => ({ turn: { id: "turn-fallback", status: "inProgress" } }),
-      resumeThread: async (threadId: string) => {
-        resumeCalls += 1;
-        assert.equal(threadId, "thread-fallback");
-        return {
-          thread: {
-            id: "thread-fallback",
-            turns: [
-              {
-                id: "turn-fallback",
-                items: [
-                  {
-                    type: "agentMessage",
-                    phase: "final_answer",
-                    text: "Recovered from thread history."
-                  }
-                ]
-              }
-            ]
-          }
-        };
-      }
-    };
+    installRunningAppServer(service, "thread-fallback", "turn-fallback", async (threadId: string) => {
+      resumeCalls += 1;
+      assert.equal(threadId, "thread-fallback");
+      return {
+        thread: {
+          id: "thread-fallback",
+          turns: [
+            {
+              id: "turn-fallback",
+              items: [
+                {
+                  type: "agentMessage",
+                  phase: "final_answer",
+                  text: "Recovered from thread history."
+                }
+              ]
+            }
+          ]
+        }
+      };
+    });
 
     await (service as any).startRealTurn("chat-1", session, "Do the work");
     await (service as any).handleAppServerNotification("turn/started", {
@@ -356,12 +360,7 @@ test("default activity message falls back to a new message when a high-value edi
   let nextMessageId = 200;
 
   try {
-    authorizeChat(store, "chat-1");
-    const session = store.createSession({
-      telegramChatId: "chat-1",
-      projectName: "Project One",
-      projectPath: "/tmp/project-one"
-    });
+    const session = authorizeChatWithSession(store, "chat-1");
 
     let firstEdit = true;
     (service as any).api = {
@@ -380,12 +379,7 @@ test("default activity message falls back to a new message when a high-value edi
       }
     };
 
-    (service as any).appServer = {
-      isRunning: true,
-      startThread: async () => ({ thread: { id: "thread-2" } }),
-      startTurn: async () => ({ turn: { id: "turn-2", status: "inProgress" } }),
-      resumeThread: async () => ({ thread: { id: "thread-2", turns: [] } })
-    };
+    installRunningAppServer(service, "thread-2", "turn-2");
 
     await (service as any).startRealTurn("chat-1", session, "Do the work");
     await (service as any).handleAppServerNotification("item/started", {
@@ -462,8 +456,7 @@ test("default activity message ignores duration-only drift when no semantic even
     const activeTurn = {
       statusCard: {
         messageId: 200,
-        lastRenderedText: "before",
-        lastSentAt: Date.now() - 10_000
+        lastRenderedText: "before"
       }
     };
 
@@ -481,12 +474,7 @@ test("default activity message ignores commentary and reasoning-only notificatio
   let nextMessageId = 600;
 
   try {
-    authorizeChat(store, "chat-1");
-    const session = store.createSession({
-      telegramChatId: "chat-1",
-      projectName: "Project One",
-      projectPath: "/tmp/project-one"
-    });
+    const session = authorizeChatWithSession(store, "chat-1");
 
     (service as any).api = {
       sendMessage: async (_chatId: string, text: string) => createFakeTelegramMessage(nextMessageId++, text),
@@ -496,12 +484,7 @@ test("default activity message ignores commentary and reasoning-only notificatio
       }
     };
 
-    (service as any).appServer = {
-      isRunning: true,
-      startThread: async () => ({ thread: { id: "thread-6" } }),
-      startTurn: async () => ({ turn: { id: "turn-6", status: "inProgress" } }),
-      resumeThread: async () => ({ thread: { id: "thread-6", turns: [] } })
-    };
+    installRunningAppServer(service, "thread-6", "turn-6");
 
     await withMockedNow("2026-03-10T10:00:00.000Z", async () => {
       await (service as any).startRealTurn("chat-1", session, "Do the work");
@@ -547,12 +530,7 @@ test("default activity message updates on distinct high-value events but suppres
   let nextMessageId = 300;
 
   try {
-    authorizeChat(store, "chat-1");
-    const session = store.createSession({
-      telegramChatId: "chat-1",
-      projectName: "Project One",
-      projectPath: "/tmp/project-one"
-    });
+    const session = authorizeChatWithSession(store, "chat-1");
 
     (service as any).api = {
       sendMessage: async (_chatId: string, text: string) => createFakeTelegramMessage(nextMessageId++, text),
@@ -562,12 +540,7 @@ test("default activity message updates on distinct high-value events but suppres
       }
     };
 
-    (service as any).appServer = {
-      isRunning: true,
-      startThread: async () => ({ thread: { id: "thread-3" } }),
-      startTurn: async () => ({ turn: { id: "turn-3", status: "inProgress" } }),
-      resumeThread: async () => ({ thread: { id: "thread-3", turns: [] } })
-    };
+    installRunningAppServer(service, "thread-3", "turn-3");
 
     await (service as any).startRealTurn("chat-1", session, "Do the work");
     await (service as any).handleAppServerNotification("turn/started", {
@@ -600,9 +573,6 @@ test("default activity message updates on distinct high-value events but suppres
 
     assert.equal(edited.length, 2);
 
-    const activeTurn = (service as any).activeTurn;
-    activeTurn.statusCard.lastSentAt = Date.now() - 6000;
-
     await (service as any).handleAppServerNotification("item/started", {
       threadId: "thread-3",
       turnId: "turn-3",
@@ -632,12 +602,7 @@ test("default activity message enters cooldown on Telegram rate limit without se
   let nextMessageId = 700;
 
   try {
-    authorizeChat(store, "chat-1");
-    const session = store.createSession({
-      telegramChatId: "chat-1",
-      projectName: "Project One",
-      projectPath: "/tmp/project-one"
-    });
+    const session = authorizeChatWithSession(store, "chat-1");
 
     (service as any).api = {
       sendMessage: async (chatId: string, text: string) => {
@@ -650,12 +615,7 @@ test("default activity message enters cooldown on Telegram rate limit without se
       }
     };
 
-    (service as any).appServer = {
-      isRunning: true,
-      startThread: async () => ({ thread: { id: "thread-7" } }),
-      startTurn: async () => ({ turn: { id: "turn-7", status: "inProgress" } }),
-      resumeThread: async () => ({ thread: { id: "thread-7", turns: [] } })
-    };
+    installRunningAppServer(service, "thread-7", "turn-7");
 
     await withMockedNow("2026-03-10T10:00:00.000Z", async () => {
       await (service as any).startRealTurn("chat-1", session, "Do the work");
@@ -706,12 +666,7 @@ test("inspect returns an honest fallback when the active session has no activity
   const sent: string[] = [];
 
   try {
-    authorizeChat(store, "chat-1");
-    const session = store.createSession({
-      telegramChatId: "chat-1",
-      projectName: "Project One",
-      projectPath: "/tmp/project-one"
-    });
+    const session = authorizeChatWithSession(store, "chat-1");
     store.setActiveSession("chat-1", session.sessionId);
 
     (service as any).api = {
@@ -735,12 +690,7 @@ test("inspect renders structured activity details while running and after comple
   const sent: string[] = [];
 
   try {
-    authorizeChat(store, "chat-1");
-    const session = store.createSession({
-      telegramChatId: "chat-1",
-      projectName: "Project One",
-      projectPath: "/tmp/project-one"
-    });
+    const session = authorizeChatWithSession(store, "chat-1");
     store.setActiveSession("chat-1", session.sessionId);
 
     (service as any).api = {
@@ -751,12 +701,7 @@ test("inspect renders structured activity details while running and after comple
       editMessageText: async (_chatId: string, messageId: number, text: string) => createFakeTelegramMessage(messageId, text)
     };
 
-    (service as any).appServer = {
-      isRunning: true,
-      startThread: async () => ({ thread: { id: "thread-4" } }),
-      startTurn: async () => ({ turn: { id: "turn-4", status: "inProgress" } }),
-      resumeThread: async () => ({ thread: { id: "thread-4", turns: [] } })
-    };
+    installRunningAppServer(service, "thread-4", "turn-4");
 
     await (service as any).startRealTurn("chat-1", session, "Do the work");
     await (service as any).handleAppServerNotification("turn/started", {
@@ -851,12 +796,7 @@ test("debug journal write failures do not break inspect or turn progress handlin
   const edited: string[] = [];
 
   try {
-    authorizeChat(store, "chat-1");
-    const session = store.createSession({
-      telegramChatId: "chat-1",
-      projectName: "Project One",
-      projectPath: "/tmp/project-one"
-    });
+    const session = authorizeChatWithSession(store, "chat-1");
     store.setActiveSession("chat-1", session.sessionId);
 
     (service as any).api = {
@@ -870,12 +810,7 @@ test("debug journal write failures do not break inspect or turn progress handlin
       }
     };
 
-    (service as any).appServer = {
-      isRunning: true,
-      startThread: async () => ({ thread: { id: "thread-5" } }),
-      startTurn: async () => ({ turn: { id: "turn-5", status: "inProgress" } }),
-      resumeThread: async () => ({ thread: { id: "thread-5", turns: [] } })
-    };
+    installRunningAppServer(service, "thread-5", "turn-5");
 
     await (service as any).startRealTurn("chat-1", session, "Do the work");
     (service as any).activeTurn.debugJournal = {

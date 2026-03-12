@@ -5,11 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { TurnDebugJournal } from "./debug-journal.js";
-import { getBridgePaths } from "../paths.js";
+import { getBridgePaths, getDebugRuntimeDir } from "../paths.js";
 
 test("bridge paths expose a canonical debug runtime directory", () => {
   const paths = getBridgePaths("file:///tmp/repo/src/cli.ts", "/tmp/home");
-  assert.equal(paths.debugRuntimeDir, "/tmp/home/.local/state/codex-telegram-bridge/runtime/debug");
+  assert.equal(getDebugRuntimeDir(paths.runtimeDir), "/tmp/home/.local/state/codex-telegram-bridge/runtime/debug");
 });
 
 test("turn debug journal writes newline-delimited JSON records under thread and turn paths", async () => {

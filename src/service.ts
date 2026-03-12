@@ -1,6 +1,6 @@
 import { createLogger, type Logger } from "./logger.js";
 import { TurnDebugJournal, type DebugJournalWriter } from "./activity/debug-journal.js";
-import { ensureBridgeDirectories, getBridgePaths, type BridgePaths } from "./paths.js";
+import { ensureBridgeDirectories, getBridgePaths, getDebugRuntimeDir, type BridgePaths } from "./paths.js";
 import { loadConfig, type BridgeConfig } from "./config.js";
 import { probeReadiness } from "./readiness.js";
 import { BridgeStateStore } from "./state/store.js";
@@ -58,7 +58,6 @@ interface ActiveTurnState {
   statusCard: {
     messageId: number;
     lastRenderedText: string;
-    lastSentAt: number;
     editBlockedUntil: number | null;
   } | null;
   statusCardQueue: Promise<void>;
@@ -804,7 +803,7 @@ export class BridgeService {
           turnId: turn.turn.id
         }),
         debugJournal: new TurnDebugJournal({
-          debugRootDir: this.paths.debugRuntimeDir,
+          debugRootDir: getDebugRuntimeDir(this.paths.runtimeDir),
           threadId,
           turnId: turn.turn.id
         }),
@@ -1068,7 +1067,6 @@ export class BridgeService {
       activeTurn.statusCard = {
         messageId: sent.message_id,
         lastRenderedText: renderedText,
-        lastSentAt: Date.now(),
         editBlockedUntil: null
       };
     });
@@ -1115,7 +1113,6 @@ export class BridgeService {
         activeTurn.statusCard = {
           messageId: sent.message_id,
           lastRenderedText: renderedText,
-          lastSentAt: Date.now(),
           editBlockedUntil: null
         };
         return;
@@ -1124,7 +1121,6 @@ export class BridgeService {
       const editResult = await this.safeEditMessageText(activeTurn.chatId, activeTurn.statusCard.messageId, renderedText);
       if (editResult.outcome === "edited") {
         activeTurn.statusCard.lastRenderedText = renderedText;
-        activeTurn.statusCard.lastSentAt = Date.now();
         activeTurn.statusCard.editBlockedUntil = null;
         return;
       }
@@ -1142,7 +1138,6 @@ export class BridgeService {
       activeTurn.statusCard = {
         messageId: fallback.message_id,
         lastRenderedText: renderedText,
-        lastSentAt: Date.now(),
         editBlockedUntil: null
       };
     });

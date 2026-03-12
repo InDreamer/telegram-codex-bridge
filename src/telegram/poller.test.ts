@@ -10,6 +10,8 @@ import type { BridgePaths } from "../paths.js";
 import { TelegramPoller, readOffset, writeOffset } from "./poller.js";
 
 function createTestPaths(root: string): BridgePaths {
+  const runtimeDir = join(root, "runtime");
+
   return {
     homeDir: root,
     repoRoot: root,
@@ -17,15 +19,14 @@ function createTestPaths(root: string): BridgePaths {
     stateRoot: join(root, "state"),
     configRoot: join(root, "config"),
     logsDir: join(root, "logs"),
-    runtimeDir: join(root, "runtime"),
+    runtimeDir,
     cacheDir: join(root, "cache"),
-    debugRuntimeDir: join(root, "runtime", "debug"),
     dbPath: join(root, "state", "bridge.db"),
     envPath: join(root, "config", "bridge.env"),
     servicePath: join(root, "service", "bridge.service"),
     binPath: join(root, "bin", "ctb"),
     manifestPath: join(root, "install", "install-manifest.json"),
-    offsetPath: join(root, "runtime", "telegram-offset.json"),
+    offsetPath: join(runtimeDir, "telegram-offset.json"),
     bridgeLogPath: join(root, "logs", "bridge.log"),
     bootstrapLogPath: join(root, "logs", "bootstrap.log"),
     appServerLogPath: join(root, "logs", "app-server.log")
@@ -50,7 +51,6 @@ async function createOffsetFixture(): Promise<{ paths: BridgePaths; cleanup: () 
   const paths = createTestPaths(root);
   await Promise.all([
     mkdir(paths.runtimeDir, { recursive: true }),
-    mkdir(paths.debugRuntimeDir, { recursive: true }),
     mkdir(paths.logsDir, { recursive: true })
   ]);
 
@@ -72,7 +72,7 @@ test("writeOffset persists the offset without leaving temp files behind", async 
     assert.equal(content, `${JSON.stringify({ offset: 42 })}\n`);
 
     const runtimeFiles = await readdir(paths.runtimeDir);
-    assert.deepEqual(runtimeFiles, ["debug", "telegram-offset.json"]);
+    assert.deepEqual(runtimeFiles, ["telegram-offset.json"]);
   } finally {
     await cleanup();
   }
