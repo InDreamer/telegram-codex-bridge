@@ -158,7 +158,7 @@ If the current active session is running:
 
 Responses:
 - success: `当前会话已重命名为：{name}`
-- invalid empty name: `请输入新的会话名称。`
+- missing or empty name: prompt with `请输入新的会话名称。` and allow `/cancel`
 
 ### `/pin`
 

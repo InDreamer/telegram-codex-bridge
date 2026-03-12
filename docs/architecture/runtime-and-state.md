@@ -248,12 +248,15 @@ System behavior:
 
 ### `callback delivery failure`
 
-User sees:
-- `这次操作未成功送达，请重试。`
+User impact:
+- callback acknowledgements may fail without a guaranteed user-visible retry message
+- if Telegram refuses a running-turn status-card edit, the bridge should fall back to sending a replacement status message
 
 System behavior:
-- do not assume success without confirmation
-- keep state unchanged unless the downstream action is confirmed
+- process the downstream callback action independently of the acknowledgement result
+- log callback acknowledgement failures locally
+- if Telegram refuses a running-turn status-card edit, send a replacement status message
+- do not assume delivery succeeded unless Telegram confirms it
 
 ### `bridge restart during running turn`
 

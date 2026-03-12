@@ -6,7 +6,7 @@ This document is a dated runtime sample captured on 2026-03-09 and should be tre
 
 This document records the observed protocol facts gathered from the local `codex app-server` binary on 2026-03-09.
 
-Use this document as the integration source of truth when the runtime behavior matters more than earlier planning assumptions.
+Use this document as dated runtime evidence for behaviors observed in the `codex-cli 0.112.0` sample. When it conflicts with the current CLI, generated schema, or `docs/research/codex-app-server-authoritative-reference.md`, prefer the newer sources and keep this file for historical comparison.
 
 ## Verified Environment
 

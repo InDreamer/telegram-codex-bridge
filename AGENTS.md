@@ -37,7 +37,8 @@ Read the smallest relevant file first.
 
 - Current-state docs: `docs/product/`, `docs/architecture/`, `docs/operations/`, `docs/research/`.
 - If a current-state doc conflicts with runtime behavior, verify against `package.json`, `src/cli.ts`, `src/config.ts`, `src/paths.ts`, `src/service.ts`, and `src/state/store.ts`.
-- Planning and history only: `docs/roadmap/`, `docs/future/`, `docs/plans/`, `docs/archive/`.
+- Planning and non-primary docs: `docs/roadmap/`, `docs/future/`, `docs/plans/`, `docs/archive/`.
+- In `docs/future/`, treat `v2-prd.md` and `v2-engineering-evaluation*.md` as product/evaluation inputs, not shipped behavior.
 - Do not treat roadmap, future, plan, or archive docs as shipped behavior.
 
 ## Fast Lookup
@@ -66,10 +67,16 @@ Read the smallest relevant file first.
 - Phase 1 acceptance criteria
   - `docs/roadmap/phase-1-delivery.md`
 
-- Future V2 intent
-  - `docs/future/`
+- V2 product intent and scope
+  - `docs/future/v2-prd.md`
 
-- Implementation handoffs and rollout sequencing
+- V2 feasibility and engineering assessment
+  - `docs/future/v2-engineering-evaluation.md`
+
+- V2 evaluation response template
+  - `docs/future/v2-engineering-evaluation-template.md`
+
+- Future implementation handoffs and rollout sequencing
   - `docs/plans/`
 
 - Historical drafts
