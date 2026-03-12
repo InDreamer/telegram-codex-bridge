@@ -291,7 +291,7 @@ export function buildInspectText(snapshot: InspectSnapshot, options?: { debugFil
     lines.push(...formatInspectSection(snapshot.commentarySnippets));
   }
 
-  const notes = [...snapshot.notes];
+  const notes: string[] = [];
   if (options?.debugFilePath) {
     notes.push(`Debug 文件：${options.debugFilePath}`);
   }

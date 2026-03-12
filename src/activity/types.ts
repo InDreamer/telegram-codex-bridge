@@ -66,7 +66,6 @@ export interface InspectSnapshot extends ActivityStatus {
   recentWebSearches: string[];
   planSnapshot: string[];
   commentarySnippets: string[];
-  notes: string[];
 }
 
 export interface DebugJournalRecord {

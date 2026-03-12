@@ -46,7 +46,6 @@ export class ActivityTracker {
   private readonly recentWebSearches: string[] = [];
   private readonly planSnapshot: string[] = [];
   private readonly commentarySnippets: string[] = [];
-  private readonly notes: string[] = [];
   private readonly state: ActivityTrackerState;
 
   constructor(
@@ -312,8 +311,7 @@ export class ActivityTracker {
       recentMcpSummaries: [...this.recentMcpSummaries],
       recentWebSearches: [...this.recentWebSearches],
       planSnapshot: [...this.planSnapshot],
-      commentarySnippets: [...this.commentarySnippets],
-      notes: [...this.notes]
+      commentarySnippets: [...this.commentarySnippets]
     };
   }
 
@@ -353,25 +351,6 @@ export class ActivityTracker {
 
     if (this.recentTransitions.length > this.timelineLimit) {
       this.recentTransitions.splice(0, this.recentTransitions.length - this.timelineLimit);
-    }
-  }
-
-  private pushTypedSummary(itemType: ActiveItemType | null, summary: string): void {
-    switch (itemType) {
-      case "commandExecution":
-        this.pushUniqueSummary(this.recentCommandSummaries, summary);
-        return;
-      case "fileChange":
-        this.pushUniqueSummary(this.recentFileChangeSummaries, summary);
-        return;
-      case "mcpToolCall":
-        this.pushUniqueSummary(this.recentMcpSummaries, summary);
-        return;
-      case "webSearch":
-        this.pushUniqueSummary(this.recentWebSearches, summary);
-        return;
-      default:
-        return;
     }
   }
 

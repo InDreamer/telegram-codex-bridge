@@ -4,8 +4,7 @@ import { ensureBridgeDirectories, getBridgePaths, type BridgePaths } from "./pat
 import { loadConfig, type BridgeConfig } from "./config.js";
 import { probeReadiness } from "./readiness.js";
 import { BridgeStateStore } from "./state/store.js";
-import {
-  TelegramApi,
+import { TelegramApi, TelegramApiError,
   type TelegramCallbackQuery,
   type TelegramInlineKeyboardMarkup,
   type TelegramMessage,
@@ -34,6 +33,13 @@ import { buildHelpText, syncTelegramCommands } from "./telegram/commands.js";
 import type { ProjectCandidate, ProjectPickerResult, ReadinessSnapshot, SessionRow } from "./types.js";
 import { CodexAppServerClient } from "./codex/app-server.js";
 import { buildProjectPicker, refreshProjectPicker, validateManualProjectPath } from "./project/discovery.js";
+
+interface RecentActivityEntry {
+  tracker: ActivityTracker;
+  debugFilePath: string | null;
+}
+
+const MAX_RECENT_ACTIVITY_ENTRIES = 20;
 
 interface PickerState {
   picker: ProjectPickerResult;
@@ -83,7 +89,7 @@ export class BridgeService {
   private readonly unauthorizedReplyAt = new Map<string, number>();
   private readonly pickerStates = new Map<string, PickerState>();
   private readonly pendingRenameSessionIds = new Map<string, string>();
-  private readonly recentActivityBySessionId = new Map<string, { tracker: ActivityTracker; debugFilePath: string | null }>();
+  private readonly recentActivityBySessionId = new Map<string, RecentActivityEntry>();
   private activeTurn: ActiveTurnState | null = null;
   private stopping = false;
 
@@ -805,10 +811,11 @@ export class BridgeService {
         statusCard: null,
         statusCardQueue: Promise.resolve()
       };
-      this.recentActivityBySessionId.set(session.sessionId, {
+      const recentActivity: RecentActivityEntry = {
         tracker: this.activeTurn.tracker,
         debugFilePath: this.activeTurn.debugJournal.filePath
-      });
+      };
+      this.setRecentActivity(session.sessionId, recentActivity);
       this.store.updateSessionStatus(session.sessionId, "running", {
         lastTurnId: turn.turn.id,
         lastTurnStatus: turn.turn.status
@@ -871,11 +878,8 @@ export class BridgeService {
     const before = activeTurn.tracker.getStatus();
     const classified = classifyNotification(method, params);
 
-    if (method === "codex/event/task_complete") {
-      const message = extractTaskCompleteFinalMessage(params);
-      if (message) {
-        activeTurn.finalMessage = message;
-      }
+    if (classified.kind === "final_message_available" && classified.message) {
+      activeTurn.finalMessage = classified.message;
     }
 
     activeTurn.tracker.apply(classified);
@@ -917,6 +921,20 @@ export class BridgeService {
       lastTurnStatus: classified.status
     });
     await this.safeSendMessage(activeTurn.chatId, "这次操作未成功完成，请重试。");
+  }
+
+  private setRecentActivity(sessionId: string, entry: RecentActivityEntry): void {
+    this.recentActivityBySessionId.delete(sessionId);
+    this.recentActivityBySessionId.set(sessionId, entry);
+
+    while (this.recentActivityBySessionId.size > MAX_RECENT_ACTIVITY_ENTRIES) {
+      const oldestSessionId = this.recentActivityBySessionId.keys().next().value;
+      if (!oldestSessionId) {
+        return;
+      }
+
+      this.recentActivityBySessionId.delete(oldestSessionId);
+    }
   }
 
   private async handleInspect(chatId: string): Promise<void> {
@@ -1205,7 +1223,7 @@ export class BridgeService {
       return { outcome: "edited" };
     } catch (error) {
       await this.logger.warn("telegram message edit failed", { chatId, messageId, error: `${error}` });
-      const retryAfterMs = parseTelegramRetryAfterMs(error);
+      const retryAfterMs = getTelegramRetryAfterMs(error);
       if (retryAfterMs !== null) {
         return { outcome: "rate_limited", retryAfterMs };
       }
@@ -1265,16 +1283,11 @@ export async function runBridgeService(importMetaUrl: string): Promise<void> {
   await service.run();
 }
 
-function extractTaskCompleteFinalMessage(params: unknown): string | null {
-  if (!params || typeof params !== "object") {
-    return null;
+function getTelegramRetryAfterMs(error: unknown): number | null {
+  if (error instanceof TelegramApiError && error.retryAfterSeconds !== null) {
+    return error.retryAfterSeconds * 1000;
   }
 
-  const msg = (params as { msg?: { last_agent_message?: unknown } }).msg;
-  return typeof msg?.last_agent_message === "string" ? msg.last_agent_message : null;
-}
-
-function parseTelegramRetryAfterMs(error: unknown): number | null {
   const message = `${error}`;
   const retryAfterMatch = message.match(/retry after\s+(\d+)/iu);
   if (retryAfterMatch) {
@@ -1289,22 +1302,6 @@ function parseTelegramRetryAfterMs(error: unknown): number | null {
   }
 
   return null;
-}
-
-function extractTurnCompletion(params: unknown): { turnId: string; status: string } | null {
-  if (!params || typeof params !== "object") {
-    return null;
-  }
-
-  const turn = (params as { turn?: { id?: unknown; status?: unknown } }).turn;
-  if (typeof turn?.id !== "string" || typeof turn.status !== "string") {
-    return null;
-  }
-
-  return {
-    turnId: turn.id,
-    status: turn.status
-  };
 }
 
 async function extractFinalAnswerFromHistory(

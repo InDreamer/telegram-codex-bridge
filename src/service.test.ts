@@ -279,6 +279,76 @@ test("default activity message keeps one bridge-owned message and renders action
   }
 });
 
+test("completed turns fall back to thread history when task_complete is missing", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ chatId: string; text: string }> = [];
+  let nextMessageId = 150;
+  let resumeCalls = 0;
+
+  try {
+    authorizeChat(store, "chat-1");
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    (service as any).api = {
+      sendMessage: async (chatId: string, text: string) => {
+        sent.push({ chatId, text });
+        return createFakeTelegramMessage(nextMessageId++, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string) => createFakeTelegramMessage(messageId, text)
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      startThread: async () => ({ thread: { id: "thread-fallback" } }),
+      startTurn: async () => ({ turn: { id: "turn-fallback", status: "inProgress" } }),
+      resumeThread: async (threadId: string) => {
+        resumeCalls += 1;
+        assert.equal(threadId, "thread-fallback");
+        return {
+          thread: {
+            id: "thread-fallback",
+            turns: [
+              {
+                id: "turn-fallback",
+                items: [
+                  {
+                    type: "agentMessage",
+                    phase: "final_answer",
+                    text: "Recovered from thread history."
+                  }
+                ]
+              }
+            ]
+          }
+        };
+      }
+    };
+
+    await (service as any).startRealTurn("chat-1", session, "Do the work");
+    await (service as any).handleAppServerNotification("turn/started", {
+      threadId: "thread-fallback",
+      turnId: "turn-fallback"
+    });
+    await (service as any).handleAppServerNotification("turn/completed", {
+      threadId: "thread-fallback",
+      turn: { id: "turn-fallback", status: "completed" }
+    });
+
+    assert.equal(resumeCalls, 1);
+    assert.equal(sent.length, 2);
+    assert.match(sent[0]?.text ?? "", /\/inspect/u);
+    assert.equal(sent[1]?.text, "Recovered from thread history.");
+    assert.equal(store.getSessionById(session.sessionId)?.status, "idle");
+    assert.equal((service as any).activeTurn, null);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("default activity message falls back to a new message when a high-value edit fails", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ chatId: string; text: string }> = [];

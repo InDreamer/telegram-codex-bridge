@@ -56,6 +56,29 @@ interface TelegramResponse<T> {
   ok: boolean;
   result?: T;
   description?: string;
+  error_code?: number;
+  parameters?: {
+    retry_after?: number;
+  };
+}
+
+export class TelegramApiError extends Error {
+  readonly method: string;
+  readonly description: string;
+  readonly errorCode: number | null;
+  readonly retryAfterSeconds: number | null;
+
+  constructor(method: string, payload: TelegramResponse<unknown>) {
+    const description = payload.description ?? `Telegram API request failed: ${method}`;
+    super(description);
+    this.name = "TelegramApiError";
+    this.method = method;
+    this.description = description;
+    this.errorCode = typeof payload.error_code === "number" ? payload.error_code : null;
+    this.retryAfterSeconds = typeof payload.parameters?.retry_after === "number"
+      ? payload.parameters.retry_after
+      : null;
+  }
 }
 
 export class TelegramApi {
@@ -129,7 +152,7 @@ export class TelegramApi {
 
       const payload = (await response.json()) as TelegramResponse<T>;
       if (!response.ok || !payload.ok || payload.result === undefined) {
-        throw new Error(payload.description ?? `Telegram API request failed: ${method}`);
+        throw new TelegramApiError(method, payload);
       }
 
       return payload.result;
@@ -183,7 +206,7 @@ export class TelegramApi {
 
     const payload = JSON.parse(result.stdout) as TelegramResponse<T>;
     if (!payload.ok || payload.result === undefined) {
-      throw new Error(payload.description ?? `Telegram API request failed: ${method}`);
+      throw new TelegramApiError(method, payload);
     }
 
     return payload.result;
