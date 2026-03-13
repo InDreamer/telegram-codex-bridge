@@ -11,6 +11,7 @@ function createCustomPaths(root: string): BridgePaths {
   const stateRoot = join(root, "state-root");
   const configRoot = join(root, "config-root");
   const logsDir = join(root, "var", "logs");
+  const telegramSessionFlowLogsDir = join(logsDir, "telegram-session-flow");
   const runtimeDir = join(root, "var", "runtime");
   const cacheDir = join(root, "var", "cache");
 
@@ -21,6 +22,7 @@ function createCustomPaths(root: string): BridgePaths {
     stateRoot,
     configRoot,
     logsDir,
+    telegramSessionFlowLogsDir,
     runtimeDir,
     cacheDir,
     dbPath: join(stateRoot, "bridge.db"),
@@ -32,7 +34,10 @@ function createCustomPaths(root: string): BridgePaths {
     offsetPath: join(runtimeDir, "telegram-offset.json"),
     bridgeLogPath: join(logsDir, "bridge.log"),
     bootstrapLogPath: join(logsDir, "bootstrap.log"),
-    appServerLogPath: join(logsDir, "app-server.log")
+    appServerLogPath: join(logsDir, "app-server.log"),
+    telegramStatusCardLogPath: join(telegramSessionFlowLogsDir, "status-card.log"),
+    telegramPlanCardLogPath: join(telegramSessionFlowLogsDir, "plan-card.log"),
+    telegramErrorCardLogPath: join(telegramSessionFlowLogsDir, "error-card.log")
   };
 }
 
@@ -51,6 +56,7 @@ test("ensureBridgeDirectories creates install and state roots for custom path la
     await assertExists(paths.stateRoot);
     await assertExists(paths.configRoot);
     await assertExists(paths.logsDir);
+    await assertExists(paths.telegramSessionFlowLogsDir);
     await assertExists(paths.cacheDir);
     await assertExists(paths.runtimeDir);
     await assertExists(join(paths.runtimeDir, "debug"));

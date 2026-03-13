@@ -15,6 +15,8 @@ const testLogger: Logger = {
 };
 
 function createTestPaths(root: string): BridgePaths {
+  const logsDir = join(root, "logs");
+  const telegramSessionFlowLogsDir = join(logsDir, "telegram-session-flow");
   const runtimeDir = join(root, "runtime");
 
   return {
@@ -23,7 +25,8 @@ function createTestPaths(root: string): BridgePaths {
     installRoot: join(root, "install"),
     stateRoot: join(root, "state"),
     configRoot: join(root, "config"),
-    logsDir: join(root, "logs"),
+    logsDir,
+    telegramSessionFlowLogsDir,
     runtimeDir,
     cacheDir: join(root, "cache"),
     dbPath: join(root, "state", "bridge.db"),
@@ -33,9 +36,12 @@ function createTestPaths(root: string): BridgePaths {
     binPath: join(root, "bin", "ctb"),
     manifestPath: join(root, "install", "install-manifest.json"),
     offsetPath: join(runtimeDir, "telegram-offset.json"),
-    bridgeLogPath: join(root, "logs", "bridge.log"),
-    bootstrapLogPath: join(root, "logs", "bootstrap.log"),
-    appServerLogPath: join(root, "logs", "app-server.log")
+    bridgeLogPath: join(logsDir, "bridge.log"),
+    bootstrapLogPath: join(logsDir, "bootstrap.log"),
+    appServerLogPath: join(logsDir, "app-server.log"),
+    telegramStatusCardLogPath: join(telegramSessionFlowLogsDir, "status-card.log"),
+    telegramPlanCardLogPath: join(telegramSessionFlowLogsDir, "plan-card.log"),
+    telegramErrorCardLogPath: join(telegramSessionFlowLogsDir, "error-card.log")
   };
 }
 

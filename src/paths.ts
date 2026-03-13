@@ -10,6 +10,7 @@ export interface BridgePaths {
   stateRoot: string;
   configRoot: string;
   logsDir: string;
+  telegramSessionFlowLogsDir: string;
   runtimeDir: string;
   cacheDir: string;
   dbPath: string;
@@ -22,6 +23,9 @@ export interface BridgePaths {
   bridgeLogPath: string;
   bootstrapLogPath: string;
   appServerLogPath: string;
+  telegramStatusCardLogPath: string;
+  telegramPlanCardLogPath: string;
+  telegramErrorCardLogPath: string;
 }
 
 export function getRepoRoot(importMetaUrl: string): string {
@@ -37,6 +41,7 @@ export function getBridgePaths(importMetaUrl: string, homeDir = homedir()): Brid
   const stateRoot = join(homeDir, ".local", "state", "codex-telegram-bridge");
   const configRoot = join(homeDir, ".config", "codex-telegram-bridge");
   const logsDir = join(stateRoot, "logs");
+  const telegramSessionFlowLogsDir = join(logsDir, "telegram-session-flow");
   const runtimeDir = join(stateRoot, "runtime");
   const cacheDir = join(stateRoot, "cache");
 
@@ -47,6 +52,7 @@ export function getBridgePaths(importMetaUrl: string, homeDir = homedir()): Brid
     stateRoot,
     configRoot,
     logsDir,
+    telegramSessionFlowLogsDir,
     runtimeDir,
     cacheDir,
     dbPath: join(stateRoot, "bridge.db"),
@@ -58,7 +64,10 @@ export function getBridgePaths(importMetaUrl: string, homeDir = homedir()): Brid
     offsetPath: join(runtimeDir, "telegram-offset.json"),
     bridgeLogPath: join(logsDir, "bridge.log"),
     bootstrapLogPath: join(logsDir, "bootstrap.log"),
-    appServerLogPath: join(logsDir, "app-server.log")
+    appServerLogPath: join(logsDir, "app-server.log"),
+    telegramStatusCardLogPath: join(telegramSessionFlowLogsDir, "status-card.log"),
+    telegramPlanCardLogPath: join(telegramSessionFlowLogsDir, "plan-card.log"),
+    telegramErrorCardLogPath: join(telegramSessionFlowLogsDir, "error-card.log")
   };
 }
 
@@ -68,6 +77,7 @@ export async function ensureBridgeDirectories(paths: BridgePaths): Promise<void>
     mkdir(paths.stateRoot, { recursive: true }),
     mkdir(paths.configRoot, { recursive: true }),
     mkdir(paths.logsDir, { recursive: true }),
+    mkdir(paths.telegramSessionFlowLogsDir, { recursive: true }),
     mkdir(paths.cacheDir, { recursive: true }),
     mkdir(getDebugRuntimeDir(paths.runtimeDir), { recursive: true }),
     mkdir(dirname(paths.servicePath), { recursive: true }),

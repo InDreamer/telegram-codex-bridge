@@ -3,6 +3,10 @@ import { dirname } from "node:path";
 
 type LogLevel = "info" | "warn" | "error";
 
+interface LoggerOptions {
+  mirrorToConsole?: boolean;
+}
+
 export interface Logger {
   info(message: string, meta?: Record<string, unknown>): Promise<void>;
   warn(message: string, meta?: Record<string, unknown>): Promise<void>;
@@ -24,10 +28,16 @@ async function writeLine(filePath: string, line: string): Promise<void> {
   await appendFile(filePath, line, "utf8");
 }
 
-export function createLogger(component: string, filePath: string): Logger {
+export function createLogger(component: string, filePath: string, options: LoggerOptions = {}): Logger {
+  const mirrorToConsole = options.mirrorToConsole ?? true;
+
   async function log(level: LogLevel, message: string, meta?: Record<string, unknown>): Promise<void> {
     const line = formatLine(level, component, message, meta);
     await writeLine(filePath, line);
+
+    if (!mirrorToConsole) {
+      return;
+    }
 
     if (level === "error") {
       process.stderr.write(line);
@@ -43,4 +53,3 @@ export function createLogger(component: string, filePath: string): Logger {
     error: (message, meta) => log("error", message, meta)
   };
 }
-
