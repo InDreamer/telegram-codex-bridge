@@ -8,7 +8,7 @@ Package manager and build scripts:
 
 Actual admin and runtime surface:
 - `ctb ...` is the operator command surface
-- `ctb service run` is the long-lived service entrypoint used by systemd
+- `ctb service run` is the long-lived service entrypoint used by systemd when available, and by manual supervisors otherwise
 
 Node requirement:
 - Node `>=25.0.0`
@@ -91,6 +91,11 @@ Supported subcommands:
 - `ctb authorize clear`
 - `ctb service run`
 
+Platform note:
+- `ctb start`, `ctb stop`, and `ctb restart` require `systemd --user`
+- when `systemctl` is unavailable, install still writes release files and validates readiness, but does not enable a long-lived service
+- on those hosts, the operator must run `ctb service run` under another supervisor or in a persistent shell
+
 Authorization intent:
 - `ctb authorize pending` lists pending Telegram candidates by default
 - `ctb authorize pending --latest`, `--select <index>`, or `--user-id <id>` confirms one pending candidate
@@ -98,7 +103,7 @@ Authorization intent:
 - `ctb authorize clear` clears the active binding and returns the bridge to `awaiting_authorization`
 
 Operational note:
-- `ctb service run` is the systemd entrypoint and is not the normal admin command surface
+- `ctb service run` is the service entrypoint and is not the normal admin command surface
 
 ## Runtime Ownership Behavior
 
@@ -142,8 +147,10 @@ Primary operator diagnostics:
 
 Structured activity visibility:
 - the Telegram chat keeps one bridge-owned status card per running turn
-- the bridge updates that card when the turn status or highest-value activity changes
-- if Telegram refuses an edit, the bridge may send a replacement status message
+- the bridge may also create a separate plan card, per-command cards, and separate error cards
+- the bridge updates cards only when visible state changes or when a complete progress unit is available
+- fragmented commentary and reasoning deltas stay out of the default Telegram flow
+- if Telegram refuses an edit or rate-limits it, the bridge retries the same card later instead of sending replacement-message spam
 - `/inspect` shows the latest structured snapshot for the active session
 - raw native notifications stay on disk in the runtime debug journal instead of being streamed to Telegram
 

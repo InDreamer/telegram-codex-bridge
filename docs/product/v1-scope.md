@@ -15,7 +15,9 @@ The bridge is not a second Codex environment, not a provider-management layer, a
 - one bridge service per server
 - reuse the server's existing Codex environment
 - project-aware session startup
-- final-answer-only Telegram output
+- compact structured runtime visibility in Telegram
+- separate final-answer delivery
+- on-demand `/inspect` task snapshots
 - multiple sessions with switching
 - one active session per chat
 - one-line install plus local self-check
@@ -26,7 +28,8 @@ The bridge is not a second Codex environment, not a provider-management layer, a
 - group chats
 - multi-user access
 - Telegram-side execution policy beyond access identity
-- rich streaming of tool calls, patches, or reasoning
+- raw or token-level streaming of tool calls, patches, or reasoning
+- reasoning surfaces in the normal Telegram chat flow
 - Telegram-driven provider or model setup
 - Codex approval relay
 - Telegram approval UI or callback flow

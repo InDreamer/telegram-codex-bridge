@@ -74,6 +74,11 @@ test("reduces a turn from start through progress to completion", () => {
   assert.equal(running.finalMessageAvailable, false);
   assert.equal(running.lastHighValueEventType, "found");
   assert.equal(running.lastHighValueTitle, "Found: Searching docs");
+  assert.deepEqual(running.recentStatusUpdates, [
+    "Starting command: pnpm test",
+    "pnpm test -> 26/26 tests passed",
+    "Searching docs"
+  ]);
 
   tracker.apply(
     classifyNotification("item/completed", {
@@ -164,6 +169,124 @@ test("reduces a turn from start through progress to completion", () => {
   assert.match(inspect.recentTransitions.at(-1)?.summary ?? "", /completed/u);
 });
 
+test("aggregates token-streamed agent commentary into stable status updates", () => {
+  const tracker = new ActivityTracker({
+    threadId: "thread-agg",
+    turnId: "turn-agg"
+  });
+
+  tracker.apply(
+    classifyNotification("turn/started", {
+      threadId: "thread-agg",
+      turnId: "turn-agg"
+    }),
+    "2026-03-10T12:00:00.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/started", {
+      threadId: "thread-agg",
+      turnId: "turn-agg",
+      item: {
+        id: "msg-1",
+        type: "agentMessage"
+      }
+    }),
+    "2026-03-10T12:00:00.100Z"
+  );
+
+  for (const delta of [
+    "Using",
+    " superpower",
+    " skill",
+    " for",
+    " preflight",
+    ", then",
+    " scanning",
+    " the",
+    " repo",
+    " entrypoints",
+    "."
+  ]) {
+    tracker.apply(
+      classifyNotification("item/agentMessage/delta", {
+        threadId: "thread-agg",
+        turnId: "turn-agg",
+        itemId: "msg-1",
+        delta
+      }),
+      "2026-03-10T12:00:00.200Z"
+    );
+  }
+
+  const status = tracker.getStatus("2026-03-10T12:00:01.000Z");
+  assert.equal(status.recentStatusUpdates.at(-1), "Turn started");
+  assert.equal(status.latestProgress, null);
+
+  const inspect = tracker.getInspectSnapshot("2026-03-10T12:00:01.000Z");
+  assert.equal(inspect.commentarySnippets.at(-1), "Using superpower skill for preflight, then scanning the repo entrypoints.");
+
+  const snapshot = tracker.getStreamSnapshot();
+  assert.equal(snapshot.activeStatusLine, "assistant response");
+});
+
+test("does not treat colon-ended commentary fragments as stable updates", () => {
+  const tracker = new ActivityTracker({
+    threadId: "thread-colon",
+    turnId: "turn-colon"
+  });
+
+  tracker.apply(
+    classifyNotification("turn/started", {
+      threadId: "thread-colon",
+      turnId: "turn-colon"
+    }),
+    "2026-03-10T12:30:00.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/started", {
+      threadId: "thread-colon",
+      turnId: "turn-colon",
+      item: {
+        id: "msg-colon",
+        type: "agentMessage"
+      }
+    }),
+    "2026-03-10T12:30:00.050Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/agentMessage/delta", {
+      threadId: "thread-colon",
+      turnId: "turn-colon",
+      itemId: "msg-colon",
+      delta: "我把现在领域内核补齐："
+    }),
+    "2026-03-10T12:30:00.100Z"
+  );
+
+  const partial = tracker.getInspectSnapshot("2026-03-10T12:30:00.200Z");
+  assert.equal(partial.commentarySnippets.length, 0);
+  assert.notEqual(partial.recentStatusUpdates.at(-1), "我把现在领域内核补齐：");
+
+  tracker.apply(
+    classifyNotification("item/agentMessage/delta", {
+      threadId: "thread-colon",
+      turnId: "turn-colon",
+      itemId: "msg-colon",
+      delta: "看命令决策器、事件投影器、快照查询和重放机制。"
+    }),
+    "2026-03-10T12:30:00.300Z"
+  );
+
+  const settled = tracker.getInspectSnapshot("2026-03-10T12:30:00.400Z");
+  assert.equal(
+    settled.commentarySnippets.at(-1),
+    "我把现在领域内核补齐：看命令决策器、事件投影器、快照查询和重放机制。"
+  );
+});
+
 test("reduces blocked, interrupted, failed, and unknown item flows safely", () => {
   const tracker = new ActivityTracker({
     threadId: "thread-2",
@@ -240,4 +363,148 @@ test("classifies unknown notifications as safe other events", () => {
 
   assert.equal(classified.kind, "other");
   assert.equal(classified.method, "item/unknownFutureThing");
+});
+
+test("getStreamSnapshot keeps agent commentary out of the stream body", () => {
+  const tracker = new ActivityTracker({
+    threadId: "thread-stream",
+    turnId: "turn-stream"
+  });
+
+  tracker.apply(
+    classifyNotification("turn/started", {
+      threadId: "thread-stream",
+      turnId: "turn-stream"
+    }),
+    "2026-03-10T10:00:00.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/started", {
+      threadId: "thread-stream",
+      turnId: "turn-stream",
+      item: { id: "msg-1", type: "agentMessage" }
+    }),
+    "2026-03-10T10:00:00.100Z"
+  );
+
+  for (const delta of ["Looking at ", "the config files."]) {
+    tracker.apply(
+      classifyNotification("item/agentMessage/delta", {
+        threadId: "thread-stream",
+        turnId: "turn-stream",
+        itemId: "msg-1",
+        delta
+      }),
+      "2026-03-10T10:00:00.200Z"
+    );
+  }
+
+  tracker.apply(
+    classifyNotification("item/commandExecution/outputDelta", {
+      threadId: "thread-stream",
+      turnId: "turn-stream",
+      itemId: "cmd-1",
+      delta: "$ npm test\n5/5 passed"
+    }),
+    "2026-03-10T10:00:01.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/fileChange/outputDelta", {
+      threadId: "thread-stream",
+      turnId: "turn-stream",
+      itemId: "fc-1",
+      delta: "Updated src/app.ts"
+    }),
+    "2026-03-10T10:00:02.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("turn/completed", {
+      threadId: "thread-stream",
+      turn: { id: "turn-stream", status: "completed" }
+    }),
+    "2026-03-10T10:00:03.000Z"
+  );
+
+  const snapshot = tracker.getStreamSnapshot();
+  assert.ok(snapshot.blocks.length >= 4, `expected at least 4 blocks, got ${snapshot.blocks.length}`);
+
+  const kinds = snapshot.blocks.map((b) => b.kind);
+  assert.equal(kinds[0], "status");
+  assert.equal(kinds.includes("commentary"), false);
+  assert.ok(kinds.includes("command"), "command block present");
+  assert.ok(kinds.includes("file_change"), "file_change block present");
+  assert.equal(kinds.at(-1), "completion");
+
+  const completionBlock = snapshot.blocks.at(-1)!;
+  assert.equal(completionBlock.kind, "completion");
+  assert.equal(completionBlock.text, "Completed");
+  assert.equal(completionBlock.durationSec, 3);
+
+  assert.equal(snapshot.turnStartedAt, "2026-03-10T10:00:00.000Z");
+
+  const inspect = tracker.getInspectSnapshot("2026-03-10T10:00:04.000Z");
+  assert.equal(inspect.commentarySnippets.at(-1), "Looking at the config files.");
+});
+
+test("getStreamSnapshot deduplicates consecutive tool summaries", () => {
+  const tracker = new ActivityTracker({
+    threadId: "thread-dedup",
+    turnId: "turn-dedup"
+  });
+
+  tracker.apply(
+    classifyNotification("turn/started", {
+      threadId: "thread-dedup",
+      turnId: "turn-dedup"
+    }),
+    "2026-03-10T10:00:00.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/started", {
+      threadId: "thread-dedup",
+      turnId: "turn-dedup",
+      item: { id: "mcp-1", type: "mcpToolCall" }
+    }),
+    "2026-03-10T10:00:00.100Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/mcpToolCall/progress", {
+      threadId: "thread-dedup",
+      turnId: "turn-dedup",
+      itemId: "mcp-1",
+      message: "Searching docs"
+    }),
+    "2026-03-10T10:00:00.200Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/mcpToolCall/progress", {
+      threadId: "thread-dedup",
+      turnId: "turn-dedup",
+      itemId: "mcp-1",
+      message: "Searching docs"
+    }),
+    "2026-03-10T10:00:00.300Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/mcpToolCall/progress", {
+      threadId: "thread-dedup",
+      turnId: "turn-dedup",
+      itemId: "mcp-1",
+      message: "Reading results"
+    }),
+    "2026-03-10T10:00:00.400Z"
+  );
+
+  const snapshot = tracker.getStreamSnapshot();
+  const toolSummaries = snapshot.blocks.filter((b) => b.kind === "tool_summary");
+  assert.equal(toolSummaries.length, 2, "duplicate tool summary should be deduplicated");
+  assert.equal(toolSummaries[0]?.text, "Searching docs");
+  assert.equal(toolSummaries[1]?.text, "Reading results");
 });

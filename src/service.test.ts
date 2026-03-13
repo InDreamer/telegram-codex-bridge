@@ -92,6 +92,17 @@ function createFakeTelegramMessage(messageId: number, text: string) {
   };
 }
 
+function getMessageTexts(
+  sent: Array<{ messageId: number; text: string }>,
+  edited: Array<{ messageId: number; text: string }>,
+  messageId: number
+): string[] {
+  return [
+    ...sent.filter((entry) => entry.messageId === messageId).map((entry) => entry.text),
+    ...edited.filter((entry) => entry.messageId === messageId).map((entry) => entry.text)
+  ];
+}
+
 async function withMockedNow<T>(nowIso: string, callback: () => Promise<T>): Promise<T> {
   const RealDate = Date;
   const fixedTime = Date.parse(nowIso);
@@ -127,7 +138,7 @@ function createActivityStatus(overrides: Partial<ActivityStatus> = {}): Activity
     turnStatus: "running",
     activeItemType: "agentMessage",
     activeItemId: "item-1",
-    activeItemLabel: "agentMessage",
+    activeItemLabel: "assistant response",
     lastActivityAt: "2026-03-10T10:00:05.000Z",
     currentItemStartedAt: "2026-03-10T10:00:00.000Z",
     currentItemDurationSec: 5,
@@ -135,6 +146,7 @@ function createActivityStatus(overrides: Partial<ActivityStatus> = {}): Activity
     lastHighValueTitle: "Found: useful result",
     lastHighValueDetail: "useful result",
     latestProgress: null,
+    recentStatusUpdates: [],
     threadBlockedReason: null,
     finalMessageAvailable: false,
     inspectAvailable: true,
@@ -202,8 +214,9 @@ test("flushRuntimeNotices clears notices after a successful Telegram delivery", 
   try {
     seedRuntimeNotice(store, "chat-1");
     (service as any).api = {
-      sendMessage: async (chatId: string, text: string) => {
+      sendMessage: async (chatId: string, text: string, _options?: any) => {
         delivered.push(`${chatId}:${text}`);
+        return createFakeTelegramMessage(1, text);
       }
     };
 
@@ -217,76 +230,97 @@ test("flushRuntimeNotices clears notices after a successful Telegram delivery", 
   }
 });
 
-test("default activity message keeps one bridge-owned message and renders action-plus-result updates", async () => {
+test("runtime cards split status, plan, command, and final answer into separate Telegram messages", async () => {
   const { service, store, cleanup } = await createServiceContext();
-  const sent: Array<{ chatId: string; text: string }> = [];
-  const edited: Array<{ chatId: string; messageId: number; text: string }> = [];
+  const sent: Array<{ chatId: string; messageId: number; text: string; parseMode?: string }> = [];
+  const edited: Array<{ chatId: string; messageId: number; text: string; parseMode?: string }> = [];
   let nextMessageId = 100;
 
   try {
     const session = authorizeChatWithSession(store, "chat-1");
 
     (service as any).api = {
-      sendMessage: async (chatId: string, text: string) => {
-        sent.push({ chatId, text });
-        return createFakeTelegramMessage(nextMessageId++, text);
+      sendMessage: async (chatId: string, text: string, options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ chatId, messageId, text, parseMode: options?.parseMode });
+        return createFakeTelegramMessage(messageId, text);
       },
-      editMessageText: async (chatId: string, messageId: number, text: string) => {
-        edited.push({ chatId, messageId, text });
+      editMessageText: async (chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ chatId, messageId, text, parseMode: options?.parseMode });
         return createFakeTelegramMessage(messageId, text);
       }
     };
 
     installRunningAppServer(service, "thread-1", "turn-1");
 
-    await (service as any).startRealTurn("chat-1", session, "Do the work");
-    await (service as any).handleAppServerNotification("turn/started", {
-      threadId: "thread-1",
-      turnId: "turn-1"
+    await withMockedNow("2026-03-10T10:00:00.000Z", async () => {
+      await (service as any).startRealTurn("chat-1", session, "Do the work");
     });
-    await (service as any).handleAppServerNotification("item/started", {
-      threadId: "thread-1",
-      turnId: "turn-1",
-      item: { id: "item-1", type: "commandExecution", title: "pnpm test" }
+    await withMockedNow("2026-03-10T10:00:03.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/started", {
+        threadId: "thread-1",
+        turnId: "turn-1"
+      });
     });
-    await (service as any).handleAppServerNotification("item/commandExecution/outputDelta", {
-      threadId: "thread-1",
-      turnId: "turn-1",
-      itemId: "item-1",
-      delta: "$ pnpm test\n26/26 tests passed"
+    await withMockedNow("2026-03-10T10:00:06.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/plan/updated", {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        plan: [
+          { step: "Collect protocol evidence", status: "completed" },
+          { step: "Wire inspect renderer", status: "inProgress" }
+        ]
+      });
     });
-    await (service as any).handleAppServerNotification("item/started", {
-      threadId: "thread-1",
-      turnId: "turn-1",
-      item: { id: "item-2", type: "fileChange", title: "src/service.ts" }
+    await withMockedNow("2026-03-10T10:00:09.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/started", {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        item: { id: "item-1", type: "commandExecution", title: "pnpm test" }
+      });
     });
-    await (service as any).handleAppServerNotification("item/fileChange/outputDelta", {
-      threadId: "thread-1",
-      turnId: "turn-1",
-      itemId: "item-2",
-      delta: "Updated src/service.ts to enforce Telegram cooldown"
+    await withMockedNow("2026-03-10T10:00:12.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/commandExecution/outputDelta", {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "item-1",
+        delta: "$ pnpm test\n26/26 tests passed"
+      });
     });
-    await (service as any).handleAppServerNotification("codex/event/task_complete", {
-      threadId: "thread-1",
-      turnId: "turn-1",
-      msg: { last_agent_message: "All done." }
-    });
-    await (service as any).handleAppServerNotification("turn/completed", {
-      threadId: "thread-1",
-      turn: { id: "turn-1", status: "completed" }
+    await withMockedNow("2026-03-10T10:00:15.000Z", async () => {
+      await (service as any).handleAppServerNotification("codex/event/task_complete", {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        msg: { last_agent_message: "All done." }
+      });
+      await (service as any).handleAppServerNotification("turn/completed", {
+        threadId: "thread-1",
+        turn: { id: "turn-1", status: "completed" }
+      });
     });
 
-    assert.equal(sent.length, 2);
-    assert.doesNotMatch(sent[0]?.text ?? "", /状态：|正在执行/u);
-    assert.match(sent[0]?.text ?? "", /\/inspect/u);
-    assert.equal(sent[1]?.text, "All done.");
-    assert.equal(edited.length, 4);
-    assert.equal(edited[0]?.messageId, 100);
-    assert.match(edited[0]?.text ?? "", /Ran cmd: pnpm test/u);
-    assert.match(edited[1]?.text ?? "", /Ran cmd: pnpm test/u);
-    assert.match(edited[2]?.text ?? "", /Changed: Updated src\/service\.ts to enforce Telegram cooldown/u);
-    assert.match(edited.at(-1)?.text ?? "", /Done: All done\./u);
-    assert.doesNotMatch(edited.join("\n"), /状态：|当前活动：|本阶段耗时/u);
+    assert.equal(sent.every((entry) => entry.parseMode === undefined), true);
+    assert.equal(sent.filter((entry) => entry.text.startsWith("Runtime Status")).length, 1);
+    assert.equal(sent.filter((entry) => entry.text.startsWith("Plan")).length, 1);
+    assert.equal(sent.filter((entry) => entry.text.startsWith("Command")).length, 1);
+    assert.equal(sent.filter((entry) => entry.text === "All done.").length, 1);
+
+    const statusTexts = getMessageTexts(sent, edited, 100);
+    assert.ok(statusTexts.some((text) => /State: Starting/u.test(text)));
+    assert.ok(statusTexts.some((text) => /State: Running/u.test(text)));
+    assert.ok(statusTexts.some((text) => /State: Completed/u.test(text)));
+    assert.equal(statusTexts.some((text) => /Collect protocol evidence/u.test(text)), false);
+    assert.equal(statusTexts.some((text) => /26\/26 tests passed/u.test(text)), false);
+
+    const planTexts = getMessageTexts(sent, edited, 101);
+    assert.ok(planTexts.some((text) => /Collect protocol evidence \(completed\)/u.test(text)));
+    assert.ok(planTexts.some((text) => /Wire inspect renderer \(inProgress\)/u.test(text)));
+
+    const commandTexts = getMessageTexts(sent, edited, 102);
+    assert.ok(commandTexts.some((text) => /Name: pnpm test/u.test(text)));
+    assert.ok(commandTexts.some((text) => /Latest: 26\/26 tests passed/u.test(text)));
+    assert.ok(commandTexts.some((text) => /State: Completed/u.test(text)));
+
     assert.equal((service as any).activeTurn, null);
   } finally {
     await cleanup();
@@ -295,7 +329,8 @@ test("default activity message keeps one bridge-owned message and renders action
 
 test("completed turns fall back to thread history when task_complete is missing", async () => {
   const { service, store, cleanup } = await createServiceContext();
-  const sent: Array<{ chatId: string; text: string }> = [];
+  const sent: Array<{ chatId: string; messageId: number; text: string; parseMode?: string }> = [];
+  const edited: Array<{ chatId: string; messageId: number; text: string }> = [];
   let nextMessageId = 150;
   let resumeCalls = 0;
 
@@ -303,11 +338,15 @@ test("completed turns fall back to thread history when task_complete is missing"
     const session = authorizeChatWithSession(store, "chat-1");
 
     (service as any).api = {
-      sendMessage: async (chatId: string, text: string) => {
-        sent.push({ chatId, text });
-        return createFakeTelegramMessage(nextMessageId++, text);
+      sendMessage: async (chatId: string, text: string, options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ chatId, messageId, text, parseMode: options?.parseMode });
+        return createFakeTelegramMessage(messageId, text);
       },
-      editMessageText: async (_chatId: string, messageId: number, text: string) => createFakeTelegramMessage(messageId, text)
+      editMessageText: async (chatId: string, messageId: number, text: string, _options?: any) => {
+        edited.push({ chatId, messageId, text });
+        return createFakeTelegramMessage(messageId, text);
+      }
     };
 
     installRunningAppServer(service, "thread-fallback", "turn-fallback", async (threadId: string) => {
@@ -332,20 +371,27 @@ test("completed turns fall back to thread history when task_complete is missing"
       };
     });
 
-    await (service as any).startRealTurn("chat-1", session, "Do the work");
-    await (service as any).handleAppServerNotification("turn/started", {
-      threadId: "thread-fallback",
-      turnId: "turn-fallback"
+    await withMockedNow("2026-03-10T10:00:00.000Z", async () => {
+      await (service as any).startRealTurn("chat-1", session, "Do the work");
     });
-    await (service as any).handleAppServerNotification("turn/completed", {
-      threadId: "thread-fallback",
-      turn: { id: "turn-fallback", status: "completed" }
+    await withMockedNow("2026-03-10T10:00:03.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/started", {
+        threadId: "thread-fallback",
+        turnId: "turn-fallback"
+      });
+    });
+    await withMockedNow("2026-03-10T10:00:06.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/completed", {
+        threadId: "thread-fallback",
+        turn: { id: "turn-fallback", status: "completed" }
+      });
     });
 
     assert.equal(resumeCalls, 1);
-    assert.equal(sent.length, 2);
-    assert.match(sent[0]?.text ?? "", /\/inspect/u);
-    assert.equal(sent[1]?.text, "Recovered from thread history.");
+    assert.equal(sent.every((entry) => entry.parseMode === undefined), true);
+    assert.equal(sent.filter((entry) => entry.text.startsWith("Runtime Status")).length, 1);
+    assert.ok(sent.some((entry) => entry.text === "Recovered from thread history."));
+    assert.ok(edited.some((entry) => /State: Completed/u.test(entry.text)));
     assert.equal(store.getSessionById(session.sessionId)?.status, "idle");
     assert.equal((service as any).activeTurn, null);
   } finally {
@@ -353,9 +399,9 @@ test("completed turns fall back to thread history when task_complete is missing"
   }
 });
 
-test("default activity message falls back to a new message when a high-value edit fails", async () => {
+test("runtime card edit failures retry the same message instead of sending a replacement", async () => {
   const { service, store, cleanup } = await createServiceContext();
-  const sent: Array<{ chatId: string; text: string }> = [];
+  const sent: Array<{ chatId: string; messageId: number; text: string }> = [];
   const edited: Array<{ chatId: string; messageId: number; text: string }> = [];
   let nextMessageId = 200;
 
@@ -364,11 +410,12 @@ test("default activity message falls back to a new message when a high-value edi
 
     let firstEdit = true;
     (service as any).api = {
-      sendMessage: async (chatId: string, text: string) => {
-        sent.push({ chatId, text });
-        return createFakeTelegramMessage(nextMessageId++, text);
+      sendMessage: async (chatId: string, text: string, _options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ chatId, messageId, text });
+        return createFakeTelegramMessage(messageId, text);
       },
-      editMessageText: async (chatId: string, messageId: number, text: string) => {
+      editMessageText: async (chatId: string, messageId: number, text: string, _options?: any) => {
         edited.push({ chatId, messageId, text });
         if (firstEdit) {
           firstEdit = false;
@@ -381,105 +428,87 @@ test("default activity message falls back to a new message when a high-value edi
 
     installRunningAppServer(service, "thread-2", "turn-2");
 
-    await (service as any).startRealTurn("chat-1", session, "Do the work");
-    await (service as any).handleAppServerNotification("item/started", {
-      threadId: "thread-2",
-      turnId: "turn-2",
-      item: { id: "item-1", type: "commandExecution", title: "pnpm test" }
+    await withMockedNow("2026-03-10T10:00:00.000Z", async () => {
+      await (service as any).startRealTurn("chat-1", session, "Do the work");
+    });
+    await withMockedNow("2026-03-10T10:00:03.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/started", {
+        threadId: "thread-2",
+        turnId: "turn-2"
+      });
     });
 
     const activeTurn = (service as any).activeTurn;
-    assert.equal(sent.length, 2);
+    assert.equal(sent.length, 1);
     assert.equal(edited.length, 1);
-    assert.equal(activeTurn.statusCard.messageId, 201);
-  } finally {
-    await cleanup();
-  }
-});
+    assert.equal(activeTurn.statusCard.messageId, 200);
+    assert.match(activeTurn.statusCard.pendingText ?? "", /State: Running/u);
 
-test("status card serializes concurrent creation so one turn keeps one message", async () => {
-  const { service, cleanup } = await createServiceContext();
-  const sent: Array<{ chatId: string; text: string }> = [];
-  let nextMessageId = 800;
-  let releaseSend!: () => void;
-  const sendGate = new Promise<void>((resolve) => {
-    releaseSend = resolve;
-  });
-
-  try {
-    (service as any).api = {
-      sendMessage: async (chatId: string, text: string) => {
-        sent.push({ chatId, text });
-        await sendGate;
-        return createFakeTelegramMessage(nextMessageId++, text);
-      }
-    };
-
-    const activeTurn: any = {
-      sessionId: "session-1",
-      chatId: "chat-1",
-      threadId: "thread-1",
-      turnId: "turn-1",
-      finalMessage: null,
-      tracker: {
-        getStatus: () => createActivityStatus()
-      },
-      debugJournal: {
-        filePath: null,
-        append: async () => {}
-      },
-      statusCard: null,
-      statusCardQueue: Promise.resolve()
-    };
-    const previousStatus = createActivityStatus({ turnStatus: "starting" });
-    const nextStatus = createActivityStatus({ turnStatus: "running" });
-
-    const firstUpdate = (service as any).updateStatusCard(activeTurn, previousStatus, nextStatus);
-    const secondUpdate = (service as any).updateStatusCard(activeTurn, previousStatus, nextStatus);
-
-    releaseSend();
-    await Promise.all([firstUpdate, secondUpdate]);
+    await withMockedNow("2026-03-10T10:00:09.000Z", async () => {
+      await (service as any).flushRuntimeCardRender(activeTurn, activeTurn.statusCard);
+    });
 
     assert.equal(sent.length, 1);
-    assert.equal(activeTurn.statusCard?.messageId, 800);
+    assert.equal(edited.length, 2);
+    assert.match(activeTurn.statusCard.lastRenderedText, /State: Running/u);
+    (service as any).clearRuntimeCardTimer(activeTurn.statusCard);
   } finally {
     await cleanup();
   }
 });
 
-test("default activity message ignores duration-only drift when no semantic event changed", async () => {
-  const { service, cleanup } = await createServiceContext();
+test("startRealTurn sends an initial runtime status card immediately", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ chatId: string; messageId: number; text: string }> = [];
+  let nextMessageId = 800;
 
   try {
-    const previousStatus = createActivityStatus({ currentItemDurationSec: 5 });
-    const nextStatus = createActivityStatus({ currentItemDurationSec: 12 });
-    const activeTurn = {
-      statusCard: {
-        messageId: 200,
-        lastRenderedText: "before"
+    const session = authorizeChatWithSession(store, "chat-1");
+
+    (service as any).api = {
+      sendMessage: async (chatId: string, text: string, _options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ chatId, messageId, text });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) => {
+        return createFakeTelegramMessage(messageId, text);
       }
     };
 
-    const shouldUpdate = (service as any).shouldUpdateStatusCard(activeTurn, previousStatus, nextStatus, "after");
+    installRunningAppServer(service, "thread-8", "turn-8");
 
-    assert.equal(shouldUpdate, false);
+    await withMockedNow("2026-03-10T10:00:00.000Z", async () => {
+      await (service as any).startRealTurn("chat-1", session, "Do the work");
+    });
+
+    assert.equal(sent.length, 1);
+    assert.match(sent[0]?.text ?? "", /^Runtime Status/u);
+    assert.match(sent[0]?.text ?? "", /State: Starting/u);
+    assert.match(sent[0]?.text ?? "", /Use \/inspect for full details/u);
+    assert.equal((service as any).activeTurn.statusCard.messageId, 800);
   } finally {
     await cleanup();
   }
 });
 
-test("default activity message ignores commentary and reasoning-only notifications", async () => {
+test("fragmented commentary waits for a complete sentence before updating the status card", async () => {
   const { service, store, cleanup } = await createServiceContext();
-  const edited: Array<{ chatId: string; messageId: number; text: string }> = [];
+  const sent: Array<{ messageId: number; text: string }> = [];
+  const edited: Array<{ messageId: number; text: string }> = [];
   let nextMessageId = 600;
 
   try {
     const session = authorizeChatWithSession(store, "chat-1");
 
     (service as any).api = {
-      sendMessage: async (_chatId: string, text: string) => createFakeTelegramMessage(nextMessageId++, text),
-      editMessageText: async (chatId: string, messageId: number, text: string) => {
-        edited.push({ chatId, messageId, text });
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ messageId, text });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) => {
+        edited.push({ messageId, text });
         return createFakeTelegramMessage(messageId, text);
       }
     };
@@ -489,7 +518,7 @@ test("default activity message ignores commentary and reasoning-only notificatio
     await withMockedNow("2026-03-10T10:00:00.000Z", async () => {
       await (service as any).startRealTurn("chat-1", session, "Do the work");
     });
-    await withMockedNow("2026-03-10T10:00:01.000Z", async () => {
+    await withMockedNow("2026-03-10T10:00:03.000Z", async () => {
       await (service as any).handleAppServerNotification("turn/started", {
         threadId: "thread-6",
         turnId: "turn-6"
@@ -501,15 +530,22 @@ test("default activity message ignores commentary and reasoning-only notificatio
       });
     });
 
-    assert.equal(edited.length, 0);
+    assert.equal(sent.length, 1);
+    assert.equal(edited.length, 1);
 
-    await withMockedNow("2026-03-10T10:00:12.000Z", async () => {
+    await withMockedNow("2026-03-10T10:00:09.000Z", async () => {
       await (service as any).handleAppServerNotification("item/agentMessage/delta", {
         threadId: "thread-6",
         turnId: "turn-6",
         itemId: "item-1",
-        delta: "drafting..."
+        delta: "先看项目骨架，再抓入口"
       });
+    });
+
+    assert.equal(sent.length, 1);
+    assert.equal(edited.length, 1);
+
+    await withMockedNow("2026-03-10T10:00:12.000Z", async () => {
       await (service as any).handleAppServerNotification("item/reasoning/summaryTextDelta", {
         threadId: "thread-6",
         turnId: "turn-6",
@@ -518,100 +554,106 @@ test("default activity message ignores commentary and reasoning-only notificatio
       });
     });
 
-    assert.equal(edited.length, 0);
+    assert.equal(edited.length, 1);
+
+    await withMockedNow("2026-03-10T10:00:15.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/agentMessage/delta", {
+        threadId: "thread-6",
+        turnId: "turn-6",
+        itemId: "item-1",
+        delta: "、配置和主要模块。"
+      });
+    });
+
+    assert.equal(edited.length, 2);
+    assert.match(edited.at(-1)?.text ?? "", /Progress: 先看项目骨架，再抓入口、配置和主要模块。/u);
+    const inspect = (service as any).activeTurn.tracker.getInspectSnapshot();
+    assert.equal(inspect.commentarySnippets.at(-1), "先看项目骨架，再抓入口、配置和主要模块。");
   } finally {
     await cleanup();
   }
 });
 
-test("default activity message updates on distinct high-value events but suppresses duplicate findings", async () => {
+test("runtime errors create a separate error card without polluting the status card", async () => {
   const { service, store, cleanup } = await createServiceContext();
-  const edited: Array<{ chatId: string; messageId: number; text: string }> = [];
+  const sent: Array<{ messageId: number; text: string }> = [];
+  const edited: Array<{ messageId: number; text: string }> = [];
   let nextMessageId = 300;
 
   try {
     const session = authorizeChatWithSession(store, "chat-1");
 
     (service as any).api = {
-      sendMessage: async (_chatId: string, text: string) => createFakeTelegramMessage(nextMessageId++, text),
-      editMessageText: async (chatId: string, messageId: number, text: string) => {
-        edited.push({ chatId, messageId, text });
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ messageId, text });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) => {
+        edited.push({ messageId, text });
         return createFakeTelegramMessage(messageId, text);
       }
     };
 
     installRunningAppServer(service, "thread-3", "turn-3");
 
-    await (service as any).startRealTurn("chat-1", session, "Do the work");
-    await (service as any).handleAppServerNotification("turn/started", {
-      threadId: "thread-3",
-      turnId: "turn-3"
+    await withMockedNow("2026-03-10T10:00:00.000Z", async () => {
+      await (service as any).startRealTurn("chat-1", session, "Do the work");
     });
-    await (service as any).handleAppServerNotification("item/started", {
-      threadId: "thread-3",
-      turnId: "turn-3",
-      item: { id: "item-1", type: "mcpToolCall" }
+    await withMockedNow("2026-03-10T10:00:03.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/started", {
+        threadId: "thread-3",
+        turnId: "turn-3"
+      });
     });
-    await (service as any).handleAppServerNotification("item/mcpToolCall/progress", {
-      threadId: "thread-3",
-      turnId: "turn-3",
-      itemId: "item-1",
-      message: "Searching docs"
-    });
-    await (service as any).handleAppServerNotification("item/mcpToolCall/progress", {
-      threadId: "thread-3",
-      turnId: "turn-3",
-      itemId: "item-1",
-      message: "Searching docs"
-    });
-    await (service as any).handleAppServerNotification("item/mcpToolCall/progress", {
-      threadId: "thread-3",
-      turnId: "turn-3",
-      itemId: "item-1",
-      message: "Reading repo docs"
+    await withMockedNow("2026-03-10T10:00:06.000Z", async () => {
+      await (service as any).handleAppServerNotification("error", {
+        threadId: "thread-3",
+        turnId: "turn-3",
+        message: "tool crashed"
+      });
     });
 
-    assert.equal(edited.length, 2);
+    assert.equal(sent.length, 2);
+    assert.equal(sent.filter((entry) => entry.text.startsWith("Runtime Status")).length, 1);
+    assert.equal(sent.filter((entry) => entry.text.startsWith("Error")).length, 1);
 
-    await (service as any).handleAppServerNotification("item/started", {
-      threadId: "thread-3",
-      turnId: "turn-3",
-      item: { id: "item-2", type: "commandExecution", title: "rg app-server src" }
-    });
-    await (service as any).handleAppServerNotification("item/commandExecution/outputDelta", {
-      threadId: "thread-3",
-      turnId: "turn-3",
-      itemId: "item-2",
-      delta: "$ rg app-server src\n12 matches"
-    });
+    const statusTexts = getMessageTexts(sent, edited, 300);
+    assert.ok(statusTexts.some((text) => /State: Failed/u.test(text)));
+    assert.equal(statusTexts.some((text) => /tool crashed/u.test(text)), false);
 
-    assert.equal(edited.length, 4);
-    assert.match(edited[0]?.text ?? "", /Found: Searching docs/u);
-    assert.match(edited[1]?.text ?? "", /Found: Reading repo docs/u);
-    assert.match(edited[2]?.text ?? "", /Ran cmd: rg app-server src/u);
-    assert.match(edited[3]?.text ?? "", /Ran cmd: rg app-server src/u);
+    const errorTexts = getMessageTexts(sent, edited, 301);
+    assert.ok(errorTexts.some((text) => /Title: Runtime error/u.test(text)));
+    assert.ok(errorTexts.some((text) => /Detail: tool crashed/u.test(text)));
   } finally {
     await cleanup();
   }
 });
 
-test("default activity message enters cooldown on Telegram rate limit without send flood", async () => {
+test("runtime card rate limits keep the same message and retry later without replacement spam", async () => {
   const { service, store, cleanup } = await createServiceContext();
-  const sent: Array<{ chatId: string; text: string }> = [];
+  const sent: Array<{ chatId: string; messageId: number; text: string }> = [];
   const edited: Array<{ chatId: string; messageId: number; text: string }> = [];
   let nextMessageId = 700;
 
   try {
     const session = authorizeChatWithSession(store, "chat-1");
 
+    let firstEdit = true;
     (service as any).api = {
-      sendMessage: async (chatId: string, text: string) => {
-        sent.push({ chatId, text });
-        return createFakeTelegramMessage(nextMessageId++, text);
+      sendMessage: async (chatId: string, text: string, _options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ chatId, messageId, text });
+        return createFakeTelegramMessage(messageId, text);
       },
-      editMessageText: async (chatId: string, messageId: number, text: string) => {
+      editMessageText: async (chatId: string, messageId: number, text: string, _options?: any) => {
         edited.push({ chatId, messageId, text });
-        throw new Error("Too Many Requests: retry after 60");
+        if (firstEdit) {
+          firstEdit = false;
+          throw new Error("Too Many Requests: retry after 60");
+        }
+
+        return createFakeTelegramMessage(messageId, text);
       }
     };
 
@@ -621,41 +663,27 @@ test("default activity message enters cooldown on Telegram rate limit without se
       await (service as any).startRealTurn("chat-1", session, "Do the work");
     });
 
-    const originalStatusCardMessageId = (service as any).activeTurn.statusCard.messageId;
-
-    await withMockedNow("2026-03-10T10:00:01.000Z", async () => {
+    await withMockedNow("2026-03-10T10:00:03.000Z", async () => {
       await (service as any).handleAppServerNotification("turn/started", {
         threadId: "thread-7",
         turnId: "turn-7"
       });
     });
 
-    await withMockedNow("2026-03-10T10:00:02.000Z", async () => {
-      await (service as any).handleAppServerNotification("item/started", {
-        threadId: "thread-7",
-        turnId: "turn-7",
-        item: { id: "item-1", type: "commandExecution", title: "pnpm test" }
-      });
-      await (service as any).handleAppServerNotification("item/commandExecution/outputDelta", {
-        threadId: "thread-7",
-        turnId: "turn-7",
-        itemId: "item-1",
-        delta: "$ pnpm test\n26/26 tests passed"
-      });
-    });
+    const activeTurn = (service as any).activeTurn;
+    assert.equal(sent.length, 1);
+    assert.equal(edited.length, 1);
+    assert.equal(activeTurn.statusCard.messageId, 700);
+    assert.match(activeTurn.statusCard.pendingText ?? "", /State: Running/u);
 
-    await withMockedNow("2026-03-10T10:00:03.000Z", async () => {
-      await (service as any).handleAppServerNotification("item/fileChange/outputDelta", {
-        threadId: "thread-7",
-        turnId: "turn-7",
-        itemId: "item-2",
-        delta: "Updated src/service.ts"
-      });
+    await withMockedNow("2026-03-10T10:01:05.000Z", async () => {
+      await (service as any).flushRuntimeCardRender(activeTurn, activeTurn.statusCard);
     });
 
     assert.equal(sent.length, 1);
-    assert.equal(edited.length, 1);
-    assert.equal((service as any).activeTurn.statusCard.messageId, originalStatusCardMessageId);
+    assert.equal(edited.length, 2);
+    assert.match(activeTurn.statusCard.lastRenderedText, /State: Running/u);
+    (service as any).clearRuntimeCardTimer(activeTurn.statusCard);
   } finally {
     await cleanup();
   }
@@ -670,7 +698,7 @@ test("inspect returns an honest fallback when the active session has no activity
     store.setActiveSession("chat-1", session.sessionId);
 
     (service as any).api = {
-      sendMessage: async (_chatId: string, text: string) => {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
         sent.push(text);
         return createFakeTelegramMessage(400, text);
       }
@@ -694,11 +722,11 @@ test("inspect renders structured activity details while running and after comple
     store.setActiveSession("chat-1", session.sessionId);
 
     (service as any).api = {
-      sendMessage: async (_chatId: string, text: string) => {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
         sent.push(text);
         return createFakeTelegramMessage(401 + sent.length, text);
       },
-      editMessageText: async (_chatId: string, messageId: number, text: string) => createFakeTelegramMessage(messageId, text)
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) => createFakeTelegramMessage(messageId, text)
     };
 
     installRunningAppServer(service, "thread-4", "turn-4");
@@ -763,13 +791,16 @@ test("inspect renders structured activity details while running and after comple
     });
 
     await (service as any).routeCommand("chat-1", "inspect", "");
-    assert.match(sent.at(-1) ?? "", /当前任务详情/u);
+    assert.match(sent.at(-1) ?? "", /Task details/u);
+    assert.match(sent.at(-1) ?? "", /Session: Project One/u);
+    assert.match(sent.at(-1) ?? "", /Project: Project One/u);
+    assert.match(sent.at(-1) ?? "", /Status: Running/u);
     assert.match(sent.at(-1) ?? "", /Searching docs/u);
     assert.match(sent.at(-1) ?? "", /pnpm test -> 26\/26 tests passed/u);
     assert.match(sent.at(-1) ?? "", /Updated src\/service\.ts to enforce Telegram cooldown/u);
-    assert.match(sent.at(-1) ?? "", /计划概览/u);
+    assert.match(sent.at(-1) ?? "", /Plan snapshot/u);
     assert.match(sent.at(-1) ?? "", /Collect protocol evidence \(completed\)/u);
-    assert.match(sent.at(-1) ?? "", /可选 commentary/u);
+    assert.match(sent.at(-1) ?? "", /Commentary snippets/u);
     assert.match(sent.at(-1) ?? "", /Checking event mapping against Telegram surface\./u);
     assert.doesNotMatch(sent.at(-1) ?? "", /private reasoning/u);
 
@@ -784,7 +815,9 @@ test("inspect renders structured activity details while running and after comple
     });
 
     await (service as any).routeCommand("chat-1", "inspect", "");
-    assert.match(sent.at(-1) ?? "", /最近有用进展：Done: All done\./u);
+    assert.match(sent.at(-1) ?? "", /Status: Completed/u);
+    assert.match(sent.at(-1) ?? "", /Latest milestone: Assistant reply: All done\./u);
+    assert.match(sent.at(-1) ?? "", /Final answer: ready/u);
   } finally {
     await cleanup();
   }
@@ -800,11 +833,11 @@ test("debug journal write failures do not break inspect or turn progress handlin
     store.setActiveSession("chat-1", session.sessionId);
 
     (service as any).api = {
-      sendMessage: async (_chatId: string, text: string) => {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
         sent.push(text);
         return createFakeTelegramMessage(500 + sent.length, text);
       },
-      editMessageText: async (_chatId: string, messageId: number, text: string) => {
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) => {
         edited.push(text);
         return createFakeTelegramMessage(messageId, text);
       }
@@ -812,7 +845,9 @@ test("debug journal write failures do not break inspect or turn progress handlin
 
     installRunningAppServer(service, "thread-5", "turn-5");
 
-    await (service as any).startRealTurn("chat-1", session, "Do the work");
+    await withMockedNow("2026-03-10T10:00:00.000Z", async () => {
+      await (service as any).startRealTurn("chat-1", session, "Do the work");
+    });
     (service as any).activeTurn.debugJournal = {
       filePath: "/tmp/failing.jsonl",
       append: async () => {
@@ -820,39 +855,52 @@ test("debug journal write failures do not break inspect or turn progress handlin
       }
     };
 
-    await (service as any).handleAppServerNotification("turn/started", {
-      threadId: "thread-5",
-      turnId: "turn-5"
+    await withMockedNow("2026-03-10T10:00:03.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/started", {
+        threadId: "thread-5",
+        turnId: "turn-5"
+      });
     });
-    await (service as any).handleAppServerNotification("item/started", {
-      threadId: "thread-5",
-      turnId: "turn-5",
-      item: { id: "item-1", type: "commandExecution", title: "pnpm test" }
+    await withMockedNow("2026-03-10T10:00:06.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/started", {
+        threadId: "thread-5",
+        turnId: "turn-5",
+        item: { id: "item-1", type: "commandExecution", title: "pnpm test" }
+      });
     });
 
     await (service as any).routeCommand("chat-1", "inspect", "");
 
-    assert.ok(edited.length >= 1);
-    assert.match(sent.at(-1) ?? "", /当前任务详情/u);
+    assert.ok(sent.some((text) => /^Runtime Status/u.test(text)));
+    assert.ok(sent.some((text) => /^Command/u.test(text)));
+    assert.ok(edited.some((text) => /State: Running/u.test(text)));
+    assert.match(sent.at(-1) ?? "", /Task details/u);
   } finally {
     await cleanup();
   }
 });
 
-test("default activity message uses high-value fallback copy and hides unreadable activity", () => {
+test("default activity message renders structured English state without leaking raw unreadable labels", () => {
   const rendered = buildTurnStatusCard(
     createActivityStatus({
       turnStatus: "starting",
       lastHighValueEventType: null,
       lastHighValueTitle: null,
       lastHighValueDetail: null,
-      activeItemType: "other",
-      activeItemLabel: "other"
-    })
+      activeItemType: null,
+      activeItemLabel: null
+    }),
+    {
+      sessionName: "Session Alpha",
+      projectName: "Project One"
+    }
   );
 
-  assert.doesNotMatch(rendered, /状态：|当前活动：|other/u);
-  assert.match(rendered, /等待有用进展/u);
+  assert.match(rendered, /Session: Session Alpha/u);
+  assert.match(rendered, /Project: Project One/u);
+  assert.match(rendered, /Status: Starting/u);
+  assert.match(rendered, /Current step: Waiting for first activity/u);
+  assert.doesNotMatch(rendered, /状态：|当前活动：|\n.*other/u);
 });
 
 test("flushRuntimeNotices retains notices after a failed delivery and retries later", async () => {
@@ -862,11 +910,13 @@ test("flushRuntimeNotices retains notices after a failed delivery and retries la
   try {
     seedRuntimeNotice(store, "chat-1");
     (service as any).api = {
-      sendMessage: async () => {
+      sendMessage: async (_chatId: string, text: string) => {
         attempts += 1;
         if (attempts === 1) {
           throw new Error("telegram down");
         }
+
+        return createFakeTelegramMessage(10 + attempts, text);
       }
     };
 

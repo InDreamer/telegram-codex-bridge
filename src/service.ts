@@ -21,9 +21,12 @@ import {
   buildNoNewProjectsMessage,
   buildProjectPickerMessage,
   buildProjectSelectedText,
+  buildRuntimeCommandCard,
+  buildRuntimeErrorCard,
+  buildRuntimePlanCard,
+  buildRuntimeStatusCard,
   buildSessionsText,
   buildStatusText,
-  buildTurnStatusCard,
   buildUnsupportedCommandText,
   buildWhereText,
   parseCallbackData,
@@ -40,11 +43,36 @@ interface RecentActivityEntry {
 }
 
 const MAX_RECENT_ACTIVITY_ENTRIES = 20;
+const RUNTIME_CARD_THROTTLE_MS = 2000;
+const FAILED_EDIT_RETRY_MS = 5000;
 
 interface PickerState {
   picker: ProjectPickerResult;
   awaitingManualProjectPath: boolean;
   resolved: boolean;
+}
+
+interface RuntimeCardMessageState {
+  surface: "status" | "plan" | "command" | "error";
+  key: string;
+  messageId: number;
+  lastRenderedText: string;
+  lastRenderedAtMs: number | null;
+  pendingText: string | null;
+  pendingReason: string | null;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+interface CommandCardState extends RuntimeCardMessageState {
+  itemId: string;
+  commandName: string;
+  latestSummary: string | null;
+  status: "running" | "completed" | "failed" | "interrupted";
+}
+
+interface ErrorCardState extends RuntimeCardMessageState {
+  title: string;
+  detail: string | null;
 }
 
 interface ActiveTurnState {
@@ -55,12 +83,14 @@ interface ActiveTurnState {
   finalMessage: string | null;
   tracker: ActivityTracker;
   debugJournal: DebugJournalWriter;
-  statusCard: {
-    messageId: number;
-    lastRenderedText: string;
-    editBlockedUntil: number | null;
-  } | null;
-  statusCardQueue: Promise<void>;
+  statusCard: RuntimeCardMessageState;
+  planCard: RuntimeCardMessageState | null;
+  latestProgressUnit: string | null;
+  latestPlanFingerprint: string | null;
+  commandCards: Map<string, CommandCardState>;
+  errorCards: ErrorCardState[];
+  nextErrorCardId: number;
+  surfaceQueue: Promise<void>;
 }
 
 type TelegramEditResult =
@@ -147,6 +177,9 @@ export class BridgeService {
   async stop(): Promise<void> {
     this.stopping = true;
     this.poller?.stop();
+    if (this.activeTurn) {
+      this.disposeRuntimeCards(this.activeTurn);
+    }
     await this.appServer?.stop();
     this.store?.close();
   }
@@ -807,8 +840,14 @@ export class BridgeService {
           threadId,
           turnId: turn.turn.id
         }),
-        statusCard: null,
-        statusCardQueue: Promise.resolve()
+        statusCard: createRuntimeCardMessageState("status", "status"),
+        planCard: null,
+        latestProgressUnit: null,
+        latestPlanFingerprint: null,
+        commandCards: new Map(),
+        errorCards: [],
+        nextErrorCardId: 1,
+        surfaceQueue: Promise.resolve()
       };
       const recentActivity: RecentActivityEntry = {
         tracker: this.activeTurn.tracker,
@@ -819,7 +858,10 @@ export class BridgeService {
         lastTurnId: turn.turn.id,
         lastTurnStatus: turn.turn.status
       });
-      await this.ensureStatusCard(this.activeTurn);
+      await this.syncRuntimeCards(this.activeTurn, null, null, this.activeTurn.tracker.getStatus(), {
+        force: true,
+        reason: "turn_initialized"
+      });
     } catch (error) {
       await this.logger.error("turn start failed", {
         sessionId: session.sessionId,
@@ -883,7 +925,22 @@ export class BridgeService {
 
     activeTurn.tracker.apply(classified);
     const after = activeTurn.tracker.getStatus();
-    await this.updateStatusCard(activeTurn, before, after);
+    const forceSurfaceSync = classified.kind === "turn_completed";
+    await this.logger.info("turn event processed", {
+      sessionId: activeTurn.sessionId,
+      chatId: activeTurn.chatId,
+      threadId: activeTurn.threadId,
+      turnId: activeTurn.turnId,
+      method,
+      classifiedKind: classified.kind,
+      forceSurfaceSync,
+      before: summarizeActivityStatus(before),
+      after: summarizeActivityStatus(after)
+    });
+    await this.syncRuntimeCards(activeTurn, classified, before, after, {
+      force: forceSurfaceSync,
+      reason: classified.kind
+    });
 
     if (classified.kind !== "turn_completed" || (classified.turnId && classified.turnId !== activeTurn.turnId)) {
       return;
@@ -902,6 +959,7 @@ export class BridgeService {
       }
 
       this.store.markSessionSuccessful(activeTurn.sessionId);
+      this.disposeRuntimeCards(activeTurn);
       await this.sendFinalAnswer(activeTurn.chatId, finalMessage);
       return;
     }
@@ -911,6 +969,7 @@ export class BridgeService {
         lastTurnId: activeTurn.turnId,
         lastTurnStatus: "interrupted"
       });
+      this.disposeRuntimeCards(activeTurn);
       return;
     }
 
@@ -919,6 +978,7 @@ export class BridgeService {
       lastTurnId: activeTurn.turnId,
       lastTurnStatus: classified.status
     });
+    this.disposeRuntimeCards(activeTurn);
     await this.safeSendMessage(activeTurn.chatId, "这次操作未成功完成，请重试。");
   }
 
@@ -965,7 +1025,14 @@ export class BridgeService {
       return;
     }
 
-    await this.safeSendMessage(chatId, buildInspectText(snapshot, { debugFilePath: activity.debugFilePath }));
+    await this.safeSendMessage(
+      chatId,
+      buildInspectText(snapshot, {
+        debugFilePath: activity.debugFilePath,
+        sessionName: activeSession.displayName,
+        projectName: activeSession.projectName
+      })
+    );
   }
 
   private async handleAppServerExit(error: Error): Promise<void> {
@@ -978,6 +1045,7 @@ export class BridgeService {
     if (this.activeTurn) {
       const runningTurn = this.activeTurn;
       this.activeTurn = null;
+      this.disposeRuntimeCards(runningTurn);
       this.store.updateSessionStatus(runningTurn.sessionId, "failed", {
         failureReason: "app_server_lost",
         lastTurnId: runningTurn.turnId,
@@ -1046,30 +1114,16 @@ export class BridgeService {
   private async sendFinalAnswer(chatId: string, finalMessage: string | null): Promise<void> {
     const text = finalMessage || "本次操作已完成，但没有可返回的最终答复。";
     const chunks = chunkFinalAnswer(text, 3000);
+    await this.logger.info("sending final answer", {
+      chatId,
+      chunkCount: chunks.length,
+      hasFinalMessage: finalMessage !== null,
+      preview: summarizeTextPreview(text)
+    });
 
     for (const chunk of chunks) {
       await this.safeSendMessage(chatId, chunk);
     }
-  }
-
-  private async ensureStatusCard(activeTurn: ActiveTurnState): Promise<void> {
-    await this.runStatusCardOperation(activeTurn, async () => {
-      if (activeTurn.statusCard) {
-        return;
-      }
-
-      const renderedText = buildTurnStatusCard(activeTurn.tracker.getStatus());
-      const sent = await this.safeSendMessageResult(activeTurn.chatId, renderedText);
-      if (!sent) {
-        return;
-      }
-
-      activeTurn.statusCard = {
-        messageId: sent.message_id,
-        lastRenderedText: renderedText,
-        editBlockedUntil: null
-      };
-    });
   }
 
   private async appendDebugJournal(activeTurn: ActiveTurnState, method: string, params: unknown): Promise<void> {
@@ -1092,95 +1146,404 @@ export class BridgeService {
     }
   }
 
-  private async updateStatusCard(
+  private async syncRuntimeCards(
     activeTurn: ActiveTurnState,
-    previousStatus: ActivityStatus,
-    nextStatus: ActivityStatus
+    classified: ReturnType<typeof classifyNotification> | null,
+    previousStatus: ActivityStatus | null,
+    nextStatus: ActivityStatus,
+    options: {
+      force?: boolean;
+      reason: string;
+    }
   ): Promise<void> {
-    await this.runStatusCardOperation(activeTurn, async () => {
-      const renderedText = buildTurnStatusCard(nextStatus);
+    const inspect = activeTurn.tracker.getInspectSnapshot();
+    const context = this.getRuntimeCardContext(activeTurn.sessionId);
 
-      if (!this.shouldUpdateStatusCard(activeTurn, previousStatus, nextStatus, renderedText)) {
+    const latestProgressUnit = inspect.commentarySnippets.at(-1) ?? null;
+    const progressUnitChanged = latestProgressUnit !== activeTurn.latestProgressUnit;
+    if (progressUnitChanged) {
+      activeTurn.latestProgressUnit = latestProgressUnit;
+    }
+
+    const statusChanged = previousStatus === null ||
+      previousStatus.turnStatus !== nextStatus.turnStatus ||
+      previousStatus.threadBlockedReason !== nextStatus.threadBlockedReason ||
+      progressUnitChanged ||
+      options.force;
+    if (statusChanged) {
+      await this.requestRuntimeCardRender(
+        activeTurn,
+        activeTurn.statusCard,
+        buildRuntimeStatusCard({
+          ...context,
+          state: formatVisibleRuntimeState(nextStatus),
+          blockedReason: formatRuntimeBlockedReason(nextStatus.threadBlockedReason),
+          progressText: selectStatusProgressText(nextStatus, activeTurn.latestProgressUnit)
+        }),
+        options.force
+          ? { force: true, reason: options.reason }
+          : { reason: options.reason }
+      );
+    }
+
+    const planFingerprint = inspect.planSnapshot.join("\n");
+    if (inspect.planSnapshot.length > 0) {
+      if (!activeTurn.planCard) {
+        activeTurn.planCard = createRuntimeCardMessageState("plan", "plan");
+      }
+      const planChanged = planFingerprint !== activeTurn.latestPlanFingerprint;
+      if (planChanged) {
+        activeTurn.latestPlanFingerprint = planFingerprint;
+      }
+      if (planChanged || options.force) {
+        await this.requestRuntimeCardRender(
+          activeTurn,
+          activeTurn.planCard,
+          buildRuntimePlanCard(context, inspect.planSnapshot),
+          options.force
+            ? { force: true, reason: planChanged ? "plan_changed" : options.reason }
+            : { reason: planChanged ? "plan_changed" : options.reason }
+        );
+      }
+    }
+
+    if (classified?.kind === "item_started" && classified.itemType === "commandExecution" && classified.itemId) {
+      const commandCard = this.getOrCreateCommandCard(activeTurn, classified.itemId, classified.label ?? "command");
+      commandCard.commandName = normalizeCommandName(classified.label ?? commandCard.commandName);
+      commandCard.status = "running";
+      await this.requestRuntimeCardRender(
+        activeTurn,
+        commandCard,
+        buildRuntimeCommandCard({
+          ...context,
+          commandName: commandCard.commandName,
+          state: formatRuntimeCommandState(commandCard.status),
+          latestSummary: commandCard.latestSummary
+        }),
+        {
+          force: true,
+          reason: "command_started"
+        }
+      );
+    }
+
+    if (classified?.kind === "command_output" && classified.itemId) {
+      const parsed = summarizeRuntimeCommandOutput(classified.text);
+      const commandCard = this.getOrCreateCommandCard(activeTurn, classified.itemId, parsed.command);
+      commandCard.commandName = normalizeCommandName(
+        commandCard.commandName === "command" ? parsed.command : commandCard.commandName
+      );
+      commandCard.latestSummary = parsed.detail;
+      await this.requestRuntimeCardRender(
+        activeTurn,
+        commandCard,
+        buildRuntimeCommandCard({
+          ...context,
+          commandName: commandCard.commandName,
+          state: formatRuntimeCommandState(commandCard.status),
+          latestSummary: commandCard.latestSummary
+        }),
+        {
+          force: false,
+          reason: "command_output"
+        }
+      );
+    }
+
+    if (classified?.kind === "item_completed" && classified.itemType === "commandExecution" && classified.itemId) {
+      const commandCard = activeTurn.commandCards.get(classified.itemId);
+      if (commandCard) {
+        commandCard.status = nextStatus.turnStatus === "interrupted" ? "interrupted" : "completed";
+        await this.requestRuntimeCardRender(
+          activeTurn,
+          commandCard,
+          buildRuntimeCommandCard({
+            ...context,
+            commandName: commandCard.commandName,
+            state: formatRuntimeCommandState(commandCard.status),
+            latestSummary: commandCard.latestSummary
+          }),
+          {
+            force: true,
+            reason: "command_completed"
+          }
+        );
+      }
+    }
+
+    if (classified?.kind === "error") {
+      const errorCard = createRuntimeCardMessageState("error", `error-${activeTurn.nextErrorCardId++}`) as ErrorCardState;
+      errorCard.title = "Runtime error";
+      errorCard.detail = cleanRuntimeErrorMessage(classified.message);
+      activeTurn.errorCards.push(errorCard);
+      await this.requestRuntimeCardRender(
+        activeTurn,
+        errorCard,
+        buildRuntimeErrorCard({
+          ...context,
+          title: errorCard.title,
+          detail: errorCard.detail
+        }),
+        {
+          force: true,
+          reason: "runtime_error"
+        }
+      );
+    }
+
+    if (classified?.kind === "turn_completed") {
+      for (const commandCard of activeTurn.commandCards.values()) {
+        if (commandCard.status !== "running") {
+          continue;
+        }
+        commandCard.status = classified.status === "interrupted"
+          ? "interrupted"
+          : classified.status === "completed"
+            ? "completed"
+            : "failed";
+        await this.requestRuntimeCardRender(
+          activeTurn,
+          commandCard,
+          buildRuntimeCommandCard({
+            ...context,
+            commandName: commandCard.commandName,
+            state: formatRuntimeCommandState(commandCard.status),
+            latestSummary: commandCard.latestSummary
+          }),
+          {
+            force: true,
+            reason: "turn_completed"
+          }
+        );
+      }
+
+      if (classified.status === "failed" && activeTurn.errorCards.length === 0) {
+        const errorCard = createRuntimeCardMessageState("error", `error-${activeTurn.nextErrorCardId++}`) as ErrorCardState;
+        errorCard.title = "Turn failed";
+        errorCard.detail = "This operation did not complete successfully.";
+        activeTurn.errorCards.push(errorCard);
+        await this.requestRuntimeCardRender(
+          activeTurn,
+          errorCard,
+          buildRuntimeErrorCard({
+            ...context,
+            title: errorCard.title,
+            detail: errorCard.detail
+          }),
+          {
+            force: true,
+            reason: "turn_failed"
+          }
+        );
+      }
+    }
+  }
+
+  private async requestRuntimeCardRender(
+    activeTurn: ActiveTurnState,
+    surface: RuntimeCardMessageState,
+    text: string,
+    options: {
+      force?: boolean;
+      reason: string;
+    }
+  ): Promise<void> {
+    const pendingChanged = surface.pendingText !== text;
+    surface.pendingText = text;
+    surface.pendingReason = options.reason;
+
+    if (!pendingChanged && text === surface.lastRenderedText) {
+      await this.logger.info("runtime card update skipped", {
+        sessionId: activeTurn.sessionId,
+        turnId: activeTurn.turnId,
+        surface: surface.surface,
+        key: surface.key,
+        reason: "text_unchanged"
+      });
+      return;
+    }
+
+    const now = Date.now();
+    const throttleMs = options.force || surface.messageId === 0 ? 0 : getRuntimeCardThrottleMs(surface.surface);
+    const lastRenderedAtMs = surface.lastRenderedAtMs ?? null;
+    const remainingMs = options.force || lastRenderedAtMs === null
+      ? 0
+      : Math.max(0, lastRenderedAtMs + throttleMs - now);
+
+    if (remainingMs > 0) {
+      this.scheduleRuntimeCardRetry(activeTurn, surface, remainingMs, options.reason);
+      await this.logger.info("runtime card update scheduled", {
+        sessionId: activeTurn.sessionId,
+        turnId: activeTurn.turnId,
+        surface: surface.surface,
+        key: surface.key,
+        reason: options.reason,
+        remainingMs
+      });
+      return;
+    }
+
+    await this.flushRuntimeCardRender(activeTurn, surface);
+  }
+
+  private scheduleRuntimeCardRetry(
+    activeTurn: ActiveTurnState,
+    surface: RuntimeCardMessageState,
+    delayMs: number,
+    reason: string
+  ): void {
+    this.clearRuntimeCardTimer(surface);
+    surface.timer = setTimeout(() => {
+      surface.timer = null;
+      void this.logger.info("runtime card retry fired", {
+        sessionId: activeTurn.sessionId,
+        turnId: activeTurn.turnId,
+        surface: surface.surface,
+        key: surface.key,
+        reason
+      });
+      void this.flushRuntimeCardRender(activeTurn, surface);
+    }, delayMs);
+    surface.timer.unref?.();
+  }
+
+  private async flushRuntimeCardRender(
+    activeTurn: ActiveTurnState,
+    surface: RuntimeCardMessageState
+  ): Promise<void> {
+    await this.runRuntimeCardOperation(activeTurn, async () => {
+      const text = surface.pendingText;
+      const reason = surface.pendingReason;
+      if (!text) {
         return;
       }
 
-      if (!activeTurn.statusCard) {
-        const sent = await this.safeSendMessageResult(activeTurn.chatId, renderedText);
+      if (text === surface.lastRenderedText) {
+        surface.pendingText = null;
+        surface.pendingReason = null;
+        await this.logger.info("runtime card update skipped", {
+          sessionId: activeTurn.sessionId,
+          turnId: activeTurn.turnId,
+          surface: surface.surface,
+          key: surface.key,
+          reason: "render_unchanged"
+        });
+        return;
+      }
+
+      surface.pendingText = null;
+      surface.pendingReason = null;
+
+      if (surface.messageId === 0) {
+        const sent = await this.safeSendMessageResult(activeTurn.chatId, text);
         if (!sent) {
+          surface.pendingText = text;
+          surface.pendingReason = reason;
           return;
         }
-
-        activeTurn.statusCard = {
-          messageId: sent.message_id,
-          lastRenderedText: renderedText,
-          editBlockedUntil: null
-        };
+        surface.messageId = sent.message_id;
+        surface.lastRenderedText = text;
+        surface.lastRenderedAtMs = Date.now();
+        await this.logger.info("runtime card sent", {
+          sessionId: activeTurn.sessionId,
+          turnId: activeTurn.turnId,
+          surface: surface.surface,
+          key: surface.key,
+          messageId: surface.messageId,
+          reason,
+          preview: summarizeTextPreview(text)
+        });
         return;
       }
 
-      const editResult = await this.safeEditMessageText(activeTurn.chatId, activeTurn.statusCard.messageId, renderedText);
+      const editResult = await this.safeEditMessageText(activeTurn.chatId, surface.messageId, text);
+      await this.logger.info("runtime card edit attempted", {
+        sessionId: activeTurn.sessionId,
+        turnId: activeTurn.turnId,
+        surface: surface.surface,
+        key: surface.key,
+        messageId: surface.messageId,
+        outcome: editResult.outcome,
+        reason,
+        preview: summarizeTextPreview(text),
+        retryAfterMs: editResult.outcome === "rate_limited" ? editResult.retryAfterMs : undefined
+      });
+
       if (editResult.outcome === "edited") {
-        activeTurn.statusCard.lastRenderedText = renderedText;
-        activeTurn.statusCard.editBlockedUntil = null;
+        surface.lastRenderedText = text;
+        surface.lastRenderedAtMs = Date.now();
         return;
       }
 
-      if (editResult.outcome === "rate_limited") {
-        activeTurn.statusCard.editBlockedUntil = Date.now() + editResult.retryAfterMs;
-        return;
-      }
-
-      const fallback = await this.safeSendMessageResult(activeTurn.chatId, renderedText);
-      if (!fallback) {
-        return;
-      }
-
-      activeTurn.statusCard = {
-        messageId: fallback.message_id,
-        lastRenderedText: renderedText,
-        editBlockedUntil: null
-      };
+      surface.pendingText = text;
+      surface.pendingReason = reason;
+      const retryMs = editResult.outcome === "rate_limited" ? editResult.retryAfterMs : FAILED_EDIT_RETRY_MS;
+      this.scheduleRuntimeCardRetry(activeTurn, surface, retryMs, reason ?? "edit_retry");
     });
   }
 
-  private async runStatusCardOperation(activeTurn: ActiveTurnState, operation: () => Promise<void>): Promise<void> {
-    const queuedOperation = activeTurn.statusCardQueue.then(operation, operation);
-    activeTurn.statusCardQueue = queuedOperation.catch(() => {});
+  private async runRuntimeCardOperation(activeTurn: ActiveTurnState, operation: () => Promise<void>): Promise<void> {
+    const queuedOperation = activeTurn.surfaceQueue.then(operation, operation);
+    activeTurn.surfaceQueue = queuedOperation.catch(() => {});
     await queuedOperation;
   }
 
-  private shouldUpdateStatusCard(
+  private getOrCreateCommandCard(
     activeTurn: ActiveTurnState,
-    previousStatus: ActivityStatus,
-    nextStatus: ActivityStatus,
-    renderedText: string
-  ): boolean {
-    if (!activeTurn.statusCard) {
-      return true;
+    itemId: string,
+    label: string
+  ): CommandCardState {
+    const existing = activeTurn.commandCards.get(itemId);
+    if (existing) {
+      return existing;
     }
 
-    if (renderedText === activeTurn.statusCard.lastRenderedText) {
-      return false;
+    const created = createRuntimeCardMessageState("command", `command-${itemId}`) as CommandCardState;
+    created.itemId = itemId;
+    created.commandName = normalizeCommandName(label);
+    created.latestSummary = null;
+    created.status = "running";
+    activeTurn.commandCards.set(itemId, created);
+    return created;
+  }
+
+  private clearRuntimeCardTimer(surface: RuntimeCardMessageState): void {
+    if (!surface.timer) {
+      return;
     }
 
-    if (
-      activeTurn.statusCard.editBlockedUntil !== null &&
-      Date.now() < activeTurn.statusCard.editBlockedUntil
-    ) {
-      return false;
+    clearTimeout(surface.timer);
+    surface.timer = null;
+  }
+
+  private disposeRuntimeCards(activeTurn: ActiveTurnState): void {
+    this.clearRuntimeCardTimer(activeTurn.statusCard);
+    if (activeTurn.planCard) {
+      this.clearRuntimeCardTimer(activeTurn.planCard);
     }
 
-    if (
-      previousStatus.turnStatus !== nextStatus.turnStatus ||
-      previousStatus.threadBlockedReason !== nextStatus.threadBlockedReason ||
-      previousStatus.lastHighValueEventType !== nextStatus.lastHighValueEventType ||
-      previousStatus.lastHighValueTitle !== nextStatus.lastHighValueTitle ||
-      previousStatus.lastHighValueDetail !== nextStatus.lastHighValueDetail
-    ) {
-      return true;
+    for (const commandCard of activeTurn.commandCards.values()) {
+      this.clearRuntimeCardTimer(commandCard);
     }
 
-    return false;
+    for (const errorCard of activeTurn.errorCards) {
+      this.clearRuntimeCardTimer(errorCard);
+    }
+  }
+
+  private getRuntimeCardContext(sessionId: string): {
+    sessionName: string | null;
+    projectName: string | null;
+  } {
+    const session = this.store?.getSessionById(sessionId);
+    if (!session) {
+      return { sessionName: null, projectName: null };
+    }
+
+    return {
+      sessionName: session.displayName ?? null,
+      projectName: session.projectName ?? null
+    };
   }
 
   private async safeSendMessage(
@@ -1201,7 +1564,14 @@ export class BridgeService {
     }
 
     try {
-      return await this.api.sendMessage(chatId, text, replyMarkup ? { replyMarkup } : undefined);
+      const sent = await this.api.sendMessage(chatId, text, replyMarkup ? { replyMarkup } : undefined);
+      await this.logger.info("telegram message sent", {
+        chatId,
+        messageId: sent.message_id,
+        replyMarkup: replyMarkup ? "inline_keyboard" : null,
+        preview: summarizeTextPreview(text)
+      });
+      return sent;
     } catch (error) {
       await this.logger.error("telegram message delivery failed", { chatId, error: `${error}` });
       return null;
@@ -1215,9 +1585,64 @@ export class BridgeService {
 
     try {
       await this.api.editMessageText(chatId, messageId, text);
+      await this.logger.info("telegram message edited", {
+        chatId,
+        messageId,
+        preview: summarizeTextPreview(text)
+      });
       return { outcome: "edited" };
     } catch (error) {
       await this.logger.warn("telegram message edit failed", { chatId, messageId, error: `${error}` });
+      const retryAfterMs = getTelegramRetryAfterMs(error);
+      if (retryAfterMs !== null) {
+        return { outcome: "rate_limited", retryAfterMs };
+      }
+
+      return { outcome: "failed" };
+    }
+  }
+
+  private async safeSendHtmlMessageResult(
+    chatId: string,
+    html: string
+  ): Promise<TelegramMessage | null> {
+    if (!this.api) {
+      return null;
+    }
+
+    try {
+      const sent = await this.api.sendMessage(chatId, html, { parseMode: "HTML" });
+      await this.logger.info("telegram html message sent", {
+        chatId,
+        messageId: sent.message_id,
+        preview: summarizeTextPreview(html)
+      });
+      return sent;
+    } catch (error) {
+      await this.logger.error("telegram HTML message delivery failed", { chatId, error: `${error}` });
+      return null;
+    }
+  }
+
+  private async safeEditHtmlMessageText(
+    chatId: string,
+    messageId: number,
+    html: string
+  ): Promise<TelegramEditResult> {
+    if (!this.api?.editMessageText) {
+      return { outcome: "failed" };
+    }
+
+    try {
+      await this.api.editMessageText(chatId, messageId, html, { parseMode: "HTML" });
+      await this.logger.info("telegram html message edited", {
+        chatId,
+        messageId,
+        preview: summarizeTextPreview(html)
+      });
+      return { outcome: "edited" };
+    } catch (error) {
+      await this.logger.warn("telegram HTML message edit failed", { chatId, messageId, error: `${error}` });
       const retryAfterMs = getTelegramRetryAfterMs(error);
       if (retryAfterMs !== null) {
         return { outcome: "rate_limited", retryAfterMs };
@@ -1297,6 +1722,155 @@ function getTelegramRetryAfterMs(error: unknown): number | null {
   }
 
   return null;
+}
+
+function summarizeActivityStatus(status: ActivityStatus): Record<string, unknown> {
+  return {
+    turnStatus: status.turnStatus,
+    activeItemType: status.activeItemType,
+    activeItemLabel: status.activeItemLabel,
+    latestProgress: status.latestProgress,
+    recentStatusUpdates: status.recentStatusUpdates,
+    blockedReason: status.threadBlockedReason,
+    finalMessageAvailable: status.finalMessageAvailable
+  };
+}
+
+function summarizeTextPreview(text: string, limit = 160): string {
+  const normalized = text.replace(/\s+/gu, " ").trim();
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  return `${normalized.slice(0, limit)}...`;
+}
+
+function createRuntimeCardMessageState(
+  surface: RuntimeCardMessageState["surface"],
+  key: string
+): RuntimeCardMessageState {
+  return {
+    surface,
+    key,
+    messageId: 0,
+    lastRenderedText: "",
+    lastRenderedAtMs: null,
+    pendingText: null,
+    pendingReason: null,
+    timer: null
+  };
+}
+
+function getRuntimeCardThrottleMs(_surface: RuntimeCardMessageState["surface"]): number {
+  return RUNTIME_CARD_THROTTLE_MS;
+}
+
+function formatVisibleRuntimeState(status: ActivityStatus): string {
+  if (status.latestProgress && /^Reconnecting/i.test(status.latestProgress)) {
+    return "Reconnecting";
+  }
+
+  switch (status.turnStatus) {
+    case "starting":
+      return "Starting";
+    case "running":
+      return "Running";
+    case "blocked":
+      return "Blocked";
+    case "completed":
+      return "Completed";
+    case "failed":
+      return "Failed";
+    case "interrupted":
+      return "Interrupted";
+    case "idle":
+      return "Idle";
+    default:
+      return "Unknown";
+  }
+}
+
+function formatRuntimeBlockedReason(reason: ActivityStatus["threadBlockedReason"]): string | null {
+  switch (reason) {
+    case "waitingOnApproval":
+      return "approval";
+    case "waitingOnUserInput":
+      return "user input";
+    default:
+      return null;
+  }
+}
+
+function selectStatusProgressText(status: ActivityStatus, latestProgressUnit: string | null): string | null {
+  if (latestProgressUnit) {
+    return latestProgressUnit;
+  }
+
+  if (status.latestProgress && /^Reconnecting/i.test(status.latestProgress)) {
+    return status.latestProgress;
+  }
+
+  if (status.lastHighValueEventType === "found" && status.lastHighValueDetail) {
+    return status.lastHighValueDetail;
+  }
+
+  return null;
+}
+
+function normalizeCommandName(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : "command";
+}
+
+function summarizeRuntimeCommandOutput(text: string | null): { command: string; detail: string | null } {
+  if (!text) {
+    return {
+      command: "command",
+      detail: null
+    };
+  }
+
+  const lines = text
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  if (lines.length === 0) {
+    return {
+      command: "command",
+      detail: null
+    };
+  }
+
+  const command = normalizeCommandName(lines[0]!.replace(/^[>$#]\s*/u, ""));
+  const detailCandidate = lines.at(-1) ?? null;
+  const detail = detailCandidate && detailCandidate !== lines[0]
+    ? cleanRuntimeErrorMessage(detailCandidate)
+    : null;
+
+  return {
+    command,
+    detail
+  };
+}
+
+function formatRuntimeCommandState(status: CommandCardState["status"]): string {
+  switch (status) {
+    case "running":
+      return "Running";
+    case "completed":
+      return "Completed";
+    case "failed":
+      return "Failed";
+    case "interrupted":
+      return "Interrupted";
+    default:
+      return "Unknown";
+  }
+}
+
+function cleanRuntimeErrorMessage(message: string | null | undefined): string {
+  const normalized = `${message ?? "unknown error"}`.replace(/\s+/gu, " ").trim();
+  return normalized.length > 0 ? normalized.slice(0, 240) : "unknown error";
 }
 
 async function extractFinalAnswerFromHistory(

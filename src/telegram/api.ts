@@ -104,20 +104,30 @@ export class TelegramApi {
     text: string,
     options?: {
       replyMarkup?: TelegramInlineKeyboardMarkup;
+      parseMode?: "HTML";
     }
   ): Promise<TelegramMessage> {
     return await this.call<TelegramMessage>("sendMessage", {
       chat_id: chatId,
       text,
-      reply_markup: options?.replyMarkup
+      reply_markup: options?.replyMarkup,
+      parse_mode: options?.parseMode
     }, 20_000);
   }
 
-  async editMessageText(chatId: string, messageId: number, text: string): Promise<TelegramMessage> {
+  async editMessageText(
+    chatId: string,
+    messageId: number,
+    text: string,
+    options?: {
+      parseMode?: "HTML";
+    }
+  ): Promise<TelegramMessage> {
     return await this.call<TelegramMessage>("editMessageText", {
       chat_id: chatId,
       message_id: messageId,
-      text
+      text,
+      parse_mode: options?.parseMode
     }, 20_000);
   }
 

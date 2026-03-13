@@ -36,18 +36,26 @@ Integration assumptions:
 - one app-server child per bridge process
 - one JSON-RPC request id namespace per bridge process
 - thread id is the durable foreign key from bridge session to Codex conversation
-- turn completion is the only point where Telegram receives the final answer
+- Telegram may receive bridge-owned runtime cards before turn completion, but the final answer is still sent only after completion
 - v1 does not depend on approval-request surfaces
 
-## Final-Answer Extraction Rule
+## Runtime Surface Reduction And Final-Answer Rule
 
-The bridge must not forward intermediate tool events.
+The bridge must not mirror the raw runtime notification stream into Telegram.
 
 It should:
 - listen to the mixed runtime notification stream
-- ignore reasoning, tool progress, and intermediate logs
+- reduce that stream into compact user-facing runtime surfaces
+- keep one status card for the running turn
+- create an optional plan card when plan state becomes available
+- create one command card per `commandExecution` item
+- create separate error cards when runtime failures surface
+- render runtime cards as plain-text Telegram messages rather than HTML log blocks
+- keep reasoning deltas and raw token fragments out of the normal Telegram chat flow
+- surface commentary only after it forms a complete progress unit
+- retain richer structured detail for `/inspect` and the on-disk debug journal
 - capture the final assistant message emitted before `turn/completed`
-- send only that final assistant message to Telegram
+- send the final assistant message as a separate Telegram message after turn completion
 
 If the turn completes successfully but no final assistant message is available, send:
 - `本次操作已完成，但没有可返回的最终答复。`
@@ -250,12 +258,13 @@ System behavior:
 
 User impact:
 - callback acknowledgements may fail without a guaranteed user-visible retry message
-- if Telegram refuses a running-turn status-card edit, the bridge should fall back to sending a replacement status message
+- if Telegram refuses a runtime-card edit or rate-limits it, the visible update may land later on the same message
 
 System behavior:
 - process the downstream callback action independently of the acknowledgement result
 - log callback acknowledgement failures locally
-- if Telegram refuses a running-turn status-card edit, send a replacement status message
+- retry the same runtime-card message after cooldown or backoff
+- do not create replacement-message spam for edit failures or rate limits
 - do not assume delivery succeeded unless Telegram confirms it
 
 ### `bridge restart during running turn`

@@ -180,11 +180,14 @@ Shows a structured activity snapshot for the active session.
 
 Responses:
 - with activity data:
-  - turn status
-  - current active item type
-  - latest progress summary if available
+  - session and project identity
+  - turn status, blocked state, current step, and step elapsed time when available
+  - recent updates and latest milestone when available
   - recent activity timeline
   - recent command, file-change, MCP, and web-search summaries when available
+  - plan snapshot
+  - best-effort commentary snippets
+  - debug file path note when available
 - with no activity data: `当前没有可用的活动详情。`
 
 ### `/interrupt`
@@ -220,19 +223,27 @@ Rules:
 ## Message And Turn Rules
 
 Final-answer handling:
-- send only the final assistant answer to Telegram
+- send the final assistant answer as a separate Telegram message after the turn finishes
 - if the answer exceeds safe size, split into 3000 UTF-8 character chunks
 - prefix later chunks with `(2/3)` style markers
 - never truncate silently
+- if no final assistant answer is available after a successful turn, send `本次操作已完成，但没有可返回的最终答复。`
 
 Edit versus new message:
-- edit existing messages only for the bridge-owned running-turn status card
+- edit existing messages only for bridge-owned runtime cards
 - send new messages for final answers, status views, refreshed pickers, manual-path flows, and rename prompts
+- send a new message when a new runtime card first appears, including plan, command, and error cards
 
 While a turn is running:
 - keep one bridge-owned status card in the chat
-- update that card when the turn status or highest-value activity changes
-- if Telegram refuses an edit, fall back to sending a replacement status message
+- current runtime-card titles are `Runtime Status`, `Plan`, `Command`, and `Error`
+- create a separate plan card when plan state becomes available
+- create a separate command card for each `commandExecution` item
+- create separate error cards for runtime failures
+- update the status card only when the visible turn state changes or when a complete progress unit is available
+- keep fragmented agent-message deltas out of the default chat until they form a complete snippet
+- never expose raw reasoning deltas in the default chat flow
+- if Telegram refuses an edit or rate-limits it, retry the same card later instead of sending replacement-message spam
 - let `/inspect` return a snapshot on demand instead of pushing extra detail automatically
 
 While a turn is running:

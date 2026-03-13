@@ -1,5 +1,28 @@
 import type { FailureReason } from "../types.js";
 
+export type StreamBlockKind =
+  | "commentary"
+  | "tool_summary"
+  | "command"
+  | "file_change"
+  | "plan"
+  | "status"
+  | "error"
+  | "completion";
+
+export interface StreamBlock {
+  kind: StreamBlockKind;
+  text: string;
+  detail?: string | null;
+  durationSec?: number | null;
+}
+
+export interface StreamSnapshot {
+  blocks: StreamBlock[];
+  turnStartedAt: string | null;
+  activeStatusLine: string | null;
+}
+
 export type TurnStatus =
   | "idle"
   | "starting"
@@ -43,6 +66,7 @@ export interface ActivityStatus {
   lastHighValueTitle: string | null;
   lastHighValueDetail: string | null;
   latestProgress: string | null;
+  recentStatusUpdates: string[];
   threadBlockedReason: ThreadBlockedReason;
   finalMessageAvailable: boolean;
   inspectAvailable: boolean;

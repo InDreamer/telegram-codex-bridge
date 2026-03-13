@@ -5,12 +5,16 @@ import type {
   ActivityStatus,
   ClassifiedNotification,
   InspectSnapshot,
+  StreamBlock,
+  StreamSnapshot,
   ThreadBlockedReason,
   TurnStatus
 } from "./types.js";
 
 const DEFAULT_TIMELINE_LIMIT = 100;
 const SUMMARY_LIMIT = 5;
+const STATUS_UPDATE_LIMIT = 3;
+const UNKNOWN_AGENT_MESSAGE_ITEM = "__unknown_agent_message__";
 
 interface ActivityTrackerOptions {
   threadId: string;
@@ -30,6 +34,7 @@ interface ActivityTrackerState {
   lastHighValueTitle: string | null;
   lastHighValueDetail: string | null;
   latestProgress: string | null;
+  recentStatusUpdates: string[];
   threadBlockedReason: ThreadBlockedReason;
   finalMessageAvailable: boolean;
   inspectAvailable: boolean;
@@ -46,7 +51,11 @@ export class ActivityTracker {
   private readonly recentWebSearches: string[] = [];
   private readonly planSnapshot: string[] = [];
   private readonly commentarySnippets: string[] = [];
+  private readonly agentMessageBuffers = new Map<string, string>();
   private readonly state: ActivityTrackerState;
+  private readonly streamBlocks: StreamBlock[] = [];
+  private turnStartedAt: string | null = null;
+  private lastStreamToolSummary: string | null = null;
 
   constructor(
     private readonly options: ActivityTrackerOptions
@@ -63,6 +72,7 @@ export class ActivityTracker {
       lastHighValueTitle: null,
       lastHighValueDetail: null,
       latestProgress: null,
+      recentStatusUpdates: [],
       threadBlockedReason: null,
       finalMessageAvailable: false,
       inspectAvailable: false,
@@ -81,7 +91,10 @@ export class ActivityTracker {
         this.state.turnStatus = "running";
         this.state.errorState = null;
         this.state.lastActivityAt = receivedAt;
+        this.turnStartedAt = receivedAt;
         this.pushTransition(receivedAt, "turn", "turn started");
+        this.pushStatusUpdate("Turn started");
+        this.pushStreamBlock({ kind: "status", text: "Running" });
         return;
 
       case "turn_completed":
@@ -91,8 +104,10 @@ export class ActivityTracker {
         this.state.activeItemLabel = null;
         this.state.currentItemStartedAt = null;
         this.state.latestProgress = null;
+        this.state.recentStatusUpdates = [];
         this.state.threadBlockedReason = null;
         this.state.lastActivityAt = receivedAt;
+        this.agentMessageBuffers.clear();
         if (this.state.turnStatus === "failed" && this.state.errorState === null) {
           this.state.errorState = "turn_failed";
         }
@@ -100,6 +115,18 @@ export class ActivityTracker {
           this.setHighValueEvent("done", "Done: completed", "completed");
         }
         this.pushTransition(receivedAt, "turn", `turn completed (${notification.status})`);
+        if (this.state.turnStatus === "completed" && !this.state.finalMessageAvailable) {
+          this.pushStatusUpdate("Turn completed");
+        }
+        {
+          const durationSec = this.turnStartedAt ? computeDurationSec(this.turnStartedAt, receivedAt) : null;
+          const statusLabel = formatCompletionLabel(this.state.turnStatus);
+          this.pushStreamBlock({
+            kind: "completion",
+            text: statusLabel,
+            durationSec
+          });
+        }
         return;
 
       case "thread_status_changed": {
@@ -110,6 +137,21 @@ export class ActivityTracker {
         if (blockedReason || notification.status === "blocked") {
           this.state.turnStatus = "blocked";
           this.setHighValueEvent("blocked", `Blocked: ${blockedReason ?? "thread blocked"}`);
+          this.pushStatusUpdate(
+            blockedReason === "waitingOnApproval"
+              ? "Waiting for approval"
+              : blockedReason === "waitingOnUserInput"
+                ? "Waiting for user input"
+                : "Thread blocked"
+          );
+          this.pushStreamBlock({
+            kind: "status",
+            text: blockedReason === "waitingOnApproval"
+              ? "Blocked: waiting for approval"
+              : blockedReason === "waitingOnUserInput"
+                ? "Blocked: waiting for user input"
+                : "Blocked: thread blocked"
+          });
         } else if (!isTerminalStatus(this.state.turnStatus)) {
           this.state.turnStatus = "running";
         }
@@ -141,18 +183,22 @@ export class ActivityTracker {
         if (activeItemType === "commandExecution") {
           const commandLabel = cleanSummary(this.state.activeItemLabel ?? "command");
           this.setHighValueEvent("ran_cmd", `Ran cmd: ${commandLabel}`);
+          if (commandLabel !== "command") {
+            this.pushStatusUpdate(`Starting command: ${commandLabel}`);
+          }
         }
         return;
       }
 
       case "item_completed": {
         const completedItemType = mapActiveItemType(notification.itemType);
+        const completedLabel = buildItemLabel(completedItemType, notification.itemType);
         if (!notification.itemId || notification.itemId === this.state.activeItemId) {
           this.state.activeItemType = null;
           this.state.activeItemId = null;
           this.state.activeItemLabel = null;
           this.state.currentItemStartedAt = null;
-          this.state.latestProgress = null;
+          this.state.latestProgress = completedItemType === "agentMessage" ? null : `${completedLabel} completed`;
         }
 
         this.state.inspectAvailable = true;
@@ -161,8 +207,12 @@ export class ActivityTracker {
           this.state.turnStatus = "running";
         }
 
-        const summary = `${buildItemLabel(completedItemType, notification.itemType)} completed`;
+        const summary = `${completedLabel} completed`;
         this.pushTransition(receivedAt, "item", summary);
+        if (completedItemType === "agentMessage") {
+          this.flushAgentMessageUpdate(notification.itemId);
+          this.removeAgentMessageBuffer(notification.itemId);
+        }
         if (completedItemType === "webSearch") {
           this.pushUniqueSummary(this.recentWebSearches, summary);
         }
@@ -183,10 +233,16 @@ export class ActivityTracker {
             const summary = cleanSummary(notification.message);
             this.pushUniqueSummary(this.recentMcpSummaries, summary);
             this.setHighValueEvent("found", `Found: ${summary}`);
+            this.pushStatusUpdate(summary);
+            this.pushDeduplicatedToolSummary(summary);
           } else if (this.state.activeItemType === "webSearch") {
             const summary = cleanSummary(notification.message);
             this.pushUniqueSummary(this.recentWebSearches, summary);
             this.setHighValueEvent("found", `Found: ${summary}`);
+            this.pushStatusUpdate(summary);
+            this.pushDeduplicatedToolSummary(summary);
+          } else {
+            this.pushStatusUpdate(cleanSummary(notification.message));
           }
         }
         return;
@@ -197,6 +253,7 @@ export class ActivityTracker {
         if (notification.message) {
           const summary = cleanSummary(notification.message);
           this.setHighValueEvent("done", `Done: ${summary}`, summary);
+          this.pushStatusUpdate(summary);
         }
         return;
 
@@ -206,27 +263,46 @@ export class ActivityTracker {
         for (const entry of notification.entries) {
           this.pushUniqueSummary(this.planSnapshot, cleanSummary(entry));
         }
+        this.state.latestProgress = summarizePlanEntries(notification.entries);
+        if (this.state.latestProgress) {
+          this.pushStatusUpdate(this.state.latestProgress);
+        }
+        if (notification.entries.length > 0) {
+          this.collapseOrPushPlanBlock(notification.entries.map((e) => cleanSummary(e)).join("\n"));
+        }
         return;
 
       case "plan_delta":
         if (notification.message) {
           this.state.inspectAvailable = true;
           this.state.lastActivityAt = receivedAt;
-          this.pushUniqueSummary(this.planSnapshot, cleanSummary(notification.message));
+          const summary = cleanSummary(notification.message);
+          this.pushUniqueSummary(this.planSnapshot, summary);
+          this.state.latestProgress = summary;
+          this.pushStatusUpdate(summary);
+          this.collapseOrPushPlanBlock(summary);
         }
         return;
 
       case "command_output":
         if (notification.text) {
           const summary = summarizeCommandOutput(notification.text);
+          const progressSummary = summary.detail ? `${summary.command} -> ${summary.detail}` : summary.command;
           this.state.inspectAvailable = true;
           this.state.lastActivityAt = receivedAt;
-          this.pushTransition(receivedAt, "progress", summary.detail ? `${summary.command} -> ${summary.detail}` : summary.command);
+          this.state.latestProgress = progressSummary;
+          this.pushTransition(receivedAt, "progress", progressSummary);
           this.pushUniqueSummary(
             this.recentCommandSummaries,
-            summary.detail ? `${summary.command} -> ${summary.detail}` : summary.command
+            progressSummary
           );
           this.setHighValueEvent("ran_cmd", `Ran cmd: ${summary.command}`, summary.detail);
+          this.pushStatusUpdate(progressSummary);
+          this.pushStreamBlock({
+            kind: "command",
+            text: `$ ${summary.command}`,
+            detail: summary.detail
+          });
         }
         return;
 
@@ -235,9 +311,12 @@ export class ActivityTracker {
           const summary = cleanSummary(notification.text);
           this.state.inspectAvailable = true;
           this.state.lastActivityAt = receivedAt;
+          this.state.latestProgress = summary;
           this.pushTransition(receivedAt, "progress", summary);
           this.pushUniqueSummary(this.recentFileChangeSummaries, summary);
           this.setHighValueEvent("changed", `Changed: ${summary}`, summary);
+          this.pushStatusUpdate(summary);
+          this.pushStreamBlock({ kind: "file_change", text: summary });
         }
         return;
 
@@ -245,7 +324,7 @@ export class ActivityTracker {
         if (notification.text) {
           this.state.inspectAvailable = true;
           this.state.lastActivityAt = receivedAt;
-          this.pushUniqueSummary(this.commentarySnippets, cleanSummary(notification.text));
+          this.captureAgentMessageDelta(notification.itemId, notification.text);
         }
         return;
 
@@ -256,10 +335,13 @@ export class ActivityTracker {
         this.state.activeItemLabel = null;
         this.state.currentItemStartedAt = null;
         this.state.latestProgress = null;
+        this.state.recentStatusUpdates = [];
         this.state.threadBlockedReason = null;
         this.state.lastActivityAt = receivedAt;
+        this.agentMessageBuffers.clear();
         this.setHighValueEvent("blocked", "Blocked: interrupted");
         this.pushTransition(receivedAt, "turn", "turn interrupted");
+        this.pushStatusUpdate("Turn interrupted");
         return;
 
       case "error":
@@ -268,12 +350,14 @@ export class ActivityTracker {
         this.state.activeItemId = null;
         this.state.activeItemLabel = null;
         this.state.currentItemStartedAt = null;
-        this.state.latestProgress = null;
+        this.state.latestProgress = cleanSummary(notification.message ?? "unknown error");
         this.state.threadBlockedReason = null;
         this.state.lastActivityAt = receivedAt;
         this.state.errorState = "unknown";
         this.setHighValueEvent("blocked", `Blocked: ${cleanSummary(notification.message ?? "unknown error")}`);
         this.pushTransition(receivedAt, "error", notification.message ?? "error");
+        this.pushStatusUpdate(cleanSummary(notification.message ?? "unknown error"));
+        this.pushStreamBlock({ kind: "error", text: cleanSummary(notification.message ?? "unknown error") });
         return;
 
       case "other":
@@ -294,6 +378,7 @@ export class ActivityTracker {
       lastHighValueTitle: this.state.lastHighValueTitle,
       lastHighValueDetail: this.state.lastHighValueDetail,
       latestProgress: this.state.latestProgress,
+      recentStatusUpdates: [...this.state.recentStatusUpdates],
       threadBlockedReason: this.state.threadBlockedReason,
       finalMessageAvailable: this.state.finalMessageAvailable,
       inspectAvailable: this.state.inspectAvailable,
@@ -313,6 +398,54 @@ export class ActivityTracker {
       planSnapshot: [...this.planSnapshot],
       commentarySnippets: [...this.commentarySnippets]
     };
+  }
+
+  getStreamSnapshot(): StreamSnapshot {
+    return {
+      blocks: [...this.streamBlocks],
+      turnStartedAt: this.turnStartedAt,
+      activeStatusLine: this.deriveActiveStatusLine()
+    };
+  }
+
+  private pushStreamBlock(block: StreamBlock): void {
+    this.streamBlocks.push(block);
+    if (block.kind !== "tool_summary") {
+      this.lastStreamToolSummary = null;
+    }
+  }
+
+  private pushDeduplicatedToolSummary(text: string): void {
+    if (this.lastStreamToolSummary === text) {
+      return;
+    }
+    this.lastStreamToolSummary = text;
+    this.pushStreamBlock({ kind: "tool_summary", text });
+  }
+
+  private collapseOrPushPlanBlock(text: string): void {
+    const lastBlock = this.streamBlocks.at(-1);
+    if (lastBlock?.kind === "plan") {
+      lastBlock.text = text;
+      return;
+    }
+    this.pushStreamBlock({ kind: "plan", text });
+  }
+
+  private deriveActiveStatusLine(): string | null {
+    if (this.state.threadBlockedReason === "waitingOnApproval") {
+      return "Waiting for approval";
+    }
+    if (this.state.threadBlockedReason === "waitingOnUserInput") {
+      return "Waiting for user input";
+    }
+    if (this.state.activeItemLabel) {
+      return this.state.activeItemLabel;
+    }
+    if (this.state.latestProgress) {
+      return this.state.latestProgress;
+    }
+    return null;
   }
 
   private isRelevant(notification: ClassifiedNotification): boolean {
@@ -370,6 +503,55 @@ export class ActivityTracker {
     this.state.lastHighValueTitle = title;
     this.state.lastHighValueDetail = detail;
   }
+
+  private pushStatusUpdate(summary: string): void {
+    const cleaned = cleanSummary(summary);
+    if (!cleaned) {
+      return;
+    }
+
+    if (this.state.recentStatusUpdates.at(-1) === cleaned) {
+      return;
+    }
+
+    this.state.recentStatusUpdates.push(cleaned);
+    if (this.state.recentStatusUpdates.length > STATUS_UPDATE_LIMIT) {
+      this.state.recentStatusUpdates.splice(0, this.state.recentStatusUpdates.length - STATUS_UPDATE_LIMIT);
+    }
+  }
+
+  private captureAgentMessageDelta(itemId: string | null, text: string): void {
+    const key = itemId ?? UNKNOWN_AGENT_MESSAGE_ITEM;
+    const next = `${this.agentMessageBuffers.get(key) ?? ""}${text}`;
+    this.agentMessageBuffers.set(key, next);
+
+    const stableUpdate = extractStableAgentMessage(next);
+    if (!stableUpdate) {
+      return;
+    }
+
+    this.pushUniqueSummary(this.commentarySnippets, stableUpdate);
+  }
+
+  private flushAgentMessageUpdate(itemId: string | null): void {
+    const key = itemId ?? UNKNOWN_AGENT_MESSAGE_ITEM;
+    const buffer = this.agentMessageBuffers.get(key);
+    if (!buffer) {
+      return;
+    }
+
+    const finalUpdate = extractFinalAgentMessage(buffer);
+    if (!finalUpdate) {
+      return;
+    }
+
+    this.pushUniqueSummary(this.commentarySnippets, finalUpdate);
+  }
+
+  private removeAgentMessageBuffer(itemId: string | null): void {
+    const key = itemId ?? UNKNOWN_AGENT_MESSAGE_ITEM;
+    this.agentMessageBuffers.delete(key);
+  }
 }
 
 function mapCompletionStatus(status: string): TurnStatus {
@@ -411,14 +593,38 @@ function mapActiveItemType(itemType: string | null): ActiveItemType | null {
 
 function buildItemLabel(itemType: ActiveItemType | null, rawItemType: string | null): string {
   if (itemType === "planning") {
-    return "planning";
+    return "plan";
+  }
+
+  if (itemType === "commandExecution") {
+    return "command";
+  }
+
+  if (itemType === "fileChange") {
+    return "file changes";
+  }
+
+  if (itemType === "mcpToolCall") {
+    return "MCP tool call";
+  }
+
+  if (itemType === "webSearch") {
+    return "web search";
+  }
+
+  if (itemType === "agentMessage") {
+    return "assistant response";
+  }
+
+  if (itemType === "reasoning") {
+    return "reasoning";
   }
 
   if (itemType) {
-    return itemType;
+    return "work item";
   }
 
-  return rawItemType ?? "other";
+  return rawItemType ?? "work item";
 }
 
 function deriveBlockedReason(activeFlags: string[]): ThreadBlockedReason {
@@ -465,4 +671,69 @@ function summarizeCommandOutput(text: string): { command: string; detail: string
     command: cleanSummary(command),
     detail: detail ? cleanSummary(detail) : null
   };
+}
+
+function summarizePlanEntries(entries: string[]): string | null {
+  if (entries.length === 0) {
+    return null;
+  }
+
+  const activeEntry = entries.find((entry) => /\((inProgress|pending|todo)\)$/u.test(entry));
+  return cleanSummary(activeEntry ?? entries.at(-1) ?? entries[0] ?? "");
+}
+
+function extractStableAgentMessage(text: string): string | null {
+  const normalized = text.replace(/\r/g, "");
+  const lines = normalized
+    .split("\n")
+    .map((line) => cleanSummary(line))
+    .filter((line) => line.length > 0);
+
+  const lastLine = lines.at(-1) ?? "";
+  if (lastLine.length > 0 && /[.!?。！？]$/u.test(lastLine)) {
+    return lastLine;
+  }
+
+  const stableSentence = normalized.match(/([^.!?\n。！？]{8,}[.!?。！？])/gu)?.at(-1);
+  if (stableSentence) {
+    return cleanSummary(stableSentence);
+  }
+
+  const explorationLine = lines.findLast((line) => /^Explored \d+/u.test(line));
+  if (explorationLine) {
+    return explorationLine;
+  }
+
+  return null;
+}
+
+function extractFinalAgentMessage(text: string): string | null {
+  const normalized = text.replace(/\r/g, "");
+  const lines = normalized
+    .split("\n")
+    .map((line) => cleanSummary(line))
+    .filter((line) => line.length > 0);
+
+  return lines.at(-1) ?? cleanSummary(normalized);
+}
+
+function computeDurationSec(startIso: string, endIso: string): number | null {
+  const ms = Date.parse(endIso) - Date.parse(startIso);
+  if (!Number.isFinite(ms) || ms < 0) {
+    return null;
+  }
+  return Math.floor(ms / 1000);
+}
+
+function formatCompletionLabel(status: TurnStatus): string {
+  switch (status) {
+    case "completed":
+      return "Completed";
+    case "interrupted":
+      return "Interrupted";
+    case "failed":
+      return "Failed";
+    default:
+      return `Finished (${status})`;
+  }
 }
