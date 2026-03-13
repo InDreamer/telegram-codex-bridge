@@ -10,7 +10,11 @@ import type { BridgePaths } from "./paths.js";
 import type { ActivityStatus } from "./activity/types.js";
 import { BridgeService } from "./service.js";
 import { BridgeStateStore } from "./state/store.js";
-import { buildTurnStatusCard } from "./telegram/ui.js";
+import {
+  buildTurnStatusCard,
+  encodeCommandListCollapseCallback,
+  encodeCommandListExpandCallback
+} from "./telegram/ui.js";
 
 const testLogger: Logger = {
   info: async () => {},
@@ -230,10 +234,22 @@ test("flushRuntimeNotices clears notices after a successful Telegram delivery", 
   }
 });
 
-test("runtime cards split status, plan, command, and final answer into separate Telegram messages", async () => {
+test("runtime cards keep command activity on the status message and final answer separate", async () => {
   const { service, store, cleanup } = await createServiceContext();
-  const sent: Array<{ chatId: string; messageId: number; text: string; parseMode?: string }> = [];
-  const edited: Array<{ chatId: string; messageId: number; text: string; parseMode?: string }> = [];
+  const sent: Array<{
+    chatId: string;
+    messageId: number;
+    text: string;
+    parseMode?: string;
+    replyMarkup?: any;
+  }> = [];
+  const edited: Array<{
+    chatId: string;
+    messageId: number;
+    text: string;
+    parseMode?: string;
+    replyMarkup?: any;
+  }> = [];
   let nextMessageId = 100;
 
   try {
@@ -242,11 +258,11 @@ test("runtime cards split status, plan, command, and final answer into separate 
     (service as any).api = {
       sendMessage: async (chatId: string, text: string, options?: any) => {
         const messageId = nextMessageId++;
-        sent.push({ chatId, messageId, text, parseMode: options?.parseMode });
+        sent.push({ chatId, messageId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
         return createFakeTelegramMessage(messageId, text);
       },
       editMessageText: async (chatId: string, messageId: number, text: string, options?: any) => {
-        edited.push({ chatId, messageId, text, parseMode: options?.parseMode });
+        edited.push({ chatId, messageId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
         return createFakeTelegramMessage(messageId, text);
       }
     };
@@ -302,26 +318,153 @@ test("runtime cards split status, plan, command, and final answer into separate 
     assert.equal(sent.every((entry) => entry.parseMode === undefined), true);
     assert.equal(sent.filter((entry) => entry.text.startsWith("Runtime Status")).length, 1);
     assert.equal(sent.filter((entry) => entry.text.startsWith("Plan")).length, 1);
-    assert.equal(sent.filter((entry) => entry.text.startsWith("Command")).length, 1);
+    assert.equal(sent.filter((entry) => entry.text.startsWith("Command")).length, 0);
     assert.equal(sent.filter((entry) => entry.text === "All done.").length, 1);
 
     const statusTexts = getMessageTexts(sent, edited, 100);
     assert.ok(statusTexts.some((text) => /State: Starting/u.test(text)));
     assert.ok(statusTexts.some((text) => /State: Running/u.test(text)));
     assert.ok(statusTexts.some((text) => /State: Completed/u.test(text)));
+    assert.ok(statusTexts.some((text) => /Command: \$ pnpm test/u.test(text)));
+    assert.ok(statusTexts.some((text) => /Output: 26\/26 tests passed/u.test(text)));
     assert.equal(statusTexts.some((text) => /Collect protocol evidence/u.test(text)), false);
-    assert.equal(statusTexts.some((text) => /26\/26 tests passed/u.test(text)), false);
 
     const planTexts = getMessageTexts(sent, edited, 101);
     assert.ok(planTexts.some((text) => /Collect protocol evidence \(completed\)/u.test(text)));
     assert.ok(planTexts.some((text) => /Wire inspect renderer \(inProgress\)/u.test(text)));
 
-    const commandTexts = getMessageTexts(sent, edited, 102);
-    assert.ok(commandTexts.some((text) => /Name: pnpm test/u.test(text)));
-    assert.ok(commandTexts.some((text) => /Latest: 26\/26 tests passed/u.test(text)));
-    assert.ok(commandTexts.some((text) => /State: Completed/u.test(text)));
-
     assert.equal((service as any).activeTurn, null);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("status card expands and collapses command history with Telegram callbacks", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; replyMarkup?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; replyMarkup?: any }> = [];
+  const callbackAnswers: Array<string | undefined> = [];
+  let nextMessageId = 900;
+
+  try {
+    store.upsertPendingAuthorization({
+      telegramUserId: "1",
+      telegramChatId: "1",
+      telegramUsername: "tester",
+      displayName: "Tester"
+    });
+    const candidate = store.listPendingAuthorizations()[0];
+    if (!candidate) {
+      throw new Error("expected pending authorization candidate");
+    }
+    store.confirmPendingAuthorization(candidate);
+    const session = createSession(store, "1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ messageId, text, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      answerCallbackQuery: async (_callbackQueryId: string, text?: string) => {
+        callbackAnswers.push(text);
+      }
+    };
+
+    installRunningAppServer(service, "thread-expand", "turn-expand");
+
+    await (service as any).startRealTurn("1", session, "Run both commands");
+    await (service as any).handleAppServerNotification("turn/started", {
+      threadId: "thread-expand",
+      turnId: "turn-expand"
+    });
+    await (service as any).handleAppServerNotification("item/started", {
+      threadId: "thread-expand",
+      turnId: "turn-expand",
+      item: { id: "cmd-1", type: "commandExecution", title: "pnpm install" }
+    });
+    await (service as any).handleAppServerNotification("item/commandExecution/outputDelta", {
+      threadId: "thread-expand",
+      turnId: "turn-expand",
+      itemId: "cmd-1",
+      delta: "$ pnpm install\nDependencies installed"
+    });
+    await (service as any).handleAppServerNotification("item/completed", {
+      threadId: "thread-expand",
+      turnId: "turn-expand",
+      item: { id: "cmd-1", type: "commandExecution" }
+    });
+    await (service as any).handleAppServerNotification("item/started", {
+      threadId: "thread-expand",
+      turnId: "turn-expand",
+      item: { id: "cmd-2", type: "commandExecution", title: "pnpm test" }
+    });
+    await (service as any).handleAppServerNotification("item/commandExecution/outputDelta", {
+      threadId: "thread-expand",
+      turnId: "turn-expand",
+      itemId: "cmd-2",
+      delta: "$ pnpm test\n26/26 tests passed"
+    });
+    await (service as any).handleAppServerNotification("item/completed", {
+      threadId: "thread-expand",
+      turnId: "turn-expand",
+      item: { id: "cmd-2", type: "commandExecution" }
+    });
+    await (service as any).handleAppServerNotification("turn/completed", {
+      threadId: "thread-expand",
+      turn: { id: "turn-expand", status: "completed" }
+    });
+
+    const collapsed = edited.at(-1);
+    assert.match(collapsed?.text ?? "", /Latest command/u);
+    assert.match(collapsed?.text ?? "", /Command: \$ pnpm test/u);
+    assert.doesNotMatch(collapsed?.text ?? "", /pnpm install/u);
+    assert.equal(
+      collapsed?.replyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data,
+      encodeCommandListExpandCallback(session.sessionId)
+    );
+
+    await (service as any).handleCallback({
+      id: "callback-expand",
+      from: { id: 1, is_bot: false, first_name: "Tester" },
+      message: {
+        message_id: 900,
+        chat: { id: 1, type: "private" },
+        date: 0,
+        text: "Runtime Status"
+      },
+      data: encodeCommandListExpandCallback(session.sessionId)
+    });
+
+    const expanded = edited.at(-1);
+    assert.match(expanded?.text ?? "", /Commands: 2/u);
+    assert.match(expanded?.text ?? "", /1\. Command: \$ pnpm install/u);
+    assert.match(expanded?.text ?? "", /2\. Command: \$ pnpm test/u);
+    assert.equal(
+      expanded?.replyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data,
+      encodeCommandListCollapseCallback(session.sessionId)
+    );
+
+    await (service as any).handleCallback({
+      id: "callback-collapse",
+      from: { id: 1, is_bot: false, first_name: "Tester" },
+      message: {
+        message_id: 900,
+        chat: { id: 1, type: "private" },
+        date: 0,
+        text: "Runtime Status"
+      },
+      data: encodeCommandListCollapseCallback(session.sessionId)
+    });
+
+    const recollapsed = edited.at(-1);
+    assert.match(recollapsed?.text ?? "", /Latest command/u);
+    assert.doesNotMatch(recollapsed?.text ?? "", /1\. Command: \$ pnpm install/u);
+    assert.equal(callbackAnswers.length, 2);
   } finally {
     await cleanup();
   }
@@ -872,7 +1015,8 @@ test("debug journal write failures do not break inspect or turn progress handlin
     await (service as any).routeCommand("chat-1", "inspect", "");
 
     assert.ok(sent.some((text) => /^Runtime Status/u.test(text)));
-    assert.ok(sent.some((text) => /^Command/u.test(text)));
+    assert.equal(sent.some((text) => /^Command/u.test(text)), false);
+    assert.ok(edited.some((text) => /Command: \$ pnpm test/u.test(text)));
     assert.ok(edited.some((text) => /State: Running/u.test(text)));
     assert.match(sent.at(-1) ?? "", /Task details/u);
   } finally {

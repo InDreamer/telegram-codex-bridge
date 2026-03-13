@@ -21,7 +21,7 @@ import {
   buildNoNewProjectsMessage,
   buildProjectPickerMessage,
   buildProjectSelectedText,
-  buildRuntimeCommandCard,
+  buildRuntimeCommandListReplyMarkup,
   buildRuntimeErrorCard,
   buildRuntimePlanCard,
   buildRuntimeStatusCard,
@@ -40,6 +40,7 @@ import { buildProjectPicker, refreshProjectPicker, validateManualProjectPath } f
 interface RecentActivityEntry {
   tracker: ActivityTracker;
   debugFilePath: string | null;
+  statusCard: StatusCardState | null;
 }
 
 const MAX_RECENT_ACTIVITY_ENTRIES = 20;
@@ -53,21 +54,30 @@ interface PickerState {
 }
 
 interface RuntimeCardMessageState {
-  surface: "status" | "plan" | "command" | "error";
+  surface: "status" | "plan" | "error";
   key: string;
   messageId: number;
   lastRenderedText: string;
+  lastRenderedReplyMarkupKey: string | null;
   lastRenderedAtMs: number | null;
   pendingText: string | null;
+  pendingReplyMarkup: TelegramInlineKeyboardMarkup | null;
   pendingReason: string | null;
   timer: ReturnType<typeof setTimeout> | null;
 }
 
-interface CommandCardState extends RuntimeCardMessageState {
+interface RuntimeCommandState {
   itemId: string;
-  commandName: string;
+  commandText: string;
   latestSummary: string | null;
   status: "running" | "completed" | "failed" | "interrupted";
+}
+
+interface StatusCardState extends RuntimeCardMessageState {
+  surface: "status";
+  commandItems: Map<string, RuntimeCommandState>;
+  commandOrder: RuntimeCommandState[];
+  commandsExpanded: boolean;
 }
 
 interface ErrorCardState extends RuntimeCardMessageState {
@@ -83,11 +93,10 @@ interface ActiveTurnState {
   finalMessage: string | null;
   tracker: ActivityTracker;
   debugJournal: DebugJournalWriter;
-  statusCard: RuntimeCardMessageState;
+  statusCard: StatusCardState;
   planCard: RuntimeCardMessageState | null;
   latestProgressUnit: string | null;
   latestPlanFingerprint: string | null;
-  commandCards: Map<string, CommandCardState>;
   errorCards: ErrorCardState[];
   nextErrorCardId: number;
   surfaceQueue: Promise<void>;
@@ -290,6 +299,16 @@ export class BridgeService {
       case "path_confirm": {
         await this.safeAnswerCallbackQuery(callbackQuery.id);
         await this.confirmManualProject(chatId, parsed.projectKey);
+        return;
+      }
+
+      case "command_list_expand": {
+        await this.handleCommandListToggle(callbackQuery, chatId, parsed.sessionId, true);
+        return;
+      }
+
+      case "command_list_collapse": {
+        await this.handleCommandListToggle(callbackQuery, chatId, parsed.sessionId, false);
         return;
       }
     }
@@ -840,18 +859,18 @@ export class BridgeService {
           threadId,
           turnId: turn.turn.id
         }),
-        statusCard: createRuntimeCardMessageState("status", "status"),
+        statusCard: createStatusCardMessageState(),
         planCard: null,
         latestProgressUnit: null,
         latestPlanFingerprint: null,
-        commandCards: new Map(),
         errorCards: [],
         nextErrorCardId: 1,
         surfaceQueue: Promise.resolve()
       };
       const recentActivity: RecentActivityEntry = {
         tracker: this.activeTurn.tracker,
-        debugFilePath: this.activeTurn.debugJournal.filePath
+        debugFilePath: this.activeTurn.debugJournal.filePath,
+        statusCard: this.activeTurn.statusCard
       };
       this.setRecentActivity(session.sessionId, recentActivity);
       this.store.updateSessionStatus(session.sessionId, "running", {
@@ -1035,6 +1054,123 @@ export class BridgeService {
     );
   }
 
+  private async handleCommandListToggle(
+    callbackQuery: TelegramCallbackQuery,
+    chatId: string,
+    sessionId: string,
+    expanded: boolean
+  ): Promise<void> {
+    const record = this.getStatusCardRecord(sessionId);
+    if (!record || !callbackQuery.message) {
+      await this.safeAnswerCallbackQuery(callbackQuery.id, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    const { activeTurn, statusCard, tracker } = record;
+    if (
+      statusCard.messageId === 0 ||
+      callbackQuery.message.message_id !== statusCard.messageId ||
+      statusCard.commandOrder.length <= 1
+    ) {
+      await this.safeAnswerCallbackQuery(callbackQuery.id, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    if (statusCard.commandsExpanded === expanded) {
+      await this.safeAnswerCallbackQuery(callbackQuery.id);
+      return;
+    }
+
+    statusCard.commandsExpanded = expanded;
+    if (activeTurn) {
+      await this.syncRuntimeCards(activeTurn, null, null, activeTurn.tracker.getStatus(), {
+        force: true,
+        reason: expanded ? "command_list_expand" : "command_list_collapse"
+      });
+      await this.safeAnswerCallbackQuery(callbackQuery.id);
+      return;
+    }
+
+    const rendered = this.buildStatusCardRenderPayload(sessionId, tracker, statusCard);
+    const editResult = await this.safeEditMessageText(chatId, statusCard.messageId, rendered.text, rendered.replyMarkup);
+    if (editResult.outcome !== "edited") {
+      statusCard.commandsExpanded = !expanded;
+      await this.safeAnswerCallbackQuery(callbackQuery.id, "消息暂时无法更新，请稍后重试。");
+      return;
+    }
+
+    statusCard.lastRenderedText = rendered.text;
+    statusCard.lastRenderedReplyMarkupKey = serializeReplyMarkup(rendered.replyMarkup);
+    statusCard.lastRenderedAtMs = Date.now();
+    await this.safeAnswerCallbackQuery(callbackQuery.id);
+  }
+
+  private getStatusCardRecord(sessionId: string): {
+    activeTurn: ActiveTurnState | null;
+    tracker: ActivityTracker;
+    statusCard: StatusCardState;
+  } | null {
+    if (this.activeTurn?.sessionId === sessionId) {
+      return {
+        activeTurn: this.activeTurn,
+        tracker: this.activeTurn.tracker,
+        statusCard: this.activeTurn.statusCard
+      };
+    }
+
+    const recentActivity = this.recentActivityBySessionId.get(sessionId);
+    if (!recentActivity?.statusCard) {
+      return null;
+    }
+
+    return {
+      activeTurn: null,
+      tracker: recentActivity.tracker,
+      statusCard: recentActivity.statusCard
+    };
+  }
+
+  private buildStatusCardRenderPayload(
+    sessionId: string,
+    tracker: ActivityTracker,
+    statusCard: StatusCardState
+  ): {
+    text: string;
+    replyMarkup?: TelegramInlineKeyboardMarkup;
+  } {
+    const inspect = tracker.getInspectSnapshot();
+    const context = this.getRuntimeCardContext(sessionId);
+    const replyMarkup = buildRuntimeCommandListReplyMarkup(
+      sessionId,
+      statusCard.commandOrder.length,
+      statusCard.commandsExpanded
+    );
+
+    const payload = {
+      text: buildRuntimeStatusCard({
+        ...context,
+        state: formatVisibleRuntimeState(inspect),
+        blockedReason: formatRuntimeBlockedReason(inspect.threadBlockedReason),
+        progressText: selectStatusProgressText(inspect, inspect.commentarySnippets.at(-1) ?? null),
+        commands: statusCard.commandOrder.map((command) => ({
+          commandText: command.commandText,
+          state: formatRuntimeCommandState(command.status),
+          latestSummary: command.latestSummary
+        })),
+        commandsExpanded: statusCard.commandsExpanded
+      })
+    };
+
+    if (!replyMarkup) {
+      return payload;
+    }
+
+    return {
+      ...payload,
+      replyMarkup
+    };
+  }
+
   private async handleAppServerExit(error: Error): Promise<void> {
     if (this.stopping || !this.store) {
       return;
@@ -1158,6 +1294,7 @@ export class BridgeService {
   ): Promise<void> {
     const inspect = activeTurn.tracker.getInspectSnapshot();
     const context = this.getRuntimeCardContext(activeTurn.sessionId);
+    const commandStateChanged = applyRuntimeCommandDelta(activeTurn.statusCard, classified, nextStatus);
 
     const latestProgressUnit = inspect.commentarySnippets.at(-1) ?? null;
     const progressUnitChanged = latestProgressUnit !== activeTurn.latestProgressUnit;
@@ -1168,18 +1305,16 @@ export class BridgeService {
     const statusChanged = previousStatus === null ||
       previousStatus.turnStatus !== nextStatus.turnStatus ||
       previousStatus.threadBlockedReason !== nextStatus.threadBlockedReason ||
+      commandStateChanged ||
       progressUnitChanged ||
       options.force;
     if (statusChanged) {
+      const rendered = this.buildStatusCardRenderPayload(activeTurn.sessionId, activeTurn.tracker, activeTurn.statusCard);
       await this.requestRuntimeCardRender(
         activeTurn,
         activeTurn.statusCard,
-        buildRuntimeStatusCard({
-          ...context,
-          state: formatVisibleRuntimeState(nextStatus),
-          blockedReason: formatRuntimeBlockedReason(nextStatus.threadBlockedReason),
-          progressText: selectStatusProgressText(nextStatus, activeTurn.latestProgressUnit)
-        }),
+        rendered.text,
+        rendered.replyMarkup,
         options.force
           ? { force: true, reason: options.reason }
           : { reason: options.reason }
@@ -1200,73 +1335,10 @@ export class BridgeService {
           activeTurn,
           activeTurn.planCard,
           buildRuntimePlanCard(context, inspect.planSnapshot),
+          undefined,
           options.force
             ? { force: true, reason: planChanged ? "plan_changed" : options.reason }
             : { reason: planChanged ? "plan_changed" : options.reason }
-        );
-      }
-    }
-
-    if (classified?.kind === "item_started" && classified.itemType === "commandExecution" && classified.itemId) {
-      const commandCard = this.getOrCreateCommandCard(activeTurn, classified.itemId, classified.label ?? "command");
-      commandCard.commandName = normalizeCommandName(classified.label ?? commandCard.commandName);
-      commandCard.status = "running";
-      await this.requestRuntimeCardRender(
-        activeTurn,
-        commandCard,
-        buildRuntimeCommandCard({
-          ...context,
-          commandName: commandCard.commandName,
-          state: formatRuntimeCommandState(commandCard.status),
-          latestSummary: commandCard.latestSummary
-        }),
-        {
-          force: true,
-          reason: "command_started"
-        }
-      );
-    }
-
-    if (classified?.kind === "command_output" && classified.itemId) {
-      const parsed = summarizeRuntimeCommandOutput(classified.text);
-      const commandCard = this.getOrCreateCommandCard(activeTurn, classified.itemId, parsed.command);
-      commandCard.commandName = normalizeCommandName(
-        commandCard.commandName === "command" ? parsed.command : commandCard.commandName
-      );
-      commandCard.latestSummary = parsed.detail;
-      await this.requestRuntimeCardRender(
-        activeTurn,
-        commandCard,
-        buildRuntimeCommandCard({
-          ...context,
-          commandName: commandCard.commandName,
-          state: formatRuntimeCommandState(commandCard.status),
-          latestSummary: commandCard.latestSummary
-        }),
-        {
-          force: false,
-          reason: "command_output"
-        }
-      );
-    }
-
-    if (classified?.kind === "item_completed" && classified.itemType === "commandExecution" && classified.itemId) {
-      const commandCard = activeTurn.commandCards.get(classified.itemId);
-      if (commandCard) {
-        commandCard.status = nextStatus.turnStatus === "interrupted" ? "interrupted" : "completed";
-        await this.requestRuntimeCardRender(
-          activeTurn,
-          commandCard,
-          buildRuntimeCommandCard({
-            ...context,
-            commandName: commandCard.commandName,
-            state: formatRuntimeCommandState(commandCard.status),
-            latestSummary: commandCard.latestSummary
-          }),
-          {
-            force: true,
-            reason: "command_completed"
-          }
         );
       }
     }
@@ -1284,6 +1356,7 @@ export class BridgeService {
           title: errorCard.title,
           detail: errorCard.detail
         }),
+        undefined,
         {
           force: true,
           reason: "runtime_error"
@@ -1292,31 +1365,6 @@ export class BridgeService {
     }
 
     if (classified?.kind === "turn_completed") {
-      for (const commandCard of activeTurn.commandCards.values()) {
-        if (commandCard.status !== "running") {
-          continue;
-        }
-        commandCard.status = classified.status === "interrupted"
-          ? "interrupted"
-          : classified.status === "completed"
-            ? "completed"
-            : "failed";
-        await this.requestRuntimeCardRender(
-          activeTurn,
-          commandCard,
-          buildRuntimeCommandCard({
-            ...context,
-            commandName: commandCard.commandName,
-            state: formatRuntimeCommandState(commandCard.status),
-            latestSummary: commandCard.latestSummary
-          }),
-          {
-            force: true,
-            reason: "turn_completed"
-          }
-        );
-      }
-
       if (classified.status === "failed" && activeTurn.errorCards.length === 0) {
         const errorCard = createRuntimeCardMessageState("error", `error-${activeTurn.nextErrorCardId++}`) as ErrorCardState;
         errorCard.title = "Turn failed";
@@ -1330,6 +1378,7 @@ export class BridgeService {
             title: errorCard.title,
             detail: errorCard.detail
           }),
+          undefined,
           {
             force: true,
             reason: "turn_failed"
@@ -1343,16 +1392,20 @@ export class BridgeService {
     activeTurn: ActiveTurnState,
     surface: RuntimeCardMessageState,
     text: string,
+    replyMarkup: TelegramInlineKeyboardMarkup | undefined,
     options: {
       force?: boolean;
       reason: string;
     }
   ): Promise<void> {
-    const pendingChanged = surface.pendingText !== text;
+    const replyMarkupKey = serializeReplyMarkup(replyMarkup);
+    const pendingChanged = surface.pendingText !== text ||
+      serializeReplyMarkup(surface.pendingReplyMarkup) !== replyMarkupKey;
     surface.pendingText = text;
+    surface.pendingReplyMarkup = replyMarkup ?? null;
     surface.pendingReason = options.reason;
 
-    if (!pendingChanged && text === surface.lastRenderedText) {
+    if (!pendingChanged && text === surface.lastRenderedText && surface.lastRenderedReplyMarkupKey === replyMarkupKey) {
       await this.logger.info("runtime card update skipped", {
         sessionId: activeTurn.sessionId,
         turnId: activeTurn.turnId,
@@ -1413,13 +1466,16 @@ export class BridgeService {
   ): Promise<void> {
     await this.runRuntimeCardOperation(activeTurn, async () => {
       const text = surface.pendingText;
+      const replyMarkup = surface.pendingReplyMarkup ?? undefined;
+      const replyMarkupKey = serializeReplyMarkup(replyMarkup);
       const reason = surface.pendingReason;
       if (!text) {
         return;
       }
 
-      if (text === surface.lastRenderedText) {
+      if (text === surface.lastRenderedText && surface.lastRenderedReplyMarkupKey === replyMarkupKey) {
         surface.pendingText = null;
+        surface.pendingReplyMarkup = null;
         surface.pendingReason = null;
         await this.logger.info("runtime card update skipped", {
           sessionId: activeTurn.sessionId,
@@ -1432,17 +1488,20 @@ export class BridgeService {
       }
 
       surface.pendingText = null;
+      surface.pendingReplyMarkup = null;
       surface.pendingReason = null;
 
       if (surface.messageId === 0) {
-        const sent = await this.safeSendMessageResult(activeTurn.chatId, text);
+        const sent = await this.safeSendMessageResult(activeTurn.chatId, text, replyMarkup);
         if (!sent) {
           surface.pendingText = text;
+          surface.pendingReplyMarkup = replyMarkup ?? null;
           surface.pendingReason = reason;
           return;
         }
         surface.messageId = sent.message_id;
         surface.lastRenderedText = text;
+        surface.lastRenderedReplyMarkupKey = replyMarkupKey;
         surface.lastRenderedAtMs = Date.now();
         await this.logger.info("runtime card sent", {
           sessionId: activeTurn.sessionId,
@@ -1456,7 +1515,7 @@ export class BridgeService {
         return;
       }
 
-      const editResult = await this.safeEditMessageText(activeTurn.chatId, surface.messageId, text);
+      const editResult = await this.safeEditMessageText(activeTurn.chatId, surface.messageId, text, replyMarkup);
       await this.logger.info("runtime card edit attempted", {
         sessionId: activeTurn.sessionId,
         turnId: activeTurn.turnId,
@@ -1471,11 +1530,13 @@ export class BridgeService {
 
       if (editResult.outcome === "edited") {
         surface.lastRenderedText = text;
+        surface.lastRenderedReplyMarkupKey = replyMarkupKey;
         surface.lastRenderedAtMs = Date.now();
         return;
       }
 
       surface.pendingText = text;
+      surface.pendingReplyMarkup = replyMarkup ?? null;
       surface.pendingReason = reason;
       const retryMs = editResult.outcome === "rate_limited" ? editResult.retryAfterMs : FAILED_EDIT_RETRY_MS;
       this.scheduleRuntimeCardRetry(activeTurn, surface, retryMs, reason ?? "edit_retry");
@@ -1486,25 +1547,6 @@ export class BridgeService {
     const queuedOperation = activeTurn.surfaceQueue.then(operation, operation);
     activeTurn.surfaceQueue = queuedOperation.catch(() => {});
     await queuedOperation;
-  }
-
-  private getOrCreateCommandCard(
-    activeTurn: ActiveTurnState,
-    itemId: string,
-    label: string
-  ): CommandCardState {
-    const existing = activeTurn.commandCards.get(itemId);
-    if (existing) {
-      return existing;
-    }
-
-    const created = createRuntimeCardMessageState("command", `command-${itemId}`) as CommandCardState;
-    created.itemId = itemId;
-    created.commandName = normalizeCommandName(label);
-    created.latestSummary = null;
-    created.status = "running";
-    activeTurn.commandCards.set(itemId, created);
-    return created;
   }
 
   private clearRuntimeCardTimer(surface: RuntimeCardMessageState): void {
@@ -1520,10 +1562,6 @@ export class BridgeService {
     this.clearRuntimeCardTimer(activeTurn.statusCard);
     if (activeTurn.planCard) {
       this.clearRuntimeCardTimer(activeTurn.planCard);
-    }
-
-    for (const commandCard of activeTurn.commandCards.values()) {
-      this.clearRuntimeCardTimer(commandCard);
     }
 
     for (const errorCard of activeTurn.errorCards) {
@@ -1578,16 +1616,22 @@ export class BridgeService {
     }
   }
 
-  private async safeEditMessageText(chatId: string, messageId: number, text: string): Promise<TelegramEditResult> {
+  private async safeEditMessageText(
+    chatId: string,
+    messageId: number,
+    text: string,
+    replyMarkup?: TelegramInlineKeyboardMarkup
+  ): Promise<TelegramEditResult> {
     if (!this.api?.editMessageText) {
       return { outcome: "failed" };
     }
 
     try {
-      await this.api.editMessageText(chatId, messageId, text);
+      await this.api.editMessageText(chatId, messageId, text, replyMarkup ? { replyMarkup } : undefined);
       await this.logger.info("telegram message edited", {
         chatId,
         messageId,
+        replyMarkup: replyMarkup ? "inline_keyboard" : null,
         preview: summarizeTextPreview(text)
       });
       return { outcome: "edited" };
@@ -1753,11 +1797,27 @@ function createRuntimeCardMessageState(
     key,
     messageId: 0,
     lastRenderedText: "",
+    lastRenderedReplyMarkupKey: null,
     lastRenderedAtMs: null,
     pendingText: null,
+    pendingReplyMarkup: null,
     pendingReason: null,
     timer: null
   };
+}
+
+function createStatusCardMessageState(): StatusCardState {
+  return {
+    ...createRuntimeCardMessageState("status", "status"),
+    surface: "status",
+    commandItems: new Map(),
+    commandOrder: [],
+    commandsExpanded: false
+  };
+}
+
+function serializeReplyMarkup(replyMarkup: TelegramInlineKeyboardMarkup | null | undefined): string | null {
+  return replyMarkup ? JSON.stringify(replyMarkup) : null;
 }
 
 function getRuntimeCardThrottleMs(_surface: RuntimeCardMessageState["surface"]): number {
@@ -1821,29 +1881,36 @@ function normalizeCommandName(value: string): string {
   return trimmed.length > 0 ? trimmed : "command";
 }
 
-function summarizeRuntimeCommandOutput(text: string | null): { command: string; detail: string | null } {
+function isGenericCommandName(value: string | null | undefined): boolean {
+  return normalizeCommandName(value ?? "") === "command";
+}
+
+function summarizeRuntimeCommandOutput(text: string | null): { command: string | null; detail: string | null } {
   if (!text) {
     return {
-      command: "command",
+      command: null,
       detail: null
     };
   }
 
-  const lines = text
+  const rawLines = text
     .split(/\r?\n/u)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
 
-  if (lines.length === 0) {
+  if (rawLines.length === 0) {
     return {
-      command: "command",
+      command: null,
       detail: null
     };
   }
 
-  const command = normalizeCommandName(lines[0]!.replace(/^[>$#]\s*/u, ""));
-  const detailCandidate = lines.at(-1) ?? null;
-  const detail = detailCandidate && detailCandidate !== lines[0]
+  const firstLine = rawLines[0]!;
+  const command = /^[>$#]\s*/u.test(firstLine)
+    ? normalizeCommandName(firstLine.replace(/^[>$#]\s*/u, ""))
+    : null;
+  const detailCandidate = rawLines.at(-1) ?? null;
+  const detail = detailCandidate && detailCandidate !== firstLine
     ? cleanRuntimeErrorMessage(detailCandidate)
     : null;
 
@@ -1853,7 +1920,104 @@ function summarizeRuntimeCommandOutput(text: string | null): { command: string; 
   };
 }
 
-function formatRuntimeCommandState(status: CommandCardState["status"]): string {
+function getOrCreateRuntimeCommand(
+  statusCard: StatusCardState,
+  itemId: string,
+  label: string | null
+): { command: RuntimeCommandState; created: boolean } {
+  const existing = statusCard.commandItems.get(itemId);
+  if (existing) {
+    return {
+      command: existing,
+      created: false
+    };
+  }
+
+  const created: RuntimeCommandState = {
+    itemId,
+    commandText: normalizeCommandName(label ?? "command"),
+    latestSummary: null,
+    status: "running"
+  };
+  statusCard.commandItems.set(itemId, created);
+  statusCard.commandOrder.push(created);
+  return {
+    command: created,
+    created: true
+  };
+}
+
+function applyRuntimeCommandDelta(
+  statusCard: StatusCardState,
+  classified: ReturnType<typeof classifyNotification> | null,
+  nextStatus: ActivityStatus
+): boolean {
+  if (!classified) {
+    return false;
+  }
+
+  let changed = false;
+  if (classified.kind === "item_started" && classified.itemType === "commandExecution" && classified.itemId) {
+    const commandResult = getOrCreateRuntimeCommand(statusCard, classified.itemId, classified.label);
+    const command = commandResult.command;
+    changed = commandResult.created || changed;
+    const nextCommandText = normalizeCommandName(classified.label ?? command.commandText);
+    if (command.commandText !== nextCommandText) {
+      command.commandText = nextCommandText;
+      changed = true;
+    }
+    if (command.status !== "running") {
+      command.status = "running";
+      changed = true;
+    }
+  }
+
+  if (classified.kind === "command_output" && classified.itemId) {
+    const parsed = summarizeRuntimeCommandOutput(classified.text);
+    const commandResult = getOrCreateRuntimeCommand(statusCard, classified.itemId, parsed.command ?? "command");
+    const command = commandResult.command;
+    changed = commandResult.created || changed;
+    if (parsed.command && (isGenericCommandName(command.commandText) || command.commandText !== parsed.command)) {
+      command.commandText = parsed.command;
+      changed = true;
+    }
+    if (command.latestSummary !== parsed.detail) {
+      command.latestSummary = parsed.detail;
+      changed = true;
+    }
+  }
+
+  if (classified.kind === "item_completed" && classified.itemType === "commandExecution" && classified.itemId) {
+    const command = statusCard.commandItems.get(classified.itemId);
+    if (command && command.status !== "completed") {
+      command.status = nextStatus.turnStatus === "interrupted" ? "interrupted" : "completed";
+      changed = true;
+    }
+  }
+
+  if (classified.kind === "turn_aborted" || classified.kind === "error" || classified.kind === "turn_completed") {
+    const finalCommandStatus = classified.kind === "turn_aborted"
+      ? "interrupted"
+      : classified.kind === "error"
+        ? "failed"
+        : classified.status === "completed"
+          ? "completed"
+          : classified.status === "interrupted"
+            ? "interrupted"
+            : "failed";
+    for (const command of statusCard.commandOrder) {
+      if (command.status === finalCommandStatus || command.status !== "running") {
+        continue;
+      }
+      command.status = finalCommandStatus;
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+function formatRuntimeCommandState(status: RuntimeCommandState["status"]): string {
   switch (status) {
     case "running":
       return "Running";

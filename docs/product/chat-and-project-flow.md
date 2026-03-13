@@ -213,6 +213,8 @@ Versioned callback formats:
 - `v1:path:manual`
 - `v1:path:back`
 - `v1:path:confirm:{project_key}`
+- `v1:cmd:expand:{session_id}`
+- `v1:cmd:collapse:{session_id}`
 
 Rules:
 - `project_key` is a stable short hash of the project path, never the raw path
@@ -232,13 +234,15 @@ Final-answer handling:
 Edit versus new message:
 - edit existing messages only for bridge-owned runtime cards
 - send new messages for final answers, status views, refreshed pickers, manual-path flows, and rename prompts
-- send a new message when a new runtime card first appears, including plan, command, and error cards
+- send a new message when a new runtime card first appears, including plan and error cards
 
 While a turn is running:
 - keep one bridge-owned status card in the chat
-- current runtime-card titles are `Runtime Status`, `Plan`, `Command`, and `Error`
+- current runtime-card titles are `Runtime Status`, `Plan`, and `Error`
 - create a separate plan card when plan state becomes available
-- create a separate command card for each `commandExecution` item
+- project `commandExecution` items into the status card instead of sending separate command cards
+- default command section shows only the most recent concrete execution command plus its latest state and output detail when available
+- if more than one command ran in the turn, show an inline button that expands all command details on the same message and can collapse back
 - create separate error cards for runtime failures
 - update the status card only when the visible turn state changes or when a complete progress unit is available
 - keep fragmented agent-message deltas out of the default chat until they form a complete snippet

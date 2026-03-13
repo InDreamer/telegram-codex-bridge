@@ -121,13 +121,15 @@ export class TelegramApi {
     text: string,
     options?: {
       parseMode?: "HTML";
+      replyMarkup?: TelegramInlineKeyboardMarkup;
     }
   ): Promise<TelegramMessage> {
     return await this.call<TelegramMessage>("editMessageText", {
       chat_id: chatId,
       message_id: messageId,
       text,
-      parse_mode: options?.parseMode
+      parse_mode: options?.parseMode,
+      reply_markup: options?.replyMarkup
     }, 20_000);
   }
 

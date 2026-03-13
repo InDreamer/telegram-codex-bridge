@@ -287,7 +287,11 @@ export class ActivityTracker {
       case "command_output":
         if (notification.text) {
           const summary = summarizeCommandOutput(notification.text);
-          const progressSummary = summary.detail ? `${summary.command} -> ${summary.detail}` : summary.command;
+          const commandLabel = selectConcreteCommandLabel(
+            summary.command,
+            this.state.activeItemType === "commandExecution" ? this.state.activeItemLabel : null
+          );
+          const progressSummary = summary.detail ? `${commandLabel} -> ${summary.detail}` : commandLabel;
           this.state.inspectAvailable = true;
           this.state.lastActivityAt = receivedAt;
           this.state.latestProgress = progressSummary;
@@ -296,11 +300,11 @@ export class ActivityTracker {
             this.recentCommandSummaries,
             progressSummary
           );
-          this.setHighValueEvent("ran_cmd", `Ran cmd: ${summary.command}`, summary.detail);
+          this.setHighValueEvent("ran_cmd", `Ran cmd: ${commandLabel}`, summary.detail);
           this.pushStatusUpdate(progressSummary);
           this.pushStreamBlock({
             kind: "command",
-            text: `$ ${summary.command}`,
+            text: `$ ${commandLabel}`,
             detail: summary.detail
           });
         }
@@ -671,6 +675,18 @@ function summarizeCommandOutput(text: string): { command: string; detail: string
     command: cleanSummary(command),
     detail: detail ? cleanSummary(detail) : null
   };
+}
+
+function selectConcreteCommandLabel(command: string, activeLabel: string | null): string {
+  if (command !== "command") {
+    return command;
+  }
+
+  if (activeLabel && activeLabel !== "command") {
+    return cleanSummary(activeLabel);
+  }
+
+  return command;
 }
 
 function summarizePlanEntries(entries: string[]): string | null {

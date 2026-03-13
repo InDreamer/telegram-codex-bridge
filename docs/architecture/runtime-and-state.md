@@ -48,7 +48,8 @@ It should:
 - reduce that stream into compact user-facing runtime surfaces
 - keep one status card for the running turn
 - create an optional plan card when plan state becomes available
-- create one command card per `commandExecution` item
+- project command activity into the status card rather than creating per-command messages
+- show the latest concrete execution command by default, with inline expand/collapse for the full command list when needed
 - create separate error cards when runtime failures surface
 - render runtime cards as plain-text Telegram messages rather than HTML log blocks
 - keep reasoning deltas and raw token fragments out of the normal Telegram chat flow
