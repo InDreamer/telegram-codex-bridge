@@ -690,11 +690,15 @@ test("runtime cards keep command activity on the status message and final answer
       });
     });
 
-    assert.equal(sent.every((entry) => entry.parseMode === undefined), true);
+    assert.equal(
+      sent.filter((entry) => entry.text.startsWith("Runtime Status") || entry.text.startsWith("Plan"))
+        .every((entry) => entry.parseMode === undefined),
+      true
+    );
+    assert.equal(sent.some((entry) => entry.text === "All done." && entry.parseMode === "HTML"), true);
     assert.equal(sent.filter((entry) => entry.text.startsWith("Runtime Status")).length, 1);
     assert.equal(sent.filter((entry) => entry.text.startsWith("Plan")).length, 1);
     assert.equal(sent.filter((entry) => entry.text.startsWith("Command")).length, 0);
-    assert.equal(sent.filter((entry) => entry.text === "All done.").length, 1);
 
     const statusTexts = getMessageTexts(sent, edited, 100);
     assert.ok(statusTexts.some((text) => /State: Starting/u.test(text)));
@@ -906,12 +910,85 @@ test("completed turns fall back to thread history when task_complete is missing"
     });
 
     assert.equal(resumeCalls, 1);
-    assert.equal(sent.every((entry) => entry.parseMode === undefined), true);
+    assert.equal(
+      sent.filter((entry) => entry.text.startsWith("Runtime Status"))
+        .every((entry) => entry.parseMode === undefined),
+      true
+    );
     assert.equal(sent.filter((entry) => entry.text.startsWith("Runtime Status")).length, 1);
-    assert.ok(sent.some((entry) => entry.text === "Recovered from thread history."));
+    assert.ok(sent.some((entry) => entry.text === "Recovered from thread history." && entry.parseMode === "HTML"));
     assert.ok(edited.some((entry) => /State: Completed/u.test(entry.text)));
     assert.equal(store.getSessionById(session.sessionId)?.status, "idle");
     assert.equal((service as any).activeTurn, null);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("completed turns send the final answer with Telegram HTML formatting", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ chatId: string; messageId: number; text: string; parseMode?: string }> = [];
+  let nextMessageId = 300;
+
+  try {
+    const session = authorizeChatWithSession(store, "chat-1");
+
+    (service as any).api = {
+      sendMessage: async (chatId: string, text: string, options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ chatId, messageId, text, parseMode: options?.parseMode });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) =>
+        createFakeTelegramMessage(messageId, text)
+    };
+
+    installRunningAppServer(service, "thread-final-html", "turn-final-html");
+
+    await withMockedNow("2026-03-10T10:00:00.000Z", async () => {
+      await (service as any).startRealTurn("chat-1", session, "Format the final answer");
+    });
+    await withMockedNow("2026-03-10T10:00:03.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/started", {
+        threadId: "thread-final-html",
+        turnId: "turn-final-html"
+      });
+    });
+    await withMockedNow("2026-03-10T10:00:06.000Z", async () => {
+      await (service as any).handleAppServerNotification("codex/event/task_complete", {
+        threadId: "thread-final-html",
+        turnId: "turn-final-html",
+        msg: {
+          last_agent_message: [
+            "# Summary",
+            "",
+            "- **Status**: `ok`",
+            "- Link: [Docs](https://example.com/docs)",
+            "",
+            "```ts",
+            "console.log(\"hi\")",
+            "```"
+          ].join("\n")
+        }
+      });
+      await (service as any).handleAppServerNotification("turn/completed", {
+        threadId: "thread-final-html",
+        turn: { id: "turn-final-html", status: "completed" }
+      });
+    });
+
+    const finalAnswer = sent.find((entry) => entry.parseMode === "HTML");
+    assert.ok(finalAnswer);
+    assert.equal(finalAnswer?.text.includes("<b>Summary</b>"), true);
+    assert.equal(finalAnswer?.text.includes("• <b>Status</b>: <code>ok</code>"), true);
+    assert.equal(
+      finalAnswer?.text.includes("<a href=\"https://example.com/docs\">Docs</a>"),
+      true
+    );
+    assert.equal(
+      finalAnswer?.text.includes("<pre><code class=\"language-ts\">console.log(\"hi\")</code></pre>"),
+      true
+    );
   } finally {
     await cleanup();
   }

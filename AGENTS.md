@@ -1,7 +1,7 @@
 # Project Documents Guide
 
-Low-token docs router. There is no root `README`.
-Read the smallest relevant file first.
+Low-token docs router for the bridge. There is no root `README`.
+Read the smallest relevant file first and treat code plus observed runtime behavior as the source of truth for current-state docs.
 
 ## Read In This Order
 
@@ -12,10 +12,10 @@ Read the smallest relevant file first.
    - Telegram UX, auth flow, project picker, sessions, and user-facing command behavior.
 
 3. `docs/architecture/runtime-and-state.md`
-   - App-server model, SQLite state, recovery rules, and concurrency limits.
+   - App-server model, SQLite state, runtime-card reduction, final-answer delivery, recovery rules, and concurrency limits.
 
 4. `docs/operations/install-and-admin.md`
-   - Install paths, env keys, Node floor, `ctb` commands, systemd, update flow, and diagnostics.
+   - Install paths, env keys, Node floor, `ctb` commands, service ownership, update flow, restart caveats, and diagnostics.
 
 5. `docs/research/codex-app-server-authoritative-reference.md`
    - Use this first for current Codex app-server usage guidance, source priority, API inventory, and refresh workflow.
@@ -36,7 +36,7 @@ Read the smallest relevant file first.
 ## Current Truth vs Planning
 
 - Current-state docs: `docs/product/`, `docs/architecture/`, `docs/operations/`, `docs/research/`.
-- If a current-state doc conflicts with runtime behavior, verify against `package.json`, `src/cli.ts`, `src/config.ts`, `src/paths.ts`, `src/service.ts`, and `src/state/store.ts`.
+- If a current-state doc conflicts with runtime behavior, verify against `package.json`, `src/cli.ts`, `src/config.ts`, `src/install.ts`, `src/paths.ts`, `src/service.ts`, `src/state/store.ts`, and `src/telegram/ui.ts`.
 - Planning and non-primary docs: `docs/roadmap/`, `docs/future/`, `docs/plans/`, `docs/archive/`.
 - In `docs/future/`, treat `v2-prd.md` and `v2-engineering-evaluation*.md` as product/evaluation inputs, not shipped behavior.
 - Do not treat roadmap, future, plan, or archive docs as shipped behavior.
@@ -52,7 +52,14 @@ Read the smallest relevant file first.
 - Runtime shape, app-server lifecycle, state, recovery, failure modes
   - `docs/architecture/runtime-and-state.md`
 
+- Final-answer rendering, runtime-card vs final-message boundary
+  - `docs/architecture/runtime-and-state.md`
+  - `docs/product/chat-and-project-flow.md`
+
 - Install, config, env vars, Node version, systemd, `ctb`, update, diagnostics
+  - `docs/operations/install-and-admin.md`
+
+- Update, reinstall, and service restart expectations
   - `docs/operations/install-and-admin.md`
 
 - Verified protocol fields, event names, final-answer extraction
@@ -78,6 +85,7 @@ Read the smallest relevant file first.
 
 - Future implementation handoffs and rollout sequencing
   - `docs/plans/`
+  - Treat these as implementation records, not current behavior.
 
 - Historical drafts
   - `docs/archive/`

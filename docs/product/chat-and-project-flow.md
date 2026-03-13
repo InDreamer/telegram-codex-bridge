@@ -259,7 +259,8 @@ Rules:
 
 Final-answer handling:
 - send the final assistant answer as a separate Telegram message after the turn finishes
-- if the answer exceeds safe size, split into 3000 UTF-8 character chunks
+- render the final assistant answer with Telegram formatting rather than exposing raw Markdown markers
+- if the answer exceeds safe size, split the rendered output into safe continuation chunks without cutting code blocks or Telegram tags
 - prefix later chunks with `(2/3)` style markers
 - never truncate silently
 - if no final assistant answer is available after a successful turn, send `本次操作已完成，但没有可返回的最终答复。`

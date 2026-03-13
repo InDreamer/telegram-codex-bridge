@@ -29,6 +29,7 @@ import {
   buildStatusText,
   buildUnsupportedCommandText,
   buildWhereText,
+  renderFinalAnswerHtmlChunks,
   parseCallbackData,
   parseCommand
 } from "./telegram/ui.js";
@@ -1654,7 +1655,7 @@ export class BridgeService {
 
   private async sendFinalAnswer(chatId: string, finalMessage: string | null): Promise<void> {
     const text = finalMessage || "本次操作已完成，但没有可返回的最终答复。";
-    const chunks = chunkFinalAnswer(text, 3000);
+    const chunks = renderFinalAnswerHtmlChunks(text, 3000);
     await this.logger.info("sending final answer", {
       chatId,
       chunkCount: chunks.length,
@@ -1663,7 +1664,7 @@ export class BridgeService {
     });
 
     for (const chunk of chunks) {
-      await this.safeSendMessage(chatId, chunk);
+      await this.safeSendHtmlMessageResult(chatId, chunk);
     }
   }
 
@@ -2701,24 +2702,4 @@ async function extractFinalAnswerFromHistory(
   );
 
   return finalItem?.text ?? null;
-}
-
-function chunkFinalAnswer(text: string, maxChars: number): string[] {
-  const codePoints = [...text];
-  if (codePoints.length <= maxChars) {
-    return [text];
-  }
-
-  const chunks: string[] = [];
-  for (let index = 0; index < codePoints.length; index += maxChars) {
-    chunks.push(codePoints.slice(index, index + maxChars).join(""));
-  }
-
-  return chunks.map((chunk, index) => {
-    if (index === 0) {
-      return chunk;
-    }
-
-    return `(${index + 1}/${chunks.length}) ${chunk}`;
-  });
 }

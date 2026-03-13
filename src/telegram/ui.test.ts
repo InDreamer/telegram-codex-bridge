@@ -2,7 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import type { SessionRow } from "../types.js";
-import { buildSessionsText } from "./ui.js";
+import {
+  buildSessionsText,
+  renderFinalAnswerHtmlChunks
+} from "./ui.js";
 
 async function withMockedNow<T>(nowIso: string, callback: () => Promise<T> | T): Promise<T> {
   const RealDate = Date;
@@ -104,4 +107,112 @@ test("buildSessionsText renders archived view with a dedicated title", async () 
     assert.match(text, /1\. Session Alpha \| Project One \| 空闲 \| 上次已完成 \| 10分钟前/u);
     assert.doesNotMatch(text, /\[当前\]/u);
   });
+});
+
+test("renderFinalAnswerHtmlChunks converts common Markdown into Telegram-safe HTML", () => {
+  const chunks = renderFinalAnswerHtmlChunks(
+    [
+      "# Summary",
+      "",
+      "- **Status**: `ok`",
+      "- Link: [Docs](https://example.com/docs)",
+      "",
+      "> Reviewed and ready.",
+      "",
+      "```ts",
+      "console.log(\"hi\")",
+      "```"
+    ].join("\n"),
+    3000
+  );
+
+  assert.equal(chunks.length, 1);
+  assert.equal(
+    chunks[0],
+    [
+      "<b>Summary</b>",
+      "",
+      "• <b>Status</b>: <code>ok</code>",
+      "• Link: <a href=\"https://example.com/docs\">Docs</a>",
+      "",
+      "<blockquote>Reviewed and ready.</blockquote>",
+      "",
+      "<pre><code class=\"language-ts\">console.log(\"hi\")</code></pre>"
+    ].join("\n")
+  );
+});
+
+test("renderFinalAnswerHtmlChunks splits large code blocks into valid HTML chunks", () => {
+  const chunks = renderFinalAnswerHtmlChunks(
+    [
+      "```ts",
+      "const one = 1;",
+      "const two = 2;",
+      "const three = 3;",
+      "const four = 4;",
+      "```"
+    ].join("\n"),
+    90
+  );
+
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[0], "<pre><code class=\"language-ts\">const one = 1;\nconst two = 2;</code></pre>");
+  assert.equal(
+    chunks[1],
+    "(2/2) <pre><code class=\"language-ts\">const three = 3;\nconst four = 4;</code></pre>"
+  );
+});
+
+test("renderFinalAnswerHtmlChunks keeps plain underscores and wildcard stars as text", () => {
+  const chunks = renderFinalAnswerHtmlChunks(
+    [
+      "snake_case and foo_bar_baz",
+      "",
+      "Use * as wildcard and **bold** text"
+    ].join("\n"),
+    3000
+  );
+
+  assert.equal(chunks.length, 1);
+  assert.equal(
+    chunks[0],
+    [
+      "snake_case and foo_bar_baz",
+      "",
+      "Use * as wildcard and <b>bold</b> text"
+    ].join("\n")
+  );
+});
+
+test("renderFinalAnswerHtmlChunks preserves balanced parentheses in Markdown links", () => {
+  const chunks = renderFinalAnswerHtmlChunks(
+    "See [Docs](https://example.com/a_(b)) for details.",
+    3000
+  );
+
+  assert.equal(chunks.length, 1);
+  assert.equal(
+    chunks[0],
+    "See <a href=\"https://example.com/a_(b)\">Docs</a> for details."
+  );
+});
+
+test("renderFinalAnswerHtmlChunks keeps wrapped list lines attached to the same item", () => {
+  const chunks = renderFinalAnswerHtmlChunks(
+    [
+      "- item one",
+      "  continuation line",
+      "- item two"
+    ].join("\n"),
+    3000
+  );
+
+  assert.equal(chunks.length, 1);
+  assert.equal(
+    chunks[0],
+    [
+      "• item one\ncontinuation line",
+      "• item two"
+    ].join("\n")
+  );
 });

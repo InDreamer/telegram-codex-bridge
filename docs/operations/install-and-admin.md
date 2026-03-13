@@ -179,6 +179,7 @@ Operational effect:
 - state, database, and logs remain in place
 - the reinstall path rewrites the local release files and the active service definition
 - the reinstall path reruns readiness checks and Telegram command sync
+- on hosts with an already-running long-lived service, follow `ctb update` with `ctb restart` to guarantee the live process picks up the rewritten release files
 - the CLI prints `update complete`, not a full status summary
 
 ## Uninstall Behavior

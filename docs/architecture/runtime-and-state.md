@@ -58,6 +58,8 @@ It should:
 - retain richer structured detail for `/inspect` and the on-disk debug journal
 - capture the final assistant message emitted before `turn/completed`
 - send the final assistant message as a separate Telegram message after turn completion
+- render the final assistant message with Telegram HTML derived from a safe Markdown subset rather than sending raw Markdown literals
+- split oversized final answers on rendered block boundaries so code fences and Telegram tags stay intact across `(2/N)` continuation chunks
 - observe internal `thread/archived` / `thread/unarchived` notifications for reconciliation and drift diagnosis without exposing them as user commands
 
 If the turn completes successfully but no final assistant message is available, send:
