@@ -49,6 +49,7 @@ Primary official docs:
 - CLI reference: <https://developers.openai.com/codex/cli/reference>
 
 Official guidance that matters for this repository:
+- the CLI reference still marks `codex app-server` as `Experimental`, so treat it as a powerful but evolving integration surface rather than a fully stable platform contract
 - use app-server for deep integrations that need threads, streaming events, approvals, history, or richer control surfaces
 - use `codex exec` or SDK-style automation for non-interactive one-shot automation and CI
 - app-server uses JSON-RPC 2.0 style messages
@@ -85,7 +86,7 @@ This repository currently uses app-server in a narrow but production-relevant wa
 - readiness: `initialize` -> `initialized` -> `thread/list`
 - session model: one bridge session maps to one Codex thread
 - turn model: normal Telegram text becomes `turn/start` input
-- output policy: Telegram receives only the final answer, not raw tool chatter
+- output policy: Telegram receives reduced runtime cards plus a separate final answer, not the raw notification stream or tool chatter
 
 Relevant local docs:
 - `docs/architecture/runtime-and-state.md`
@@ -144,10 +145,13 @@ Why:
 
 ### Final answer handling
 
-Preferred order:
-1. live final assistant content from the current event stream
-2. durable turn history from `thread/read` or `thread/resume`
-3. only then fall back to compatibility shortcuts such as historically observed `codex/event/task_complete`
+Current implementation order in this repository:
+1. compatibility shortcut from `codex/event/task_complete`
+2. durable turn history from `thread/read` or `thread/resume` when the shortcut is missing
+
+Preferred direction for future refactors:
+1. durable turn data from the current event stream or resumed thread history
+2. only then compatibility shortcuts such as historically observed `codex/event/task_complete`
 
 Commentary rule for integrations:
 - treat completed `agentMessage` items as authoritative when `phase = commentary`
