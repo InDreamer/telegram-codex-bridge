@@ -15,6 +15,7 @@ export interface BridgePaths {
   dbPath: string;
   envPath: string;
   servicePath: string;
+  launchAgentPath: string;
   binPath: string;
   manifestPath: string;
   offsetPath: string;
@@ -51,6 +52,7 @@ export function getBridgePaths(importMetaUrl: string, homeDir = homedir()): Brid
     dbPath: join(stateRoot, "bridge.db"),
     envPath: join(configRoot, "bridge.env"),
     servicePath: join(homeDir, ".config", "systemd", "user", "codex-telegram-bridge.service"),
+    launchAgentPath: join(homeDir, "Library", "LaunchAgents", "com.codex.telegram-bridge.plist"),
     binPath: join(installRoot, "bin", "ctb"),
     manifestPath: join(installRoot, "install-manifest.json"),
     offsetPath: join(runtimeDir, "telegram-offset.json"),
@@ -69,6 +71,7 @@ export async function ensureBridgeDirectories(paths: BridgePaths): Promise<void>
     mkdir(paths.cacheDir, { recursive: true }),
     mkdir(getDebugRuntimeDir(paths.runtimeDir), { recursive: true }),
     mkdir(dirname(paths.servicePath), { recursive: true }),
+    mkdir(dirname(paths.launchAgentPath), { recursive: true }),
     mkdir(dirname(paths.binPath), { recursive: true })
   ]);
 }

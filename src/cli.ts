@@ -99,19 +99,19 @@ async function main(): Promise<void> {
     }
 
     case "start": {
-      await startService();
+      await startService(paths);
       process.stdout.write("service started\n");
       return;
     }
 
     case "stop": {
-      await stopService();
+      await stopService(paths);
       process.stdout.write("service stopped\n");
       return;
     }
 
     case "restart": {
-      await restartService();
+      await restartService(paths);
       process.stdout.write("service restarted\n");
       return;
     }

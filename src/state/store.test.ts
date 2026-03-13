@@ -29,6 +29,7 @@ function createTestPaths(root: string): BridgePaths {
     dbPath: join(root, "state", "bridge.db"),
     envPath: join(root, "config", "bridge.env"),
     servicePath: join(root, "service", "bridge.service"),
+    launchAgentPath: join(root, "LaunchAgents", "bridge.plist"),
     binPath: join(root, "bin", "ctb"),
     manifestPath: join(root, "install", "install-manifest.json"),
     offsetPath: join(runtimeDir, "telegram-offset.json"),

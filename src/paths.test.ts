@@ -26,6 +26,7 @@ function createCustomPaths(root: string): BridgePaths {
     dbPath: join(stateRoot, "bridge.db"),
     envPath: join(configRoot, "bridge.env"),
     servicePath: join(root, "systemd", "bridge.service"),
+    launchAgentPath: join(root, "LaunchAgents", "bridge.plist"),
     binPath: join(root, "bin", "ctb"),
     manifestPath: join(installRoot, "install-manifest.json"),
     offsetPath: join(runtimeDir, "telegram-offset.json"),
@@ -54,6 +55,7 @@ test("ensureBridgeDirectories creates install and state roots for custom path la
     await assertExists(paths.runtimeDir);
     await assertExists(join(paths.runtimeDir, "debug"));
     await assertExists(join(root, "systemd"));
+    await assertExists(join(root, "LaunchAgents"));
     await assertExists(join(root, "bin"));
   } finally {
     await rm(root, { recursive: true, force: true });

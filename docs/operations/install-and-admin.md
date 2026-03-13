@@ -8,7 +8,7 @@ Package manager and build scripts:
 
 Actual admin and runtime surface:
 - `ctb ...` is the operator command surface
-- `ctb service run` is the long-lived service entrypoint used by systemd when available, and by manual supervisors otherwise
+- `ctb service run` is the long-lived service entrypoint used by `systemd --user`, `launchd`, or another supervisor
 
 Node requirement:
 - Node `>=25.0.0`
@@ -65,9 +65,12 @@ Install manifest:
 Use:
 - `systemd --user`
 - service name `codex-telegram-bridge.service`
+- or on macOS, `launchd`
+- LaunchAgent label `com.codex.telegram-bridge`
 
 Selected v1 ownership model:
-- `systemd --user` manages only `codex-telegram-bridge.service`
+- `systemd --user` manages only `codex-telegram-bridge.service` on Linux
+- `launchd` manages only `com.codex.telegram-bridge` on macOS
 - the bridge process starts, monitors, restarts, and reconnects its own local `codex app-server` child process
 
 Reason:
@@ -92,8 +95,9 @@ Supported subcommands:
 - `ctb service run`
 
 Platform note:
-- `ctb start`, `ctb stop`, and `ctb restart` require `systemd --user`
-- when `systemctl` is unavailable, install still writes release files and validates readiness, but does not enable a long-lived service
+- `ctb start`, `ctb stop`, and `ctb restart` use `systemd --user` on Linux
+- `ctb start`, `ctb stop`, and `ctb restart` use `launchctl` and a per-user LaunchAgent on macOS
+- when neither `systemctl` nor `launchctl` is available, install still writes release files and validates readiness, but does not enable a long-lived service
 - on those hosts, the operator must run `ctb service run` under another supervisor or in a persistent shell
 
 Authorization intent:
@@ -120,7 +124,7 @@ App-server child exit:
 - mark readiness degraded on failure
 
 Bridge exit:
-- let `systemd --user` restart the bridge
+- let the active service manager restart the bridge
 - recreate the app-server child on the next boot
 
 ## Diagnostics
@@ -129,13 +133,14 @@ Primary operator diagnostics:
 - `ctb status`
 - `ctb doctor`
 - `journalctl --user -u codex-telegram-bridge.service -n 200`
+- `launchctl print gui/$(id -u)/com.codex.telegram-bridge`
 - `sqlite3 ~/.local/state/codex-telegram-bridge/bridge.db`
 - inspect the per-turn JSONL files under `~/.local/state/codex-telegram-bridge/runtime/debug/`
 
 `ctb status` reports:
 - install and state roots
 - config and service presence
-- systemd active state
+- detected service manager and active state
 - installed version and timestamp
 - active session summary
 - readiness snapshot
@@ -165,7 +170,7 @@ Structured activity visibility:
 
 Operational effect:
 - state, database, and logs remain in place
-- the reinstall path rewrites the local release files and systemd unit
+- the reinstall path rewrites the local release files and the active service definition
 - the reinstall path reruns readiness checks and Telegram command sync
 - the CLI prints `update complete`, not a full status summary
 

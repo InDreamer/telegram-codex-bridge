@@ -17,6 +17,10 @@ type CommandRunner = (
   options?: Parameters<typeof runCommand>[2]
 ) => Promise<CommandResult>;
 
+type ServiceManager = "systemd" | "launchd" | "none";
+
+const SERVICE_LABEL = "com.codex.telegram-bridge";
+
 async function pathExists(path: string): Promise<boolean> {
   try {
     await stat(path);
@@ -110,8 +114,111 @@ WantedBy=default.target
   await writeFile(paths.servicePath, content, "utf8");
 }
 
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/gu, "&amp;")
+    .replace(/</gu, "&lt;")
+    .replace(/>/gu, "&gt;")
+    .replace(/"/gu, "&quot;")
+    .replace(/'/gu, "&apos;");
+}
+
+function launchdStdoutPath(paths: BridgePaths): string {
+  return join(paths.logsDir, "launchd.stdout.log");
+}
+
+function launchdStderrPath(paths: BridgePaths): string {
+  return join(paths.logsDir, "launchd.stderr.log");
+}
+
+function buildLaunchAgentPlist(paths: BridgePaths, config: BridgeConfig): string {
+  const programArguments = [
+    process.execPath,
+    "--disable-warning=ExperimentalWarning",
+    join(paths.installRoot, "dist", "cli.js"),
+    "service",
+    "run"
+  ];
+  const environmentVariables: Record<string, string> = {
+    TELEGRAM_BOT_TOKEN: config.telegramBotToken,
+    CODEX_BIN: config.codexBin,
+    TELEGRAM_API_BASE_URL: config.telegramApiBaseUrl,
+    TELEGRAM_POLL_TIMEOUT_SECONDS: `${config.telegramPollTimeoutSeconds}`,
+    TELEGRAM_POLL_INTERVAL_MS: `${config.telegramPollIntervalMs}`
+  };
+
+  for (const key of [
+    "PATH",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy"
+  ]) {
+    const value = process.env[key];
+    if (value) {
+      environmentVariables[key] = value;
+    }
+  }
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${SERVICE_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+${programArguments.map((value) => `    <string>${escapeXml(value)}</string>`).join("\n")}
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+${Object.entries(environmentVariables).map(([key, value]) => `    <key>${escapeXml(key)}</key>\n    <string>${escapeXml(value)}</string>`).join("\n")}
+  </dict>
+  <key>KeepAlive</key>
+  <true/>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>WorkingDirectory</key>
+  <string>${escapeXml(paths.installRoot)}</string>
+  <key>StandardOutPath</key>
+  <string>${escapeXml(launchdStdoutPath(paths))}</string>
+  <key>StandardErrorPath</key>
+  <string>${escapeXml(launchdStderrPath(paths))}</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>ThrottleInterval</key>
+  <integer>2</integer>
+</dict>
+</plist>
+`;
+}
+
+async function writeLaunchAgent(paths: BridgePaths, config: BridgeConfig): Promise<void> {
+  await writeFile(paths.launchAgentPath, buildLaunchAgentPlist(paths, config), "utf8");
+}
+
 async function systemctlAvailable(): Promise<boolean> {
   return await commandExists("systemctl");
+}
+
+async function launchctlAvailable(): Promise<boolean> {
+  return process.platform === "darwin" && await commandExists("launchctl");
+}
+
+async function detectServiceManager(): Promise<ServiceManager> {
+  if (await launchctlAvailable()) {
+    return "launchd";
+  }
+
+  if (await systemctlAvailable()) {
+    return "systemd";
+  }
+
+  return "none";
 }
 
 function countPendingRuntimeNotices(store: BridgeStateStore): number {
@@ -123,6 +230,77 @@ async function callSystemctl(args: string[]): Promise<void> {
   if (result.exitCode !== 0) {
     throw new Error(result.stderr || result.stdout || `systemctl failed: ${args.join(" ")}`);
   }
+}
+
+function launchctlDomain(): string {
+  if (typeof process.getuid !== "function") {
+    throw new Error("launchctl integration requires process.getuid()");
+  }
+
+  return `gui/${process.getuid()}`;
+}
+
+function launchctlServiceTarget(): string {
+  return `${launchctlDomain()}/${SERVICE_LABEL}`;
+}
+
+function isLaunchctlNotLoadedMessage(message: string): boolean {
+  return /could not find service|service is not loaded|no such process|input\/output error/iu.test(message);
+}
+
+async function callLaunchctl(args: string[], allowNotLoaded = false): Promise<CommandResult> {
+  const result = await runCommand("launchctl", args);
+  const combinedOutput = `${result.stdout}\n${result.stderr}`.trim();
+
+  if (result.exitCode === 0) {
+    return result;
+  }
+
+  if (allowNotLoaded && isLaunchctlNotLoadedMessage(combinedOutput)) {
+    return result;
+  }
+
+  throw new Error(combinedOutput || `launchctl failed: ${args.join(" ")}`);
+}
+
+async function isLaunchAgentLoaded(): Promise<boolean> {
+  const result = await runCommand("launchctl", ["print", launchctlServiceTarget()]);
+  return result.exitCode === 0;
+}
+
+async function getLaunchdServiceState(): Promise<string> {
+  const result = await runCommand("launchctl", ["print", launchctlServiceTarget()]);
+  if (result.exitCode !== 0) {
+    return "unloaded";
+  }
+
+  const output = `${result.stdout}\n${result.stderr}`;
+  const pidMatch = output.match(/pid = (\d+)/u);
+  if (pidMatch && pidMatch[1] && pidMatch[1] !== "0") {
+    return `running(pid=${pidMatch[1]})`;
+  }
+
+  const stateMatch = output.match(/state = ([^\n]+)/u);
+  if (stateMatch?.[1]) {
+    return stateMatch[1].trim();
+  }
+
+  return "loaded";
+}
+
+async function startLaunchAgent(paths: BridgePaths): Promise<void> {
+  const domain = launchctlDomain();
+  if (await isLaunchAgentLoaded()) {
+    await callLaunchctl(["bootout", domain, paths.launchAgentPath], true);
+  }
+
+  await callLaunchctl(["bootstrap", domain, paths.launchAgentPath]);
+  await callLaunchctl(["enable", launchctlServiceTarget()]);
+  await callLaunchctl(["kickstart", "-k", launchctlServiceTarget()]);
+}
+
+async function stopLaunchAgent(paths: BridgePaths): Promise<void> {
+  await callLaunchctl(["bootout", launchctlDomain(), paths.launchAgentPath], true);
 }
 
 async function buildRelease(paths: BridgePaths, run: CommandRunner): Promise<void> {
@@ -173,7 +351,13 @@ export async function installBridge(
   await writeConfig(paths, config);
   await writeInstallManifest(paths);
   await writeWrapperScript(paths);
-  await writeSystemdUnit(paths);
+  const serviceManager = await detectServiceManager();
+
+  if (serviceManager === "systemd") {
+    await writeSystemdUnit(paths);
+  } else if (serviceManager === "launchd") {
+    await writeLaunchAgent(paths, config);
+  }
 
   const store = await BridgeStateStore.open(paths, logger);
   try {
@@ -195,32 +379,40 @@ export async function installBridge(
     store.close();
   }
 
-  if (await systemctlAvailable()) {
+  if (serviceManager === "systemd") {
     await callSystemctl(["daemon-reload"]);
     await callSystemctl(["enable", "--now", "codex-telegram-bridge.service"]);
+  } else if (serviceManager === "launchd") {
+    await startLaunchAgent(paths);
   } else {
-    await logger.warn("systemctl is unavailable; service unit was written but not enabled");
+    await logger.warn("no supported service manager found; service files were not enabled");
   }
 }
 
 export async function getStatus(paths: BridgePaths): Promise<string> {
   const manifest = await readInstallManifest(paths);
   const configExists = await pathExists(paths.envPath);
-  const serviceExists = await pathExists(paths.servicePath);
+  const serviceManager = await detectServiceManager();
+  const serviceDefinitionPath = serviceManager === "launchd" ? paths.launchAgentPath : paths.servicePath;
+  const serviceExists = await pathExists(serviceDefinitionPath);
+  const systemdServiceExists = await pathExists(paths.servicePath);
+  const launchAgentExists = await pathExists(paths.launchAgentPath);
   const installExists =
     manifest !== null &&
     (await pathExists(join(paths.installRoot, "dist", "cli.js"))) &&
     (await pathExists(paths.binPath));
   const stateExists = await pathExists(paths.stateRoot);
 
-  let systemdState = "unavailable";
-  if (await systemctlAvailable()) {
+  let serviceState = "unavailable";
+  if (serviceManager === "systemd") {
     const result = await runCommand("systemctl", [
       "--user",
       "is-active",
       "codex-telegram-bridge.service"
     ]);
-    systemdState = result.exitCode === 0 ? result.stdout : result.stdout || result.stderr || "inactive";
+    serviceState = result.exitCode === 0 ? result.stdout : result.stdout || result.stderr || "inactive";
+  } else if (serviceManager === "launchd") {
+    serviceState = await getLaunchdServiceState();
   }
 
   let snapshot: ReadinessSnapshot | null = null;
@@ -248,7 +440,10 @@ export async function getStatus(paths: BridgePaths): Promise<string> {
     `state_root=${paths.stateRoot}`,
     `config_present=${configExists}`,
     `service_file_present=${serviceExists}`,
-    `systemd_state=${systemdState}`,
+    `systemd_service_file_present=${systemdServiceExists}`,
+    `launchd_service_file_present=${launchAgentExists}`,
+    `service_manager=${serviceManager}`,
+    `service_state=${serviceState}`,
     `version=${manifest?.version ?? "unknown"}`,
     `installed_at=${manifest?.installedAt ?? "unknown"}`,
     `state_dir_present=${stateExists}`,
@@ -281,16 +476,49 @@ export async function runDoctor(paths: BridgePaths, logger: Logger): Promise<str
   }
 }
 
-export async function startService(): Promise<void> {
-  await callSystemctl(["start", "codex-telegram-bridge.service"]);
+export async function startService(paths: BridgePaths): Promise<void> {
+  const serviceManager = await detectServiceManager();
+  if (serviceManager === "systemd") {
+    await callSystemctl(["start", "codex-telegram-bridge.service"]);
+    return;
+  }
+
+  if (serviceManager === "launchd") {
+    await startLaunchAgent(paths);
+    return;
+  }
+
+  throw new Error("no supported service manager found; run `ctb service run` under a supervisor");
 }
 
-export async function stopService(): Promise<void> {
-  await callSystemctl(["stop", "codex-telegram-bridge.service"]);
+export async function stopService(paths: BridgePaths): Promise<void> {
+  const serviceManager = await detectServiceManager();
+  if (serviceManager === "systemd") {
+    await callSystemctl(["stop", "codex-telegram-bridge.service"]);
+    return;
+  }
+
+  if (serviceManager === "launchd") {
+    await stopLaunchAgent(paths);
+    return;
+  }
+
+  throw new Error("no supported service manager found");
 }
 
-export async function restartService(): Promise<void> {
-  await callSystemctl(["restart", "codex-telegram-bridge.service"]);
+export async function restartService(paths: BridgePaths): Promise<void> {
+  const serviceManager = await detectServiceManager();
+  if (serviceManager === "systemd") {
+    await callSystemctl(["restart", "codex-telegram-bridge.service"]);
+    return;
+  }
+
+  if (serviceManager === "launchd") {
+    await startLaunchAgent(paths);
+    return;
+  }
+
+  throw new Error("no supported service manager found");
 }
 
 export async function updateBridge(paths: BridgePaths): Promise<void> {
@@ -333,12 +561,16 @@ export async function updateBridge(paths: BridgePaths): Promise<void> {
 }
 
 export async function uninstallBridge(paths: BridgePaths, purgeState: boolean): Promise<void> {
-  if (await systemctlAvailable()) {
+  const serviceManager = await detectServiceManager();
+  if (serviceManager === "systemd") {
     await runCommand("systemctl", ["--user", "disable", "--now", "codex-telegram-bridge.service"]);
     await runCommand("systemctl", ["--user", "daemon-reload"]);
+  } else if (serviceManager === "launchd") {
+    await stopLaunchAgent(paths).catch(() => {});
   }
 
   await unlink(paths.servicePath).catch(() => {});
+  await unlink(paths.launchAgentPath).catch(() => {});
   await rm(paths.installRoot, { recursive: true, force: true });
   await rm(paths.configRoot, { recursive: true, force: true });
 
