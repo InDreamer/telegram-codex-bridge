@@ -60,6 +60,7 @@ interface RuntimeCardMessageState {
   lastRenderedText: string;
   lastRenderedReplyMarkupKey: string | null;
   lastRenderedAtMs: number | null;
+  rateLimitUntilAtMs: number | null;
   pendingText: string | null;
   pendingReplyMarkup: TelegramInlineKeyboardMarkup | null;
   pendingReason: string | null;
@@ -70,6 +71,7 @@ interface RuntimeCommandState {
   itemId: string;
   commandText: string;
   latestSummary: string | null;
+  outputBuffer: string;
   status: "running" | "completed" | "failed" | "interrupted";
 }
 
@@ -85,6 +87,13 @@ interface ErrorCardState extends RuntimeCardMessageState {
   detail: string | null;
 }
 
+type RuntimeCardTraceContext = {
+  sessionId: string;
+  chatId: string | null;
+  threadId: string | null;
+  turnId: string | null;
+};
+
 interface ActiveTurnState {
   sessionId: string;
   chatId: string;
@@ -95,7 +104,7 @@ interface ActiveTurnState {
   debugJournal: DebugJournalWriter;
   statusCard: StatusCardState;
   planCard: RuntimeCardMessageState | null;
-  latestProgressUnit: string | null;
+  latestStatusProgressText: string | null;
   latestPlanFingerprint: string | null;
   errorCards: ErrorCardState[];
   nextErrorCardId: number;
@@ -119,6 +128,7 @@ function displayName(message: TelegramMessage): string | null {
 export class BridgeService {
   private readonly logger: Logger;
   private readonly bootstrapLogger: Logger;
+  private readonly runtimeCardTraceLoggers: Record<RuntimeCardMessageState["surface"], Logger>;
   private poller: TelegramPoller | null = null;
   private api: TelegramApi | null = null;
   private store: BridgeStateStore | null = null;
@@ -137,6 +147,17 @@ export class BridgeService {
   ) {
     this.logger = createLogger("bridge", paths.bridgeLogPath);
     this.bootstrapLogger = createLogger("bootstrap", paths.bootstrapLogPath);
+    this.runtimeCardTraceLoggers = {
+      status: createLogger("telegram-session-status-card", paths.telegramStatusCardLogPath, {
+        mirrorToConsole: false
+      }),
+      plan: createLogger("telegram-session-plan-card", paths.telegramPlanCardLogPath, {
+        mirrorToConsole: false
+      }),
+      error: createLogger("telegram-session-error-card", paths.telegramErrorCardLogPath, {
+        mirrorToConsole: false
+      })
+    };
   }
 
   async run(): Promise<void> {
@@ -861,7 +882,7 @@ export class BridgeService {
         }),
         statusCard: createStatusCardMessageState(),
         planCard: null,
-        latestProgressUnit: null,
+        latestStatusProgressText: null,
         latestPlanFingerprint: null,
         errorCards: [],
         nextErrorCardId: 1,
@@ -1067,21 +1088,46 @@ export class BridgeService {
     }
 
     const { activeTurn, statusCard, tracker } = record;
+    const traceContext = activeTurn
+      ? this.getRuntimeCardTraceContext(activeTurn)
+      : {
+          sessionId,
+          chatId,
+          threadId: null,
+          turnId: null
+        } satisfies RuntimeCardTraceContext;
     if (
       statusCard.messageId === 0 ||
       callbackQuery.message.message_id !== statusCard.messageId ||
       statusCard.commandOrder.length <= 1
     ) {
+      await this.logRuntimeCardEvent(traceContext, statusCard, "command_toggle_rejected", {
+        requestedExpanded: expanded,
+        callbackMessageId: callbackQuery.message.message_id,
+        commandCount: statusCard.commandOrder.length,
+        reason: "expired"
+      });
       await this.safeAnswerCallbackQuery(callbackQuery.id, "这个按钮已过期，请重新操作。");
       return;
     }
 
     if (statusCard.commandsExpanded === expanded) {
+      await this.logRuntimeCardEvent(traceContext, statusCard, "command_toggle_noop", {
+        requestedExpanded: expanded,
+        commandCount: statusCard.commandOrder.length
+      });
       await this.safeAnswerCallbackQuery(callbackQuery.id);
       return;
     }
 
     statusCard.commandsExpanded = expanded;
+    await this.logRuntimeCardEvent(traceContext, statusCard, "command_toggle_requested", {
+      requestedExpanded: expanded,
+      activeTurn: Boolean(activeTurn),
+      commandCount: statusCard.commandOrder.length,
+      commands: summarizeRuntimeCommands(statusCard.commandOrder),
+      card: summarizeRuntimeCardSurface(statusCard)
+    });
     if (activeTurn) {
       await this.syncRuntimeCards(activeTurn, null, null, activeTurn.tracker.getStatus(), {
         force: true,
@@ -1095,6 +1141,13 @@ export class BridgeService {
     const editResult = await this.safeEditMessageText(chatId, statusCard.messageId, rendered.text, rendered.replyMarkup);
     if (editResult.outcome !== "edited") {
       statusCard.commandsExpanded = !expanded;
+      await this.logRuntimeCardEvent(traceContext, statusCard, "command_toggle_reverted", {
+        requestedExpanded: expanded,
+        outcome: editResult.outcome,
+        renderedText: rendered.text,
+        replyMarkup: rendered.replyMarkup ?? null,
+        card: summarizeRuntimeCardSurface(statusCard)
+      });
       await this.safeAnswerCallbackQuery(callbackQuery.id, "消息暂时无法更新，请稍后重试。");
       return;
     }
@@ -1102,6 +1155,12 @@ export class BridgeService {
     statusCard.lastRenderedText = rendered.text;
     statusCard.lastRenderedReplyMarkupKey = serializeReplyMarkup(rendered.replyMarkup);
     statusCard.lastRenderedAtMs = Date.now();
+    await this.logRuntimeCardEvent(traceContext, statusCard, "command_toggle_rendered", {
+      requestedExpanded: expanded,
+      renderedText: rendered.text,
+      replyMarkup: rendered.replyMarkup ?? null,
+      card: summarizeRuntimeCardSurface(statusCard)
+    });
     await this.safeAnswerCallbackQuery(callbackQuery.id);
   }
 
@@ -1128,6 +1187,47 @@ export class BridgeService {
       tracker: recentActivity.tracker,
       statusCard: recentActivity.statusCard
     };
+  }
+
+  private getRuntimeCardTraceContext(activeTurn: ActiveTurnState): RuntimeCardTraceContext {
+    return {
+      sessionId: activeTurn.sessionId,
+      chatId: activeTurn.chatId,
+      threadId: activeTurn.threadId,
+      turnId: activeTurn.turnId
+    };
+  }
+
+  private async logRuntimeCardEvent(
+    context: RuntimeCardTraceContext,
+    surface: RuntimeCardMessageState,
+    event: string,
+    meta: Record<string, unknown> = {}
+  ): Promise<void> {
+    try {
+      await this.runtimeCardTraceLoggers[surface.surface].info(event, {
+        sessionId: context.sessionId,
+        chatId: context.chatId,
+        threadId: context.threadId,
+        turnId: context.turnId,
+        surface: surface.surface,
+        key: surface.key,
+        messageId: surface.messageId === 0 ? null : surface.messageId,
+        ...meta
+      });
+    } catch (error) {
+      try {
+        await this.logger.warn("runtime card trace log failed", {
+          sessionId: context.sessionId,
+          turnId: context.turnId,
+          surface: surface.surface,
+          key: surface.key,
+          error: `${error}`
+        });
+      } catch {
+        // Ignore trace-log failures entirely so Telegram rendering keeps running.
+      }
+    }
   }
 
   private buildStatusCardRenderPayload(
@@ -1295,21 +1395,43 @@ export class BridgeService {
     const inspect = activeTurn.tracker.getInspectSnapshot();
     const context = this.getRuntimeCardContext(activeTurn.sessionId);
     const commandStateChanged = applyRuntimeCommandDelta(activeTurn.statusCard, classified, nextStatus);
-
-    const latestProgressUnit = inspect.commentarySnippets.at(-1) ?? null;
-    const progressUnitChanged = latestProgressUnit !== activeTurn.latestProgressUnit;
-    if (progressUnitChanged) {
-      activeTurn.latestProgressUnit = latestProgressUnit;
+    const nextStatusProgressText = selectStatusProgressText(inspect, inspect.commentarySnippets.at(-1) ?? null);
+    const statusProgressTextChanged = nextStatusProgressText !== activeTurn.latestStatusProgressText;
+    if (statusProgressTextChanged) {
+      activeTurn.latestStatusProgressText = nextStatusProgressText;
     }
 
     const statusChanged = previousStatus === null ||
       previousStatus.turnStatus !== nextStatus.turnStatus ||
       previousStatus.threadBlockedReason !== nextStatus.threadBlockedReason ||
+      previousStatus.activeItemType !== nextStatus.activeItemType ||
+      previousStatus.activeItemLabel !== nextStatus.activeItemLabel ||
+      previousStatus.lastHighValueEventType !== nextStatus.lastHighValueEventType ||
+      previousStatus.lastHighValueTitle !== nextStatus.lastHighValueTitle ||
+      previousStatus.lastHighValueDetail !== nextStatus.lastHighValueDetail ||
+      previousStatus.latestProgress !== nextStatus.latestProgress ||
+      previousStatus.finalMessageAvailable !== nextStatus.finalMessageAvailable ||
+      previousStatus.errorState !== nextStatus.errorState ||
       commandStateChanged ||
-      progressUnitChanged ||
+      statusProgressTextChanged ||
       options.force;
     if (statusChanged) {
       const rendered = this.buildStatusCardRenderPayload(activeTurn.sessionId, activeTurn.tracker, activeTurn.statusCard);
+      await this.logRuntimeCardEvent(this.getRuntimeCardTraceContext(activeTurn), activeTurn.statusCard, "state_transition", {
+        reason: options.reason,
+        forced: options.force ?? false,
+        triggerKind: classified?.kind ?? null,
+        triggerMethod: classified?.method ?? null,
+        commandStateChanged,
+        statusProgressTextChanged,
+        previousStatus: previousStatus ? summarizeActivityStatus(previousStatus) : null,
+        nextStatus: summarizeActivityStatus(nextStatus),
+        selectedProgressText: nextStatusProgressText,
+        commands: summarizeRuntimeCommands(activeTurn.statusCard.commandOrder),
+        card: summarizeRuntimeCardSurface(activeTurn.statusCard),
+        renderedText: rendered.text,
+        replyMarkup: rendered.replyMarkup ?? null
+      });
       await this.requestRuntimeCardRender(
         activeTurn,
         activeTurn.statusCard,
@@ -1331,10 +1453,21 @@ export class BridgeService {
         activeTurn.latestPlanFingerprint = planFingerprint;
       }
       if (planChanged || options.force) {
+        const renderedPlanText = buildRuntimePlanCard(context, inspect.planSnapshot);
+        await this.logRuntimeCardEvent(this.getRuntimeCardTraceContext(activeTurn), activeTurn.planCard, "state_transition", {
+          reason: planChanged ? "plan_changed" : options.reason,
+          forced: options.force ?? false,
+          triggerKind: classified?.kind ?? null,
+          triggerMethod: classified?.method ?? null,
+          planChanged,
+          planSnapshot: inspect.planSnapshot,
+          card: summarizeRuntimeCardSurface(activeTurn.planCard),
+          renderedText: renderedPlanText
+        });
         await this.requestRuntimeCardRender(
           activeTurn,
           activeTurn.planCard,
-          buildRuntimePlanCard(context, inspect.planSnapshot),
+          renderedPlanText,
           undefined,
           options.force
             ? { force: true, reason: planChanged ? "plan_changed" : options.reason }
@@ -1348,14 +1481,24 @@ export class BridgeService {
       errorCard.title = "Runtime error";
       errorCard.detail = cleanRuntimeErrorMessage(classified.message);
       activeTurn.errorCards.push(errorCard);
+      const renderedErrorText = buildRuntimeErrorCard({
+        ...context,
+        title: errorCard.title,
+        detail: errorCard.detail
+      });
+      await this.logRuntimeCardEvent(this.getRuntimeCardTraceContext(activeTurn), errorCard, "card_created", {
+        reason: "runtime_error",
+        triggerKind: classified.kind,
+        triggerMethod: classified.method,
+        title: errorCard.title,
+        detail: errorCard.detail,
+        card: summarizeRuntimeCardSurface(errorCard),
+        renderedText: renderedErrorText
+      });
       await this.requestRuntimeCardRender(
         activeTurn,
         errorCard,
-        buildRuntimeErrorCard({
-          ...context,
-          title: errorCard.title,
-          detail: errorCard.detail
-        }),
+        renderedErrorText,
         undefined,
         {
           force: true,
@@ -1370,14 +1513,24 @@ export class BridgeService {
         errorCard.title = "Turn failed";
         errorCard.detail = "This operation did not complete successfully.";
         activeTurn.errorCards.push(errorCard);
+        const renderedErrorText = buildRuntimeErrorCard({
+          ...context,
+          title: errorCard.title,
+          detail: errorCard.detail
+        });
+        await this.logRuntimeCardEvent(this.getRuntimeCardTraceContext(activeTurn), errorCard, "card_created", {
+          reason: "turn_failed",
+          triggerKind: classified.kind,
+          triggerMethod: classified.method,
+          title: errorCard.title,
+          detail: errorCard.detail,
+          card: summarizeRuntimeCardSurface(errorCard),
+          renderedText: renderedErrorText
+        });
         await this.requestRuntimeCardRender(
           activeTurn,
           errorCard,
-          buildRuntimeErrorCard({
-            ...context,
-            title: errorCard.title,
-            detail: errorCard.detail
-          }),
+          renderedErrorText,
           undefined,
           {
             force: true,
@@ -1398,14 +1551,29 @@ export class BridgeService {
       reason: string;
     }
   ): Promise<void> {
+    const traceContext = this.getRuntimeCardTraceContext(activeTurn);
     const replyMarkupKey = serializeReplyMarkup(replyMarkup);
     const pendingChanged = surface.pendingText !== text ||
       serializeReplyMarkup(surface.pendingReplyMarkup) !== replyMarkupKey;
     surface.pendingText = text;
     surface.pendingReplyMarkup = replyMarkup ?? null;
     surface.pendingReason = options.reason;
+    await this.logRuntimeCardEvent(traceContext, surface, "render_requested", {
+      reason: options.reason,
+      forced: options.force ?? false,
+      pendingChanged,
+      renderedText: text,
+      replyMarkup: replyMarkup ?? null,
+      card: summarizeRuntimeCardSurface(surface)
+    });
 
     if (!pendingChanged && text === surface.lastRenderedText && surface.lastRenderedReplyMarkupKey === replyMarkupKey) {
+      await this.logRuntimeCardEvent(traceContext, surface, "render_skipped", {
+        reason: "text_unchanged",
+        renderedText: text,
+        replyMarkup: replyMarkup ?? null,
+        card: summarizeRuntimeCardSurface(surface)
+      });
       await this.logger.info("runtime card update skipped", {
         sessionId: activeTurn.sessionId,
         turnId: activeTurn.turnId,
@@ -1419,12 +1587,24 @@ export class BridgeService {
     const now = Date.now();
     const throttleMs = options.force || surface.messageId === 0 ? 0 : getRuntimeCardThrottleMs(surface.surface);
     const lastRenderedAtMs = surface.lastRenderedAtMs ?? null;
-    const remainingMs = options.force || lastRenderedAtMs === null
+    const throttleRemainingMs = lastRenderedAtMs === null
       ? 0
       : Math.max(0, lastRenderedAtMs + throttleMs - now);
+    const rateLimitRemainingMs = surface.rateLimitUntilAtMs === null
+      ? 0
+      : Math.max(0, surface.rateLimitUntilAtMs - now);
+    const remainingMs = Math.max(throttleRemainingMs, rateLimitRemainingMs);
 
     if (remainingMs > 0) {
       this.scheduleRuntimeCardRetry(activeTurn, surface, remainingMs, options.reason);
+      await this.logRuntimeCardEvent(traceContext, surface, "render_scheduled", {
+        reason: options.reason,
+        forced: options.force ?? false,
+        remainingMs,
+        throttleRemainingMs,
+        rateLimitRemainingMs,
+        card: summarizeRuntimeCardSurface(surface)
+      });
       await this.logger.info("runtime card update scheduled", {
         sessionId: activeTurn.sessionId,
         turnId: activeTurn.turnId,
@@ -1445,9 +1625,15 @@ export class BridgeService {
     delayMs: number,
     reason: string
   ): void {
+    const traceContext = this.getRuntimeCardTraceContext(activeTurn);
     this.clearRuntimeCardTimer(surface);
     surface.timer = setTimeout(() => {
       surface.timer = null;
+      void this.logRuntimeCardEvent(traceContext, surface, "retry_fired", {
+        reason,
+        delayMs,
+        card: summarizeRuntimeCardSurface(surface)
+      });
       void this.logger.info("runtime card retry fired", {
         sessionId: activeTurn.sessionId,
         turnId: activeTurn.turnId,
@@ -1465,6 +1651,7 @@ export class BridgeService {
     surface: RuntimeCardMessageState
   ): Promise<void> {
     await this.runRuntimeCardOperation(activeTurn, async () => {
+      const traceContext = this.getRuntimeCardTraceContext(activeTurn);
       const text = surface.pendingText;
       const replyMarkup = surface.pendingReplyMarkup ?? undefined;
       const replyMarkupKey = serializeReplyMarkup(replyMarkup);
@@ -1477,6 +1664,12 @@ export class BridgeService {
         surface.pendingText = null;
         surface.pendingReplyMarkup = null;
         surface.pendingReason = null;
+        await this.logRuntimeCardEvent(traceContext, surface, "render_skipped", {
+          reason: "render_unchanged",
+          renderedText: text,
+          replyMarkup: replyMarkup ?? null,
+          card: summarizeRuntimeCardSurface(surface)
+        });
         await this.logger.info("runtime card update skipped", {
           sessionId: activeTurn.sessionId,
           turnId: activeTurn.turnId,
@@ -1497,12 +1690,25 @@ export class BridgeService {
           surface.pendingText = text;
           surface.pendingReplyMarkup = replyMarkup ?? null;
           surface.pendingReason = reason;
+          await this.logRuntimeCardEvent(traceContext, surface, "send_failed_requeued", {
+            reason,
+            renderedText: text,
+            replyMarkup: replyMarkup ?? null,
+            card: summarizeRuntimeCardSurface(surface)
+          });
           return;
         }
         surface.messageId = sent.message_id;
         surface.lastRenderedText = text;
         surface.lastRenderedReplyMarkupKey = replyMarkupKey;
         surface.lastRenderedAtMs = Date.now();
+        surface.rateLimitUntilAtMs = null;
+        await this.logRuntimeCardEvent(traceContext, surface, "render_sent", {
+          reason,
+          renderedText: text,
+          replyMarkup: replyMarkup ?? null,
+          card: summarizeRuntimeCardSurface(surface)
+        });
         await this.logger.info("runtime card sent", {
           sessionId: activeTurn.sessionId,
           turnId: activeTurn.turnId,
@@ -1516,6 +1722,14 @@ export class BridgeService {
       }
 
       const editResult = await this.safeEditMessageText(activeTurn.chatId, surface.messageId, text, replyMarkup);
+      await this.logRuntimeCardEvent(traceContext, surface, "edit_attempted", {
+        reason,
+        outcome: editResult.outcome,
+        renderedText: text,
+        replyMarkup: replyMarkup ?? null,
+        retryAfterMs: editResult.outcome === "rate_limited" ? editResult.retryAfterMs : null,
+        card: summarizeRuntimeCardSurface(surface)
+      });
       await this.logger.info("runtime card edit attempted", {
         sessionId: activeTurn.sessionId,
         turnId: activeTurn.turnId,
@@ -1532,13 +1746,31 @@ export class BridgeService {
         surface.lastRenderedText = text;
         surface.lastRenderedReplyMarkupKey = replyMarkupKey;
         surface.lastRenderedAtMs = Date.now();
+        surface.rateLimitUntilAtMs = null;
+        await this.logRuntimeCardEvent(traceContext, surface, "render_edited", {
+          reason,
+          renderedText: text,
+          replyMarkup: replyMarkup ?? null,
+          card: summarizeRuntimeCardSurface(surface)
+        });
         return;
       }
 
       surface.pendingText = text;
       surface.pendingReplyMarkup = replyMarkup ?? null;
       surface.pendingReason = reason;
+      if (editResult.outcome === "rate_limited") {
+        surface.rateLimitUntilAtMs = Date.now() + editResult.retryAfterMs;
+      }
       const retryMs = editResult.outcome === "rate_limited" ? editResult.retryAfterMs : FAILED_EDIT_RETRY_MS;
+      await this.logRuntimeCardEvent(traceContext, surface, "edit_requeued", {
+        reason,
+        outcome: editResult.outcome,
+        retryMs,
+        renderedText: text,
+        replyMarkup: replyMarkup ?? null,
+        card: summarizeRuntimeCardSurface(surface)
+      });
       this.scheduleRuntimeCardRetry(activeTurn, surface, retryMs, reason ?? "edit_retry");
     });
   }
@@ -1559,12 +1791,22 @@ export class BridgeService {
   }
 
   private disposeRuntimeCards(activeTurn: ActiveTurnState): void {
+    const traceContext = this.getRuntimeCardTraceContext(activeTurn);
+    void this.logRuntimeCardEvent(traceContext, activeTurn.statusCard, "card_disposed", {
+      card: summarizeRuntimeCardSurface(activeTurn.statusCard)
+    });
     this.clearRuntimeCardTimer(activeTurn.statusCard);
     if (activeTurn.planCard) {
+      void this.logRuntimeCardEvent(traceContext, activeTurn.planCard, "card_disposed", {
+        card: summarizeRuntimeCardSurface(activeTurn.planCard)
+      });
       this.clearRuntimeCardTimer(activeTurn.planCard);
     }
 
     for (const errorCard of activeTurn.errorCards) {
+      void this.logRuntimeCardEvent(traceContext, errorCard, "card_disposed", {
+        card: summarizeRuntimeCardSurface(errorCard)
+      });
       this.clearRuntimeCardTimer(errorCard);
     }
   }
@@ -1772,11 +2014,21 @@ function summarizeActivityStatus(status: ActivityStatus): Record<string, unknown
   return {
     turnStatus: status.turnStatus,
     activeItemType: status.activeItemType,
+    activeItemId: status.activeItemId,
     activeItemLabel: status.activeItemLabel,
+    lastActivityAt: status.lastActivityAt,
+    currentItemStartedAt: status.currentItemStartedAt,
+    currentItemDurationSec: status.currentItemDurationSec,
+    lastHighValueEventType: status.lastHighValueEventType,
+    lastHighValueTitle: status.lastHighValueTitle,
+    lastHighValueDetail: status.lastHighValueDetail,
     latestProgress: status.latestProgress,
     recentStatusUpdates: status.recentStatusUpdates,
     blockedReason: status.threadBlockedReason,
-    finalMessageAvailable: status.finalMessageAvailable
+    finalMessageAvailable: status.finalMessageAvailable,
+    inspectAvailable: status.inspectAvailable,
+    debugAvailable: status.debugAvailable,
+    errorState: status.errorState
   };
 }
 
@@ -1786,6 +2038,46 @@ function summarizeTextPreview(text: string, limit = 160): string {
     return normalized;
   }
   return `${normalized.slice(0, limit)}...`;
+}
+
+function summarizeRuntimeCommands(commands: RuntimeCommandState[]): Array<Record<string, unknown>> {
+  return commands.map((command) => ({
+    itemId: command.itemId,
+    commandText: command.commandText,
+    latestSummary: command.latestSummary,
+    status: command.status
+  }));
+}
+
+function summarizeRuntimeCardSurface(surface: RuntimeCardMessageState): Record<string, unknown> {
+  const summary: Record<string, unknown> = {
+    surface: surface.surface,
+    key: surface.key,
+    messageId: surface.messageId === 0 ? null : surface.messageId,
+    lastRenderedText: surface.lastRenderedText || null,
+    lastRenderedReplyMarkupKey: surface.lastRenderedReplyMarkupKey,
+    lastRenderedAtMs: surface.lastRenderedAtMs,
+    rateLimitUntilAtMs: surface.rateLimitUntilAtMs,
+    pendingText: surface.pendingText,
+    pendingReplyMarkupKey: serializeReplyMarkup(surface.pendingReplyMarkup),
+    pendingReason: surface.pendingReason
+  };
+
+  if (surface.surface === "status") {
+    const statusSurface = surface as StatusCardState;
+    summary.commandsExpanded = statusSurface.commandsExpanded;
+    summary.commandCount = statusSurface.commandOrder.length;
+    summary.commands = summarizeRuntimeCommands(statusSurface.commandOrder);
+    return summary;
+  }
+
+  if (surface.surface === "error") {
+    const errorSurface = surface as ErrorCardState;
+    summary.title = errorSurface.title;
+    summary.detail = errorSurface.detail;
+  }
+
+  return summary;
 }
 
 function createRuntimeCardMessageState(
@@ -1799,6 +2091,7 @@ function createRuntimeCardMessageState(
     lastRenderedText: "",
     lastRenderedReplyMarkupKey: null,
     lastRenderedAtMs: null,
+    rateLimitUntilAtMs: null,
     pendingText: null,
     pendingReplyMarkup: null,
     pendingReason: null,
@@ -1937,6 +2230,7 @@ function getOrCreateRuntimeCommand(
     itemId,
     commandText: normalizeCommandName(label ?? "command"),
     latestSummary: null,
+    outputBuffer: "",
     status: "running"
   };
   statusCard.commandItems.set(itemId, created);
@@ -1973,10 +2267,14 @@ function applyRuntimeCommandDelta(
   }
 
   if (classified.kind === "command_output" && classified.itemId) {
-    const parsed = summarizeRuntimeCommandOutput(classified.text);
-    const commandResult = getOrCreateRuntimeCommand(statusCard, classified.itemId, parsed.command ?? "command");
+    const commandResult = getOrCreateRuntimeCommand(statusCard, classified.itemId, "command");
     const command = commandResult.command;
     changed = commandResult.created || changed;
+    const nextOutputBuffer = `${command.outputBuffer}${classified.text ?? ""}`;
+    if (command.outputBuffer !== nextOutputBuffer) {
+      command.outputBuffer = nextOutputBuffer;
+    }
+    const parsed = summarizeRuntimeCommandOutput(command.outputBuffer);
     if (parsed.command && (isGenericCommandName(command.commandText) || command.commandText !== parsed.command)) {
       command.commandText = parsed.command;
       changed = true;

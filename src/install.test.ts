@@ -4,11 +4,13 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { prepareRelease } from "./install.js";
+import { buildLaunchAgentPlist, prepareRelease } from "./install.js";
 import type { BridgePaths } from "./paths.js";
 import type { CommandResult } from "./process.js";
 
 function createTestPaths(root: string): BridgePaths {
+  const logsDir = join(root, "logs");
+  const telegramSessionFlowLogsDir = join(logsDir, "telegram-session-flow");
   const runtimeDir = join(root, "runtime");
 
   return {
@@ -17,7 +19,8 @@ function createTestPaths(root: string): BridgePaths {
     installRoot: join(root, "install"),
     stateRoot: join(root, "state"),
     configRoot: join(root, "config"),
-    logsDir: join(root, "logs"),
+    logsDir,
+    telegramSessionFlowLogsDir,
     runtimeDir,
     cacheDir: join(root, "cache"),
     dbPath: join(root, "state", "bridge.db"),
@@ -27,9 +30,12 @@ function createTestPaths(root: string): BridgePaths {
     binPath: join(root, "install", "bin", "ctb"),
     manifestPath: join(root, "install", "install-manifest.json"),
     offsetPath: join(runtimeDir, "telegram-offset.json"),
-    bridgeLogPath: join(root, "logs", "bridge.log"),
-    bootstrapLogPath: join(root, "logs", "bootstrap.log"),
-    appServerLogPath: join(root, "logs", "app-server.log")
+    bridgeLogPath: join(logsDir, "bridge.log"),
+    bootstrapLogPath: join(logsDir, "bootstrap.log"),
+    appServerLogPath: join(logsDir, "app-server.log"),
+    telegramStatusCardLogPath: join(telegramSessionFlowLogsDir, "status-card.log"),
+    telegramPlanCardLogPath: join(telegramSessionFlowLogsDir, "plan-card.log"),
+    telegramErrorCardLogPath: join(telegramSessionFlowLogsDir, "error-card.log")
   };
 }
 
@@ -50,6 +56,29 @@ async function createReleaseFixture(paths: BridgePaths): Promise<void> {
   await mkdir(paths.repoRoot, { recursive: true });
   await mkdir(paths.installRoot, { recursive: true });
   await writeFile(paths.repoRoot + "/package.json", '{ "name": "telegram-codex-bridge" }\n', "utf8");
+}
+
+function withEnvironment<T>(overrides: Record<string, string | undefined>, run: () => Promise<T>): Promise<T> {
+  const originalValues = new Map<string, string | undefined>();
+
+  for (const [key, value] of Object.entries(overrides)) {
+    originalValues.set(key, process.env[key]);
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+
+  return run().finally(() => {
+    for (const [key, value] of originalValues) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  });
 }
 
 test("prepareRelease builds before copying dist into the install root", async () => {
@@ -134,6 +163,39 @@ test("prepareRelease rejects successful builds that do not produce dist/cli.js",
     );
 
     assert.equal(await pathExists(join(paths.installRoot, "dist")), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("buildLaunchAgentPlist keeps launchd passthrough env only and does not pin bridge config", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctb-install-test-"));
+  const paths = createTestPaths(root);
+
+  try {
+    await withEnvironment(
+      {
+        PATH: "/usr/local/bin:/usr/bin:/bin",
+        HTTPS_PROXY: "http://proxy.internal:8443",
+        TELEGRAM_BOT_TOKEN: "stale-token",
+        CODEX_BIN: "/tmp/stale-codex",
+        TELEGRAM_API_BASE_URL: "https://stale.example.invalid",
+        TELEGRAM_POLL_TIMEOUT_SECONDS: "99",
+        TELEGRAM_POLL_INTERVAL_MS: "9999"
+      },
+      async () => {
+        const plist = buildLaunchAgentPlist(paths);
+
+        assert.match(plist, /<key>EnvironmentVariables<\/key>/u);
+        assert.match(plist, /<key>PATH<\/key>\s*<string>\/usr\/local\/bin:\/usr\/bin:\/bin<\/string>/u);
+        assert.match(plist, /<key>HTTPS_PROXY<\/key>\s*<string>http:\/\/proxy\.internal:8443<\/string>/u);
+        assert.doesNotMatch(plist, /TELEGRAM_BOT_TOKEN/u);
+        assert.doesNotMatch(plist, /CODEX_BIN/u);
+        assert.doesNotMatch(plist, /TELEGRAM_API_BASE_URL/u);
+        assert.doesNotMatch(plist, /TELEGRAM_POLL_TIMEOUT_SECONDS/u);
+        assert.doesNotMatch(plist, /TELEGRAM_POLL_INTERVAL_MS/u);
+      }
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

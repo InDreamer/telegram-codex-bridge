@@ -52,6 +52,7 @@ export class ActivityTracker {
   private readonly planSnapshot: string[] = [];
   private readonly commentarySnippets: string[] = [];
   private readonly agentMessageBuffers = new Map<string, string>();
+  private readonly commandOutputBuffers = new Map<string, string>();
   private readonly state: ActivityTrackerState;
   private readonly streamBlocks: StreamBlock[] = [];
   private turnStartedAt: string | null = null;
@@ -108,6 +109,7 @@ export class ActivityTracker {
         this.state.threadBlockedReason = null;
         this.state.lastActivityAt = receivedAt;
         this.agentMessageBuffers.clear();
+        this.commandOutputBuffers.clear();
         if (this.state.turnStatus === "failed" && this.state.errorState === null) {
           this.state.errorState = "turn_failed";
         }
@@ -173,6 +175,9 @@ export class ActivityTracker {
         this.state.latestProgress = null;
         this.state.inspectAvailable = true;
         this.state.lastActivityAt = receivedAt;
+        if (activeItemType === "commandExecution" && notification.itemId) {
+          this.commandOutputBuffers.set(notification.itemId, "");
+        }
 
         if (!this.state.threadBlockedReason && !isTerminalStatus(this.state.turnStatus)) {
           this.state.turnStatus = "running";
@@ -213,6 +218,9 @@ export class ActivityTracker {
           this.flushAgentMessageUpdate(notification.itemId);
           this.removeAgentMessageBuffer(notification.itemId);
         }
+        if (notification.itemId) {
+          this.commandOutputBuffers.delete(notification.itemId);
+        }
         if (completedItemType === "webSearch") {
           this.pushUniqueSummary(this.recentWebSearches, summary);
         }
@@ -232,13 +240,13 @@ export class ActivityTracker {
           if (this.state.activeItemType === "mcpToolCall") {
             const summary = cleanSummary(notification.message);
             this.pushUniqueSummary(this.recentMcpSummaries, summary);
-            this.setHighValueEvent("found", `Found: ${summary}`);
+            this.setHighValueEvent("found", `Found: ${summary}`, summary);
             this.pushStatusUpdate(summary);
             this.pushDeduplicatedToolSummary(summary);
           } else if (this.state.activeItemType === "webSearch") {
             const summary = cleanSummary(notification.message);
             this.pushUniqueSummary(this.recentWebSearches, summary);
-            this.setHighValueEvent("found", `Found: ${summary}`);
+            this.setHighValueEvent("found", `Found: ${summary}`, summary);
             this.pushStatusUpdate(summary);
             this.pushDeduplicatedToolSummary(summary);
           } else {
@@ -260,15 +268,18 @@ export class ActivityTracker {
       case "plan_updated":
         this.state.inspectAvailable = this.state.inspectAvailable || notification.entries.length > 0;
         this.state.lastActivityAt = receivedAt;
-        for (const entry of notification.entries) {
-          this.pushUniqueSummary(this.planSnapshot, cleanSummary(entry));
-        }
-        this.state.latestProgress = summarizePlanEntries(notification.entries);
-        if (this.state.latestProgress) {
-          this.pushStatusUpdate(this.state.latestProgress);
-        }
-        if (notification.entries.length > 0) {
-          this.collapseOrPushPlanBlock(notification.entries.map((e) => cleanSummary(e)).join("\n"));
+        {
+          const cleanedEntries = notification.entries
+            .map((entry) => cleanSummary(entry))
+            .filter((entry) => entry.length > 0);
+          this.replaceSummaryList(this.planSnapshot, cleanedEntries);
+          this.state.latestProgress = summarizePlanEntries(cleanedEntries);
+          if (this.state.latestProgress) {
+            this.pushStatusUpdate(this.state.latestProgress);
+          }
+          if (cleanedEntries.length > 0) {
+            this.collapseOrPushPlanBlock(cleanedEntries.join("\n"));
+          }
         }
         return;
 
@@ -277,7 +288,12 @@ export class ActivityTracker {
           this.state.inspectAvailable = true;
           this.state.lastActivityAt = receivedAt;
           const summary = cleanSummary(notification.message);
-          this.pushUniqueSummary(this.planSnapshot, summary);
+          if (!summary) {
+            return;
+          }
+          if (this.planSnapshot.length === 0) {
+            this.replaceSummaryList(this.planSnapshot, [summary]);
+          }
           this.state.latestProgress = summary;
           this.pushStatusUpdate(summary);
           this.collapseOrPushPlanBlock(summary);
@@ -286,7 +302,10 @@ export class ActivityTracker {
 
       case "command_output":
         if (notification.text) {
-          const summary = summarizeCommandOutput(notification.text);
+          const combinedText = notification.itemId
+            ? this.appendCommandOutput(notification.itemId, notification.text)
+            : notification.text;
+          const summary = summarizeCommandOutput(combinedText);
           const commandLabel = selectConcreteCommandLabel(
             summary.command,
             this.state.activeItemType === "commandExecution" ? this.state.activeItemLabel : null
@@ -343,6 +362,7 @@ export class ActivityTracker {
         this.state.threadBlockedReason = null;
         this.state.lastActivityAt = receivedAt;
         this.agentMessageBuffers.clear();
+        this.commandOutputBuffers.clear();
         this.setHighValueEvent("blocked", "Blocked: interrupted");
         this.pushTransition(receivedAt, "turn", "turn interrupted");
         this.pushStatusUpdate("Turn interrupted");
@@ -358,6 +378,7 @@ export class ActivityTracker {
         this.state.threadBlockedReason = null;
         this.state.lastActivityAt = receivedAt;
         this.state.errorState = "unknown";
+        this.commandOutputBuffers.clear();
         this.setHighValueEvent("blocked", `Blocked: ${cleanSummary(notification.message ?? "unknown error")}`);
         this.pushTransition(receivedAt, "error", notification.message ?? "error");
         this.pushStatusUpdate(cleanSummary(notification.message ?? "unknown error"));
@@ -502,6 +523,11 @@ export class ActivityTracker {
     }
   }
 
+  private replaceSummaryList(target: string[], summaries: string[]): void {
+    const nextSummaries = summaries.slice(-SUMMARY_LIMIT);
+    target.splice(0, target.length, ...nextSummaries);
+  }
+
   private setHighValueEvent(type: HighValueEventType, title: string, detail: string | null = null): void {
     this.state.lastHighValueEventType = type;
     this.state.lastHighValueTitle = title;
@@ -555,6 +581,12 @@ export class ActivityTracker {
   private removeAgentMessageBuffer(itemId: string | null): void {
     const key = itemId ?? UNKNOWN_AGENT_MESSAGE_ITEM;
     this.agentMessageBuffers.delete(key);
+  }
+
+  private appendCommandOutput(itemId: string, text: string): string {
+    const combined = `${this.commandOutputBuffers.get(itemId) ?? ""}${text}`;
+    this.commandOutputBuffers.set(itemId, combined);
+    return combined;
   }
 }
 

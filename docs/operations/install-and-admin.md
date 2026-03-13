@@ -22,6 +22,10 @@ Supported config keys in `bridge.env`:
 - `TELEGRAM_POLL_TIMEOUT_SECONDS`
 - `TELEGRAM_POLL_INTERVAL_MS`
 
+macOS note:
+- `bridge.env` stays the source of truth for bridge config after install
+- the LaunchAgent plist only carries passthrough shell values like `PATH` and proxy env so `ctb start` and `ctb restart` pick up edited `bridge.env` values
+
 # Install And Admin Operations
 
 ## Default Paths
@@ -136,6 +140,7 @@ Primary operator diagnostics:
 - `launchctl print gui/$(id -u)/com.codex.telegram-bridge`
 - `sqlite3 ~/.local/state/codex-telegram-bridge/bridge.db`
 - inspect the per-turn JSONL files under `~/.local/state/codex-telegram-bridge/runtime/debug/`
+- inspect Telegram session-surface trace logs under `~/.local/state/codex-telegram-bridge/logs/telegram-session-flow/`
 
 `ctb status` reports:
 - install and state roots
@@ -158,6 +163,7 @@ Structured activity visibility:
 - if Telegram refuses an edit or rate-limits it, the bridge retries the same card later instead of sending replacement-message spam
 - `/inspect` shows the latest structured snapshot for the active session
 - raw native notifications stay on disk in the runtime debug journal instead of being streamed to Telegram
+- dedicated Telegram session-surface trace logs record per-card state transitions and render lifecycle events in separate JSONL files for `status`, `plan`, and `error`
 
 ## Update Behavior
 

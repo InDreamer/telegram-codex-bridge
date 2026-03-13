@@ -131,21 +131,8 @@ function launchdStderrPath(paths: BridgePaths): string {
   return join(paths.logsDir, "launchd.stderr.log");
 }
 
-function buildLaunchAgentPlist(paths: BridgePaths, config: BridgeConfig): string {
-  const programArguments = [
-    process.execPath,
-    "--disable-warning=ExperimentalWarning",
-    join(paths.installRoot, "dist", "cli.js"),
-    "service",
-    "run"
-  ];
-  const environmentVariables: Record<string, string> = {
-    TELEGRAM_BOT_TOKEN: config.telegramBotToken,
-    CODEX_BIN: config.codexBin,
-    TELEGRAM_API_BASE_URL: config.telegramApiBaseUrl,
-    TELEGRAM_POLL_TIMEOUT_SECONDS: `${config.telegramPollTimeoutSeconds}`,
-    TELEGRAM_POLL_INTERVAL_MS: `${config.telegramPollIntervalMs}`
-  };
+function buildLaunchAgentEnvironmentVariables(): Record<string, string> {
+  const environmentVariables: Record<string, string> = {};
 
   for (const key of [
     "PATH",
@@ -164,6 +151,19 @@ function buildLaunchAgentPlist(paths: BridgePaths, config: BridgeConfig): string
     }
   }
 
+  return environmentVariables;
+}
+
+export function buildLaunchAgentPlist(paths: BridgePaths): string {
+  const programArguments = [
+    process.execPath,
+    "--disable-warning=ExperimentalWarning",
+    join(paths.installRoot, "dist", "cli.js"),
+    "service",
+    "run"
+  ];
+  const environmentVariables = buildLaunchAgentEnvironmentVariables();
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -174,10 +174,13 @@ function buildLaunchAgentPlist(paths: BridgePaths, config: BridgeConfig): string
   <array>
 ${programArguments.map((value) => `    <string>${escapeXml(value)}</string>`).join("\n")}
   </array>
-  <key>EnvironmentVariables</key>
+${Object.keys(environmentVariables).length === 0
+    ? ""
+    : `  <key>EnvironmentVariables</key>
   <dict>
 ${Object.entries(environmentVariables).map(([key, value]) => `    <key>${escapeXml(key)}</key>\n    <string>${escapeXml(value)}</string>`).join("\n")}
   </dict>
+`}
   <key>KeepAlive</key>
   <true/>
   <key>RunAtLoad</key>
@@ -197,8 +200,8 @@ ${Object.entries(environmentVariables).map(([key, value]) => `    <key>${escapeX
 `;
 }
 
-async function writeLaunchAgent(paths: BridgePaths, config: BridgeConfig): Promise<void> {
-  await writeFile(paths.launchAgentPath, buildLaunchAgentPlist(paths, config), "utf8");
+async function writeLaunchAgent(paths: BridgePaths): Promise<void> {
+  await writeFile(paths.launchAgentPath, buildLaunchAgentPlist(paths), "utf8");
 }
 
 async function systemctlAvailable(): Promise<boolean> {
@@ -356,7 +359,7 @@ export async function installBridge(
   if (serviceManager === "systemd") {
     await writeSystemdUnit(paths);
   } else if (serviceManager === "launchd") {
-    await writeLaunchAgent(paths, config);
+    await writeLaunchAgent(paths);
   }
 
   const store = await BridgeStateStore.open(paths, logger);

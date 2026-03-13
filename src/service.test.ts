@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -31,6 +31,8 @@ const testConfig: BridgeConfig = {
 };
 
 function createTestPaths(root: string): BridgePaths {
+  const logsDir = join(root, "logs");
+  const telegramSessionFlowLogsDir = join(logsDir, "telegram-session-flow");
   const runtimeDir = join(root, "runtime");
 
   return {
@@ -39,7 +41,8 @@ function createTestPaths(root: string): BridgePaths {
     installRoot: join(root, "install"),
     stateRoot: join(root, "state"),
     configRoot: join(root, "config"),
-    logsDir: join(root, "logs"),
+    logsDir,
+    telegramSessionFlowLogsDir,
     runtimeDir,
     cacheDir: join(root, "cache"),
     dbPath: join(root, "state", "bridge.db"),
@@ -49,9 +52,12 @@ function createTestPaths(root: string): BridgePaths {
     binPath: join(root, "bin", "ctb"),
     manifestPath: join(root, "install", "install-manifest.json"),
     offsetPath: join(runtimeDir, "telegram-offset.json"),
-    bridgeLogPath: join(root, "logs", "bridge.log"),
-    bootstrapLogPath: join(root, "logs", "bootstrap.log"),
-    appServerLogPath: join(root, "logs", "app-server.log")
+    bridgeLogPath: join(logsDir, "bridge.log"),
+    bootstrapLogPath: join(logsDir, "bootstrap.log"),
+    appServerLogPath: join(logsDir, "app-server.log"),
+    telegramStatusCardLogPath: join(telegramSessionFlowLogsDir, "status-card.log"),
+    telegramPlanCardLogPath: join(telegramSessionFlowLogsDir, "plan-card.log"),
+    telegramErrorCardLogPath: join(telegramSessionFlowLogsDir, "error-card.log")
   };
 }
 
@@ -636,6 +642,124 @@ test("startRealTurn sends an initial runtime status card immediately", async () 
   }
 });
 
+test("status card refreshes when tool progress changes without commentary", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string }> = [];
+  const edited: Array<{ messageId: number; text: string }> = [];
+  let nextMessageId = 610;
+
+  try {
+    const session = authorizeChatWithSession(store, "chat-1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ messageId, text });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) => {
+        edited.push({ messageId, text });
+        return createFakeTelegramMessage(messageId, text);
+      }
+    };
+
+    installRunningAppServer(service, "thread-progress", "turn-progress");
+
+    await withMockedNow("2026-03-10T10:00:00.000Z", async () => {
+      await (service as any).startRealTurn("chat-1", session, "Do the work");
+    });
+    await withMockedNow("2026-03-10T10:00:03.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/started", {
+        threadId: "thread-progress",
+        turnId: "turn-progress"
+      });
+    });
+    await withMockedNow("2026-03-10T10:00:06.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/started", {
+        threadId: "thread-progress",
+        turnId: "turn-progress",
+        item: { id: "mcp-1", type: "mcpToolCall" }
+      });
+    });
+    await withMockedNow("2026-03-10T10:00:09.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/mcpToolCall/progress", {
+        threadId: "thread-progress",
+        turnId: "turn-progress",
+        itemId: "mcp-1",
+        message: "Searching docs"
+      });
+    });
+
+    assert.match(edited.at(-1)?.text ?? "", /Progress: Searching docs/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("status card accumulates fragmented command output before rendering command summaries", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string }> = [];
+  const edited: Array<{ messageId: number; text: string }> = [];
+  let nextMessageId = 620;
+
+  try {
+    const session = authorizeChatWithSession(store, "chat-1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ messageId, text });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) => {
+        edited.push({ messageId, text });
+        return createFakeTelegramMessage(messageId, text);
+      }
+    };
+
+    installRunningAppServer(service, "thread-command-fragments", "turn-command-fragments");
+
+    await withMockedNow("2026-03-10T10:00:00.000Z", async () => {
+      await (service as any).startRealTurn("chat-1", session, "Do the work");
+    });
+    await withMockedNow("2026-03-10T10:00:03.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/started", {
+        threadId: "thread-command-fragments",
+        turnId: "turn-command-fragments"
+      });
+    });
+    await withMockedNow("2026-03-10T10:00:06.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/started", {
+        threadId: "thread-command-fragments",
+        turnId: "turn-command-fragments",
+        item: { id: "cmd-1", type: "commandExecution", title: "pnpm test" }
+      });
+    });
+    await withMockedNow("2026-03-10T10:00:09.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/commandExecution/outputDelta", {
+        threadId: "thread-command-fragments",
+        turnId: "turn-command-fragments",
+        itemId: "cmd-1",
+        delta: "$ pnpm test\n"
+      });
+    });
+    await withMockedNow("2026-03-10T10:00:12.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/commandExecution/outputDelta", {
+        threadId: "thread-command-fragments",
+        turnId: "turn-command-fragments",
+        itemId: "cmd-1",
+        delta: "26/26 tests passed"
+      });
+    });
+
+    const statusTexts = getMessageTexts(sent, edited, 620);
+    assert.match(statusTexts.at(-1) ?? "", /Command: \$ pnpm test/u);
+    assert.match(statusTexts.at(-1) ?? "", /Output: 26\/26 tests passed/u);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("fragmented commentary waits for a complete sentence before updating the status card", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ messageId: number; text: string }> = [];
@@ -713,6 +837,68 @@ test("fragmented commentary waits for a complete sentence before updating the st
     assert.match(edited.at(-1)?.text ?? "", /Progress: 先看项目骨架，再抓入口、配置和主要模块。/u);
     const inspect = (service as any).activeTurn.tracker.getInspectSnapshot();
     assert.equal(inspect.commentarySnippets.at(-1), "先看项目骨架，再抓入口、配置和主要模块。");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("plan card renders the current plan state instead of contradictory history", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string }> = [];
+  const edited: Array<{ messageId: number; text: string }> = [];
+  let nextMessageId = 630;
+
+  try {
+    const session = authorizeChatWithSession(store, "chat-1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ messageId, text });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) => {
+        edited.push({ messageId, text });
+        return createFakeTelegramMessage(messageId, text);
+      }
+    };
+
+    installRunningAppServer(service, "thread-plan", "turn-plan");
+
+    await withMockedNow("2026-03-10T10:00:00.000Z", async () => {
+      await (service as any).startRealTurn("chat-1", session, "Do the work");
+    });
+    await withMockedNow("2026-03-10T10:00:03.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/started", {
+        threadId: "thread-plan",
+        turnId: "turn-plan"
+      });
+    });
+    await withMockedNow("2026-03-10T10:00:06.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/plan/updated", {
+        threadId: "thread-plan",
+        turnId: "turn-plan",
+        plan: [
+          { step: "Collect protocol evidence", status: "pending" },
+          { step: "Wire inspect renderer", status: "pending" }
+        ]
+      });
+    });
+    await withMockedNow("2026-03-10T10:00:09.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/plan/updated", {
+        threadId: "thread-plan",
+        turnId: "turn-plan",
+        plan: [
+          { step: "Collect protocol evidence", status: "completed" },
+          { step: "Wire inspect renderer", status: "inProgress" }
+        ]
+      });
+    });
+
+    const planTexts = getMessageTexts(sent, edited, 631);
+    assert.match(planTexts.at(-1) ?? "", /Collect protocol evidence \(completed\)/u);
+    assert.match(planTexts.at(-1) ?? "", /Wire inspect renderer \(inProgress\)/u);
+    assert.doesNotMatch(planTexts.at(-1) ?? "", /Collect protocol evidence \(pending\)/u);
   } finally {
     await cleanup();
   }
@@ -820,13 +1006,24 @@ test("runtime card rate limits keep the same message and retry later without rep
     assert.equal(activeTurn.statusCard.messageId, 700);
     assert.match(activeTurn.statusCard.pendingText ?? "", /State: Running/u);
 
+    await withMockedNow("2026-03-10T10:00:10.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/started", {
+        threadId: "thread-7",
+        turnId: "turn-7",
+        item: { id: "cmd-rate-limited", type: "commandExecution", title: "pnpm test" }
+      });
+    });
+
+    assert.equal(sent.length, 1);
+    assert.equal(edited.length, 1);
+
     await withMockedNow("2026-03-10T10:01:05.000Z", async () => {
       await (service as any).flushRuntimeCardRender(activeTurn, activeTurn.statusCard);
     });
 
     assert.equal(sent.length, 1);
     assert.equal(edited.length, 2);
-    assert.match(activeTurn.statusCard.lastRenderedText, /State: Running/u);
+    assert.match(activeTurn.statusCard.lastRenderedText, /Command: \$ pnpm test/u);
     (service as any).clearRuntimeCardTimer(activeTurn.statusCard);
   } finally {
     await cleanup();
@@ -1073,6 +1270,67 @@ test("flushRuntimeNotices retains notices after a failed delivery and retries la
     assert.equal(store.listRuntimeNotices("chat-1").length, 0);
     assert.equal(store.countRuntimeNotices(), 0);
     assert.equal(attempts, 2);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("runtime card flow writes dedicated per-surface trace logs with rendered content", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const paths = (service as any).paths as BridgePaths;
+
+  try {
+    const session = authorizeChatWithSession(store, "chat-1");
+    store.setActiveSession("chat-1", session.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => createFakeTelegramMessage(700 + text.length, text),
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) => createFakeTelegramMessage(messageId, text)
+    };
+
+    installRunningAppServer(service, "thread-trace", "turn-trace");
+
+    await (service as any).startRealTurn("chat-1", session, "Trace runtime cards");
+    await (service as any).handleAppServerNotification("turn/started", {
+      threadId: "thread-trace",
+      turnId: "turn-trace"
+    });
+    await (service as any).handleAppServerNotification("turn/plan/updated", {
+      threadId: "thread-trace",
+      turnId: "turn-trace",
+      plan: [
+        { step: "Trace status card", status: "completed" },
+        { step: "Trace plan card", status: "inProgress" }
+      ]
+    });
+    await (service as any).handleAppServerNotification("item/agentMessage/delta", {
+      threadId: "thread-trace",
+      turnId: "turn-trace",
+      itemId: "msg-1",
+      delta: "Checking Telegram session flow rendering."
+    });
+    await (service as any).handleAppServerNotification("error", {
+      threadId: "thread-trace",
+      turnId: "turn-trace",
+      message: "Telegram edit failed"
+    });
+
+    const statusLog = await readFile(paths.telegramStatusCardLogPath, "utf8");
+    const planLog = await readFile(paths.telegramPlanCardLogPath, "utf8");
+    const errorLog = await readFile(paths.telegramErrorCardLogPath, "utf8");
+
+    assert.match(statusLog, /"message":"state_transition"/u);
+    assert.match(statusLog, /"message":"render_requested"/u);
+    assert.match(statusLog, /Checking Telegram session flow rendering\./u);
+    assert.match(statusLog, /"renderedText":"Runtime Status/u);
+
+    assert.match(planLog, /"message":"state_transition"/u);
+    assert.match(planLog, /Trace plan card \(inProgress\)/u);
+    assert.match(planLog, /"renderedText":"Plan/u);
+
+    assert.match(errorLog, /"message":"card_created"/u);
+    assert.match(errorLog, /Telegram edit failed/u);
+    assert.match(errorLog, /"renderedText":"Error/u);
   } finally {
     await cleanup();
   }

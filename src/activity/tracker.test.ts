@@ -169,6 +169,107 @@ test("reduces a turn from start through progress to completion", () => {
   assert.match(inspect.recentTransitions.at(-1)?.summary ?? "", /completed/u);
 });
 
+test("accumulates fragmented command output before summarizing command progress", () => {
+  const tracker = new ActivityTracker({
+    threadId: "thread-fragmented-cmd",
+    turnId: "turn-fragmented-cmd"
+  });
+
+  tracker.apply(
+    classifyNotification("turn/started", {
+      threadId: "thread-fragmented-cmd",
+      turnId: "turn-fragmented-cmd"
+    }),
+    "2026-03-10T10:05:00.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/started", {
+      threadId: "thread-fragmented-cmd",
+      turnId: "turn-fragmented-cmd",
+      item: {
+        id: "cmd-fragmented",
+        type: "commandExecution",
+        title: "pnpm test"
+      }
+    }),
+    "2026-03-10T10:05:00.100Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/commandExecution/outputDelta", {
+      threadId: "thread-fragmented-cmd",
+      turnId: "turn-fragmented-cmd",
+      itemId: "cmd-fragmented",
+      delta: "$ pnpm test\n"
+    }),
+    "2026-03-10T10:05:00.200Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/commandExecution/outputDelta", {
+      threadId: "thread-fragmented-cmd",
+      turnId: "turn-fragmented-cmd",
+      itemId: "cmd-fragmented",
+      delta: "26/26 tests passed"
+    }),
+    "2026-03-10T10:05:00.300Z"
+  );
+
+  const status = tracker.getStatus("2026-03-10T10:05:01.000Z");
+  assert.equal(status.latestProgress, "pnpm test -> 26/26 tests passed");
+  assert.equal(status.recentStatusUpdates.at(-1), "pnpm test -> 26/26 tests passed");
+
+  const inspect = tracker.getInspectSnapshot("2026-03-10T10:05:01.000Z");
+  assert.equal(inspect.recentCommandSummaries.at(-1), "pnpm test -> 26/26 tests passed");
+});
+
+test("plan snapshot reflects the latest plan update instead of append-only history", () => {
+  const tracker = new ActivityTracker({
+    threadId: "thread-plan-current",
+    turnId: "turn-plan-current"
+  });
+
+  tracker.apply(
+    classifyNotification("turn/started", {
+      threadId: "thread-plan-current",
+      turnId: "turn-plan-current"
+    }),
+    "2026-03-10T10:06:00.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("turn/plan/updated", {
+      threadId: "thread-plan-current",
+      turnId: "turn-plan-current",
+      plan: [
+        { step: "Collect protocol evidence", status: "pending" },
+        { step: "Wire inspect renderer", status: "pending" }
+      ]
+    }),
+    "2026-03-10T10:06:01.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("turn/plan/updated", {
+      threadId: "thread-plan-current",
+      turnId: "turn-plan-current",
+      plan: [
+        { step: "Collect protocol evidence", status: "completed" },
+        { step: "Wire inspect renderer", status: "inProgress" }
+      ]
+    }),
+    "2026-03-10T10:06:02.000Z"
+  );
+
+  const inspect = tracker.getInspectSnapshot("2026-03-10T10:06:03.000Z");
+  assert.deepEqual(inspect.planSnapshot, [
+    "Collect protocol evidence (completed)",
+    "Wire inspect renderer (inProgress)"
+  ]);
+  assert.equal(inspect.planSnapshot.includes("Collect protocol evidence (pending)"), false);
+});
+
 test("aggregates token-streamed agent commentary into stable status updates", () => {
   const tracker = new ActivityTracker({
     threadId: "thread-agg",
@@ -363,6 +464,19 @@ test("classifies unknown notifications as safe other events", () => {
 
   assert.equal(classified.kind, "other");
   assert.equal(classified.method, "item/unknownFutureThing");
+});
+
+test("classifies web search progress notifications as progress events", () => {
+  const classified = classifyNotification("item/webSearch/progress", {
+    threadId: "thread-web",
+    turnId: "turn-web",
+    itemId: "web-1",
+    message: "Searching the web"
+  });
+
+  assert.equal(classified.kind, "progress");
+  assert.equal(classified.itemId, "web-1");
+  assert.equal(classified.message, "Searching the web");
 });
 
 test("getStreamSnapshot keeps agent commentary out of the stream body", () => {

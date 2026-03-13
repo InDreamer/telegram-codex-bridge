@@ -60,6 +60,7 @@ export function classifyNotification(method: string, params: unknown): Classifie
       } satisfies ItemCompletedNotification;
 
     case "item/mcpToolCall/progress":
+    case "item/webSearch/progress":
       return {
         kind: "progress",
         ...context,
