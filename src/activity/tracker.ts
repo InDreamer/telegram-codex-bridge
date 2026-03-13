@@ -14,7 +14,6 @@ import type {
 const DEFAULT_TIMELINE_LIMIT = 100;
 const SUMMARY_LIMIT = 5;
 const STATUS_UPDATE_LIMIT = 3;
-const UNKNOWN_AGENT_MESSAGE_ITEM = "__unknown_agent_message__";
 
 interface ActivityTrackerOptions {
   threadId: string;
@@ -50,8 +49,7 @@ export class ActivityTracker {
   private readonly recentMcpSummaries: string[] = [];
   private readonly recentWebSearches: string[] = [];
   private readonly planSnapshot: string[] = [];
-  private readonly commentarySnippets: string[] = [];
-  private readonly agentMessageBuffers = new Map<string, string>();
+  private readonly completedCommentary: string[] = [];
   private readonly commandOutputBuffers = new Map<string, string>();
   private readonly state: ActivityTrackerState;
   private readonly streamBlocks: StreamBlock[] = [];
@@ -108,7 +106,6 @@ export class ActivityTracker {
         this.state.recentStatusUpdates = [];
         this.state.threadBlockedReason = null;
         this.state.lastActivityAt = receivedAt;
-        this.agentMessageBuffers.clear();
         this.commandOutputBuffers.clear();
         if (this.state.turnStatus === "failed" && this.state.errorState === null) {
           this.state.errorState = "turn_failed";
@@ -218,9 +215,11 @@ export class ActivityTracker {
 
         const summary = `${completedLabel} completed`;
         this.pushTransition(receivedAt, "item", summary);
-        if (completedItemType === "agentMessage") {
-          this.flushAgentMessageUpdate(notification.itemId);
-          this.removeAgentMessageBuffer(notification.itemId);
+        if (completedItemType === "agentMessage" && notification.itemPhase === "commentary") {
+          const commentaryText = normalizeCommentaryText(notification.itemText);
+          if (commentaryText) {
+            this.pushUniqueSummary(this.completedCommentary, commentaryText);
+          }
         }
         if (notification.itemId) {
           this.commandOutputBuffers.delete(notification.itemId);
@@ -348,11 +347,6 @@ export class ActivityTracker {
         return;
 
       case "agent_message_delta":
-        if (notification.text) {
-          this.state.inspectAvailable = true;
-          this.state.lastActivityAt = receivedAt;
-          this.captureAgentMessageDelta(notification.itemId, notification.text);
-        }
         return;
 
       case "turn_aborted":
@@ -365,7 +359,6 @@ export class ActivityTracker {
         this.state.recentStatusUpdates = [];
         this.state.threadBlockedReason = null;
         this.state.lastActivityAt = receivedAt;
-        this.agentMessageBuffers.clear();
         this.commandOutputBuffers.clear();
         this.setHighValueEvent("blocked", "Blocked: interrupted");
         this.pushTransition(receivedAt, "turn", "turn interrupted");
@@ -425,7 +418,7 @@ export class ActivityTracker {
       recentMcpSummaries: [...this.recentMcpSummaries],
       recentWebSearches: [...this.recentWebSearches],
       planSnapshot: [...this.planSnapshot],
-      commentarySnippets: [...this.commentarySnippets]
+      completedCommentary: [...this.completedCommentary]
     };
   }
 
@@ -552,39 +545,6 @@ export class ActivityTracker {
     if (this.state.recentStatusUpdates.length > STATUS_UPDATE_LIMIT) {
       this.state.recentStatusUpdates.splice(0, this.state.recentStatusUpdates.length - STATUS_UPDATE_LIMIT);
     }
-  }
-
-  private captureAgentMessageDelta(itemId: string | null, text: string): void {
-    const key = itemId ?? UNKNOWN_AGENT_MESSAGE_ITEM;
-    const next = `${this.agentMessageBuffers.get(key) ?? ""}${text}`;
-    this.agentMessageBuffers.set(key, next);
-
-    const stableUpdate = extractStableAgentMessage(next);
-    if (!stableUpdate) {
-      return;
-    }
-
-    this.pushUniqueSummary(this.commentarySnippets, stableUpdate);
-  }
-
-  private flushAgentMessageUpdate(itemId: string | null): void {
-    const key = itemId ?? UNKNOWN_AGENT_MESSAGE_ITEM;
-    const buffer = this.agentMessageBuffers.get(key);
-    if (!buffer) {
-      return;
-    }
-
-    const finalUpdate = extractFinalAgentMessage(buffer);
-    if (!finalUpdate) {
-      return;
-    }
-
-    this.pushUniqueSummary(this.commentarySnippets, finalUpdate);
-  }
-
-  private removeAgentMessageBuffer(itemId: string | null): void {
-    const key = itemId ?? UNKNOWN_AGENT_MESSAGE_ITEM;
-    this.agentMessageBuffers.delete(key);
   }
 
   private appendCommandOutput(itemId: string, text: string): string {
@@ -734,39 +694,13 @@ function summarizePlanEntries(entries: string[]): string | null {
   return cleanSummary(activeEntry ?? entries.at(-1) ?? entries[0] ?? "");
 }
 
-function extractStableAgentMessage(text: string): string | null {
-  const normalized = text.replace(/\r/g, "");
-  const lines = normalized
-    .split("\n")
-    .map((line) => cleanSummary(line))
-    .filter((line) => line.length > 0);
-
-  const lastLine = lines.at(-1) ?? "";
-  if (lastLine.length > 0 && /[.!?。！？]$/u.test(lastLine)) {
-    return lastLine;
+function normalizeCommentaryText(text: string | null): string | null {
+  if (!text) {
+    return null;
   }
 
-  const stableSentence = normalized.match(/([^.!?\n。！？]{8,}[.!?。！？])/gu)?.at(-1);
-  if (stableSentence) {
-    return cleanSummary(stableSentence);
-  }
-
-  const explorationLine = lines.findLast((line) => /^Explored \d+/u.test(line));
-  if (explorationLine) {
-    return explorationLine;
-  }
-
-  return null;
-}
-
-function extractFinalAgentMessage(text: string): string | null {
-  const normalized = text.replace(/\r/g, "");
-  const lines = normalized
-    .split("\n")
-    .map((line) => cleanSummary(line))
-    .filter((line) => line.length > 0);
-
-  return lines.at(-1) ?? cleanSummary(normalized);
+  const normalized = text.replace(/\s+/gu, " ").trim();
+  return normalized.length > 0 ? normalized : null;
 }
 
 function computeDurationSec(startIso: string, endIso: string): number | null {

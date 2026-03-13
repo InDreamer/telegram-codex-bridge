@@ -53,7 +53,8 @@ It should:
 - create separate error cards when runtime failures surface
 - render runtime cards as plain-text Telegram messages rather than HTML log blocks
 - keep reasoning deltas and raw token fragments out of the normal Telegram chat flow
-- surface commentary only after it forms a complete progress unit
+- treat completed `agentMessage` items with `phase = commentary` as the authoritative commentary source
+- keep raw `item/agentMessage/delta` traffic out of the normal Telegram chat flow
 - retain richer structured detail for `/inspect` and the on-disk debug journal
 - capture the final assistant message emitted before `turn/completed`
 - send the final assistant message as a separate Telegram message after turn completion

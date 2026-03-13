@@ -159,7 +159,8 @@ Structured activity visibility:
 - the Telegram chat keeps one bridge-owned status card per running turn
 - the bridge may also create a separate plan card, per-command cards, and separate error cards
 - the bridge updates cards only when visible state changes or when a complete progress unit is available
-- fragmented commentary and reasoning deltas stay out of the default Telegram flow
+- raw agent-message deltas and reasoning deltas stay out of the default Telegram flow
+- completed `agentMessage` items with `phase = commentary` are the authoritative commentary source for user-visible progress
 - if Telegram refuses an edit or rate-limits it, the bridge retries the same card later instead of sending replacement-message spam
 - `/inspect` shows the latest structured snapshot for the active session
 - raw native notifications stay on disk in the runtime debug journal instead of being streamed to Telegram

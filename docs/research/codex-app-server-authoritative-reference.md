@@ -149,6 +149,10 @@ Preferred order:
 2. durable turn history from `thread/read` or `thread/resume`
 3. only then fall back to compatibility shortcuts such as historically observed `codex/event/task_complete`
 
+Commentary rule for integrations:
+- treat completed `agentMessage` items as authoritative when `phase = commentary`
+- treat `item/agentMessage/delta` as streamed text only, not the authoritative commentary record
+
 ## Current Host Baseline
 
 Current host runtime facts captured on 2026-03-12:

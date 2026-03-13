@@ -410,6 +410,9 @@ Experimental or platform-specific:
   - `item`
   - `threadId`
   - `turnId`
+- LLM rule:
+  - for commentary-aware integrations, prefer `item.type = agentMessage` plus `item.phase`
+  - treat this completed item as authoritative over prior `item/agentMessage/delta` text
 - Repo status:
   - used today
 
@@ -417,6 +420,8 @@ Experimental or platform-specific:
 - Schema: `v2/AgentMessageDeltaNotification.json`
 - Use for:
   - streamed assistant text
+- LLM rule:
+  - do not treat this delta stream as the authoritative commentary record
 - Repo status:
   - used today
 

@@ -486,9 +486,9 @@ export function buildInspectText(
   lines.push("", "Plan snapshot");
   lines.push(...formatInspectSection(snapshot.planSnapshot));
 
-  if (snapshot.commentarySnippets.length > 0) {
-    lines.push("", "Commentary snippets (best-effort)");
-    lines.push(...formatInspectSection(snapshot.commentarySnippets));
+  if (snapshot.completedCommentary.length > 0) {
+    lines.push("", "Completed commentary");
+    lines.push(...formatInspectSection(snapshot.completedCommentary));
   }
 
   const notes: string[] = [];

@@ -1427,7 +1427,7 @@ export class BridgeService {
         ...context,
         state: formatVisibleRuntimeState(inspect),
         blockedReason: formatRuntimeBlockedReason(inspect.threadBlockedReason),
-        progressText: selectStatusProgressText(inspect, inspect.commentarySnippets.at(-1) ?? null),
+        progressText: selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null),
         commands: statusCard.commandOrder.map((command) => ({
           commandText: command.commandText,
           state: formatRuntimeCommandState(command.status),
@@ -1745,7 +1745,7 @@ export class BridgeService {
     const inspect = activeTurn.tracker.getInspectSnapshot();
     const context = this.getRuntimeCardContext(activeTurn.sessionId);
     const commandStateChanged = applyRuntimeCommandDelta(activeTurn.statusCard, classified, nextStatus);
-    const nextStatusProgressText = selectStatusProgressText(inspect, inspect.commentarySnippets.at(-1) ?? null);
+    const nextStatusProgressText = selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null);
     const statusProgressTextChanged = nextStatusProgressText !== activeTurn.latestStatusProgressText;
     if (statusProgressTextChanged) {
       activeTurn.latestStatusProgressText = nextStatusProgressText;

@@ -70,7 +70,9 @@ export function classifyNotification(method: string, params: unknown): Classifie
         kind: "item_completed",
         ...context,
         itemId: getItemId(params),
-        itemType: getItemType(params)
+        itemType: getItemType(params),
+        itemText: getString(getObject(params)?.item, "text"),
+        itemPhase: getMessagePhase(params)
       } satisfies ItemCompletedNotification;
 
     case "item/mcpToolCall/progress":
@@ -191,6 +193,15 @@ function getDeltaText(params: unknown): string | null {
     getString(getObject(params)?.output, "text") ??
     null
   );
+}
+
+function getMessagePhase(params: unknown): "commentary" | "final_answer" | null {
+  const phase = getString(getObject(params)?.item, "phase");
+  if (phase === "commentary" || phase === "final_answer") {
+    return phase;
+  }
+
+  return null;
 }
 
 function getPlanEntries(params: unknown): string[] {

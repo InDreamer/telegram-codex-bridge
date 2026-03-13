@@ -89,8 +89,10 @@ export interface InspectSnapshot extends ActivityStatus {
   recentMcpSummaries: string[];
   recentWebSearches: string[];
   planSnapshot: string[];
-  commentarySnippets: string[];
+  completedCommentary: string[];
 }
+
+export type MessagePhase = "commentary" | "final_answer";
 
 export interface DebugJournalRecord {
   receivedAt: string;
@@ -158,6 +160,8 @@ export interface ItemCompletedNotification extends ClassifiedNotificationBase {
   kind: "item_completed";
   itemId: string | null;
   itemType: string | null;
+  itemText: string | null;
+  itemPhase: MessagePhase | null;
 }
 
 export interface ProgressNotification extends ClassifiedNotificationBase {

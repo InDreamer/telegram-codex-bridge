@@ -127,6 +127,20 @@ test("reduces a turn from start through progress to completion", () => {
   );
 
   tracker.apply(
+    classifyNotification("item/completed", {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      item: {
+        id: "note-1",
+        type: "agentMessage",
+        phase: "commentary",
+        text: "Checking event mapping against Telegram surface."
+      }
+    }),
+    "2026-03-10T10:00:08.450Z"
+  );
+
+  tracker.apply(
     classifyNotification("item/reasoning/summaryTextDelta", {
       threadId: "thread-1",
       turnId: "turn-1",
@@ -163,9 +177,9 @@ test("reduces a turn from start through progress to completion", () => {
     "Collect protocol evidence (completed)",
     "Wire inspect renderer (inProgress)"
   ]);
-  assert.equal(inspect.commentarySnippets[0], "Checking event mapping against Telegram surface.");
-  assert.equal(inspect.commentarySnippets.includes("internal reasoning should stay private"), false);
-  assert.equal(inspect.recentTransitions.length, 7);
+  assert.equal(inspect.completedCommentary[0], "Checking event mapping against Telegram surface.");
+  assert.equal(inspect.completedCommentary.includes("internal reasoning should stay private"), false);
+  assert.equal(inspect.recentTransitions.length, 8);
   assert.match(inspect.recentTransitions.at(-1)?.summary ?? "", /completed/u);
 });
 
@@ -270,7 +284,7 @@ test("plan snapshot reflects the latest plan update instead of append-only histo
   assert.equal(inspect.planSnapshot.includes("Collect protocol evidence (pending)"), false);
 });
 
-test("aggregates token-streamed agent commentary into stable status updates", () => {
+test("records completed commentary items and ignores agent-message deltas", () => {
   const tracker = new ActivityTracker({
     threadId: "thread-agg",
     turnId: "turn-agg"
@@ -296,19 +310,7 @@ test("aggregates token-streamed agent commentary into stable status updates", ()
     "2026-03-10T12:00:00.100Z"
   );
 
-  for (const delta of [
-    "Using",
-    " superpower",
-    " skill",
-    " for",
-    " preflight",
-    ", then",
-    " scanning",
-    " the",
-    " repo",
-    " entrypoints",
-    "."
-  ]) {
+  for (const delta of ["Using", " superpower", " skill", " for preflight."]) {
     tracker.apply(
       classifyNotification("item/agentMessage/delta", {
         threadId: "thread-agg",
@@ -324,14 +326,31 @@ test("aggregates token-streamed agent commentary into stable status updates", ()
   assert.equal(status.recentStatusUpdates.at(-1), "Turn started");
   assert.equal(status.latestProgress, null);
 
-  const inspect = tracker.getInspectSnapshot("2026-03-10T12:00:01.000Z");
-  assert.equal(inspect.commentarySnippets.at(-1), "Using superpower skill for preflight, then scanning the repo entrypoints.");
+  const partial = tracker.getInspectSnapshot("2026-03-10T12:00:01.000Z");
+  assert.equal(partial.completedCommentary.length, 0);
+
+  tracker.apply(
+    classifyNotification("item/completed", {
+      threadId: "thread-agg",
+      turnId: "turn-agg",
+      item: {
+        id: "msg-1",
+        type: "agentMessage",
+        phase: "commentary",
+        text: "Using superpower skill for preflight, then scanning the repo entrypoints."
+      }
+    }),
+    "2026-03-10T12:00:01.100Z"
+  );
+
+  const inspect = tracker.getInspectSnapshot("2026-03-10T12:00:01.200Z");
+  assert.equal(inspect.completedCommentary.at(-1), "Using superpower skill for preflight, then scanning the repo entrypoints.");
 
   const snapshot = tracker.getStreamSnapshot();
-  assert.equal(snapshot.activeStatusLine, "assistant response");
+  assert.equal(snapshot.activeStatusLine, null);
 });
 
-test("does not treat colon-ended commentary fragments as stable updates", () => {
+test("ignores completed agent messages without commentary phase", () => {
   const tracker = new ActivityTracker({
     threadId: "thread-colon",
     turnId: "turn-colon"
@@ -358,32 +377,39 @@ test("does not treat colon-ended commentary fragments as stable updates", () => 
   );
 
   tracker.apply(
-    classifyNotification("item/agentMessage/delta", {
+    classifyNotification("item/completed", {
       threadId: "thread-colon",
       turnId: "turn-colon",
-      itemId: "msg-colon",
-      delta: "我把现在领域内核补齐："
+      item: {
+        id: "msg-colon",
+        type: "agentMessage",
+        text: "我把现在领域内核补齐：看命令决策器、事件投影器、快照查询和重放机制。"
+      }
     }),
     "2026-03-10T12:30:00.100Z"
   );
 
   const partial = tracker.getInspectSnapshot("2026-03-10T12:30:00.200Z");
-  assert.equal(partial.commentarySnippets.length, 0);
-  assert.notEqual(partial.recentStatusUpdates.at(-1), "我把现在领域内核补齐：");
+  assert.equal(partial.completedCommentary.length, 0);
+  assert.notEqual(partial.recentStatusUpdates.at(-1), "我把现在领域内核补齐：看命令决策器、事件投影器、快照查询和重放机制。");
 
   tracker.apply(
-    classifyNotification("item/agentMessage/delta", {
+    classifyNotification("item/completed", {
       threadId: "thread-colon",
       turnId: "turn-colon",
-      itemId: "msg-colon",
-      delta: "看命令决策器、事件投影器、快照查询和重放机制。"
+      item: {
+        id: "msg-colon-2",
+        type: "agentMessage",
+        phase: "commentary",
+        text: "我把现在领域内核补齐：看命令决策器、事件投影器、快照查询和重放机制。"
+      }
     }),
     "2026-03-10T12:30:00.300Z"
   );
 
   const settled = tracker.getInspectSnapshot("2026-03-10T12:30:00.400Z");
   assert.equal(
-    settled.commentarySnippets.at(-1),
+    settled.completedCommentary.at(-1),
     "我把现在领域内核补齐：看命令决策器、事件投影器、快照查询和重放机制。"
   );
 });
@@ -574,7 +600,7 @@ test("getStreamSnapshot keeps agent commentary out of the stream body", () => {
   assert.equal(snapshot.turnStartedAt, "2026-03-10T10:00:00.000Z");
 
   const inspect = tracker.getInspectSnapshot("2026-03-10T10:00:04.000Z");
-  assert.equal(inspect.commentarySnippets.at(-1), "Looking at the config files.");
+  assert.equal(inspect.completedCommentary.length, 0);
 });
 
 test("getStreamSnapshot deduplicates consecutive tool summaries", () => {

@@ -1128,7 +1128,7 @@ test("status card accumulates fragmented command output before rendering command
   }
 });
 
-test("fragmented commentary waits for a complete sentence before updating the status card", async () => {
+test("status card updates only when completed commentary arrives", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ messageId: number; text: string }> = [];
   const edited: Array<{ messageId: number; text: string }> = [];
@@ -1174,7 +1174,7 @@ test("fragmented commentary waits for a complete sentence before updating the st
         threadId: "thread-6",
         turnId: "turn-6",
         itemId: "item-1",
-        delta: "先看项目骨架，再抓入口"
+        delta: "先看项目骨架，再抓入口、配置和主要模块。"
       });
     });
 
@@ -1193,18 +1193,22 @@ test("fragmented commentary waits for a complete sentence before updating the st
     assert.equal(edited.length, 1);
 
     await withMockedNow("2026-03-10T10:00:15.000Z", async () => {
-      await (service as any).handleAppServerNotification("item/agentMessage/delta", {
+      await (service as any).handleAppServerNotification("item/completed", {
         threadId: "thread-6",
         turnId: "turn-6",
-        itemId: "item-1",
-        delta: "、配置和主要模块。"
+        item: {
+          id: "item-1",
+          type: "agentMessage",
+          phase: "commentary",
+          text: "先看项目骨架，再抓入口、配置和主要模块。"
+        }
       });
     });
 
     assert.equal(edited.length, 2);
     assert.match(edited.at(-1)?.text ?? "", /Progress: 先看项目骨架，再抓入口、配置和主要模块。/u);
     const inspect = (service as any).activeTurn.tracker.getInspectSnapshot();
-    assert.equal(inspect.commentarySnippets.at(-1), "先看项目骨架，再抓入口、配置和主要模块。");
+    assert.equal(inspect.completedCommentary.at(-1), "先看项目骨架，再抓入口、配置和主要模块。");
   } finally {
     await cleanup();
   }
@@ -1492,6 +1496,16 @@ test("inspect renders structured activity details while running and after comple
       itemId: "item-4",
       delta: "Checking event mapping against Telegram surface."
     });
+    await (service as any).handleAppServerNotification("item/completed", {
+      threadId: "thread-4",
+      turnId: "turn-4",
+      item: {
+        id: "item-4",
+        type: "agentMessage",
+        phase: "commentary",
+        text: "Checking event mapping against Telegram surface."
+      }
+    });
     await (service as any).handleAppServerNotification("item/reasoning/summaryTextDelta", {
       threadId: "thread-4",
       turnId: "turn-4",
@@ -1509,7 +1523,7 @@ test("inspect renders structured activity details while running and after comple
     assert.match(sent.at(-1) ?? "", /Updated src\/service\.ts to enforce Telegram cooldown/u);
     assert.match(sent.at(-1) ?? "", /Plan snapshot/u);
     assert.match(sent.at(-1) ?? "", /Collect protocol evidence \(completed\)/u);
-    assert.match(sent.at(-1) ?? "", /Commentary snippets/u);
+    assert.match(sent.at(-1) ?? "", /Completed commentary/u);
     assert.match(sent.at(-1) ?? "", /Checking event mapping against Telegram surface\./u);
     assert.doesNotMatch(sent.at(-1) ?? "", /private reasoning/u);
 
@@ -1676,6 +1690,16 @@ test("runtime card flow writes dedicated per-surface trace logs with rendered co
       turnId: "turn-trace",
       itemId: "msg-1",
       delta: "Checking Telegram session flow rendering."
+    });
+    await (service as any).handleAppServerNotification("item/completed", {
+      threadId: "thread-trace",
+      turnId: "turn-trace",
+      item: {
+        id: "msg-1",
+        type: "agentMessage",
+        phase: "commentary",
+        text: "Checking Telegram session flow rendering."
+      }
     });
     await (service as any).handleAppServerNotification("error", {
       threadId: "thread-trace",

@@ -219,7 +219,7 @@ Responses:
   - recent activity timeline
   - recent command, file-change, MCP, and web-search summaries when available
   - plan snapshot
-  - best-effort commentary snippets
+  - completed commentary entries
   - debug file path note when available
 - with no activity data: `当前没有可用的活动详情。`
 
@@ -278,7 +278,8 @@ While a turn is running:
 - if more than one command ran in the turn, show an inline button that expands all command details on the same message and can collapse back
 - create separate error cards for runtime failures
 - update the status card only when the visible turn state changes or when a complete progress unit is available
-- keep fragmented agent-message deltas out of the default chat until they form a complete snippet
+- keep raw `item/agentMessage/delta` traffic out of the default chat flow
+- only surface completed `agentMessage` items when `phase = commentary`
 - never expose raw reasoning deltas in the default chat flow
 - if Telegram refuses an edit or rate-limits it, retry the same card later instead of sending replacement-message spam
 - let `/inspect` return a snapshot on demand instead of pushing extra detail automatically
