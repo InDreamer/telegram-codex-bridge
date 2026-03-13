@@ -23,7 +23,9 @@ export type ParsedCallbackData =
   | { kind: "scan_more" }
   | { kind: "path_manual" }
   | { kind: "path_back" }
-  | { kind: "path_confirm"; projectKey: string };
+  | { kind: "path_confirm"; projectKey: string }
+  | { kind: "plan_expand"; sessionId: string }
+  | { kind: "plan_collapse"; sessionId: string };
 
 export function parseCommand(text: string): { name: string; args: string } | null {
   const trimmed = text.trim();
@@ -67,6 +69,14 @@ export function encodePathConfirmCallback(projectKey: string): string {
   return `v1:path:confirm:${projectKey}`;
 }
 
+export function encodePlanExpandCallback(sessionId: string): string {
+  return `v1:plan:expand:${sessionId}`;
+}
+
+export function encodePlanCollapseCallback(sessionId: string): string {
+  return `v1:plan:collapse:${sessionId}`;
+}
+
 export function parseCallbackData(data: string): ParsedCallbackData | null {
   const parts = data.split(":");
   if (parts[0] !== "v1") {
@@ -91,6 +101,14 @@ export function parseCallbackData(data: string): ParsedCallbackData | null {
 
   if (parts[1] === "path" && parts[2] === "confirm" && parts[3]) {
     return { kind: "path_confirm", projectKey: parts[3] };
+  }
+
+  if (parts[1] === "plan" && parts[2] === "expand" && parts[3]) {
+    return { kind: "plan_expand", sessionId: parts[3] };
+  }
+
+  if (parts[1] === "plan" && parts[2] === "collapse" && parts[3]) {
+    return { kind: "plan_collapse", sessionId: parts[3] };
   }
 
   return null;
@@ -274,22 +292,56 @@ export function buildRuntimeStatusCard(
     state: string;
     progressText?: string | null;
     blockedReason?: string | null;
+    planEntries?: string[];
+    planExpanded?: boolean;
   }
 ): string {
-  const lines: string[] = ["Runtime Status"];
-  pushRuntimeCardContext(lines, options);
-  lines.push(`State: ${options.state}`);
+  const lines: string[] = ["<b>Runtime Status</b>"];
+  pushHtmlRuntimeCardContext(lines, options);
+  lines.push(`<b>State:</b> ${escapeHtml(options.state)}`);
 
   if (options.blockedReason) {
-    lines.push(`Blocked on: ${options.blockedReason}`);
+    lines.push(`<b>Blocked on:</b> ${escapeHtml(options.blockedReason)}`);
   }
 
   if (options.progressText) {
-    lines.push(`Progress: ${truncateRuntimeCardText(options.progressText, 240)}`);
+    lines.push("<b>Progress:</b>");
+    lines.push(renderInlineMarkdown(truncateRuntimeCardText(options.progressText, 240)));
+  }
+
+  if (options.planExpanded && options.planEntries && options.planEntries.length > 0) {
+    lines.push("", "<b>Current Plan:</b>");
+
+    for (const [index, entry] of options.planEntries.slice(0, 10).entries()) {
+      lines.push(`${index + 1}. ${renderInlineMarkdown(truncateRuntimeCardText(entry, 200))}`);
+    }
+
+    if (options.planEntries.length > 10) {
+      lines.push(`... ${options.planEntries.length - 10} more steps`);
+    }
   }
 
   lines.push("Use /inspect for full details");
   return lines.join("\n");
+}
+
+export function buildRuntimeStatusReplyMarkup(options: {
+  sessionId: string;
+  planEntries: string[];
+  planExpanded: boolean;
+}): TelegramInlineKeyboardMarkup | undefined {
+  if (options.planEntries.length === 0) {
+    return undefined;
+  }
+
+  return {
+    inline_keyboard: [[{
+      text: options.planExpanded ? "收起当前计划" : buildCollapsedPlanButtonLabel(options.planEntries),
+      callback_data: options.planExpanded
+        ? encodePlanCollapseCallback(options.sessionId)
+        : encodePlanExpandCallback(options.sessionId)
+    }]]
+  };
 }
 
 export function buildRuntimePlanCard(
@@ -495,12 +547,43 @@ function pushRuntimeCardContext(lines: string[], context: RuntimeCardContext): v
   }
 }
 
+function pushHtmlRuntimeCardContext(lines: string[], context: RuntimeCardContext): void {
+  if (context.sessionName) {
+    lines.push(`<b>Session:</b> ${escapeHtml(context.sessionName)}`);
+  }
+
+  if (context.projectName && context.projectName !== context.sessionName) {
+    lines.push(`<b>Project:</b> ${escapeHtml(context.projectName)}`);
+  }
+}
+
 function truncateRuntimeCardText(text: string, limit: number): string {
   if (text.length <= limit) {
     return text;
   }
 
   return `${text.slice(0, limit)}…`;
+}
+
+function buildCollapsedPlanButtonLabel(entries: string[]): string {
+  const currentEntry = selectCurrentPlanEntry(entries);
+  if (!currentEntry) {
+    return "查看当前计划";
+  }
+
+  return `当前计划：${truncateRuntimeCardText(stripPlanEntryStatus(currentEntry), 40)}`;
+}
+
+function selectCurrentPlanEntry(entries: string[]): string | null {
+  return entries.find((entry) => /\(inProgress\)$/u.test(entry))
+    ?? entries.find((entry) => /\((pending|todo)\)$/u.test(entry))
+    ?? entries.at(-1)
+    ?? entries[0]
+    ?? null;
+}
+
+function stripPlanEntryStatus(entry: string): string {
+  return entry.replace(/\s+\((inProgress|pending|todo|completed|failed|blocked)\)$/u, "").trim();
 }
 
 function buildDetailedRuntimeCommandLines(

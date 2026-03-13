@@ -284,6 +284,36 @@ test("plan snapshot reflects the latest plan update instead of append-only histo
   assert.equal(inspect.planSnapshot.includes("Collect protocol evidence (pending)"), false);
 });
 
+test("plan progress prefers the in-progress step over earlier pending steps", () => {
+  const tracker = new ActivityTracker({
+    threadId: "thread-plan-priority",
+    turnId: "turn-plan-priority"
+  });
+
+  tracker.apply(
+    classifyNotification("turn/started", {
+      threadId: "thread-plan-priority",
+      turnId: "turn-plan-priority"
+    }),
+    "2026-03-10T10:07:00.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("turn/plan/updated", {
+      threadId: "thread-plan-priority",
+      turnId: "turn-plan-priority",
+      plan: [
+        { step: "Collect protocol evidence", status: "pending" },
+        { step: "Wire inspect renderer", status: "inProgress" }
+      ]
+    }),
+    "2026-03-10T10:07:01.000Z"
+  );
+
+  const status = tracker.getStatus("2026-03-10T10:07:02.000Z");
+  assert.equal(status.latestProgress, "Wire inspect renderer (inProgress)");
+});
+
 test("records completed commentary items and ignores agent-message deltas", () => {
   const tracker = new ActivityTracker({
     threadId: "thread-agg",

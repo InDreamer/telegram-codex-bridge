@@ -22,7 +22,7 @@ import {
   buildProjectPickerMessage,
   buildProjectSelectedText,
   buildRuntimeErrorCard,
-  buildRuntimePlanCard,
+  buildRuntimeStatusReplyMarkup,
   buildRuntimeStatusCard,
   buildSessionsText,
   buildStatusText,
@@ -56,6 +56,7 @@ interface PickerState {
 interface RuntimeCardMessageState {
   surface: "status" | "plan" | "error";
   key: string;
+  parseMode: "HTML" | null;
   messageId: number;
   lastRenderedText: string;
   lastRenderedReplyMarkupKey: string | null;
@@ -77,8 +78,10 @@ interface RuntimeCommandState {
 
 interface StatusCardState extends RuntimeCardMessageState {
   surface: "status";
+  parseMode: "HTML";
   commandItems: Map<string, RuntimeCommandState>;
   commandOrder: RuntimeCommandState[];
+  planExpanded: boolean;
 }
 
 interface ErrorCardState extends RuntimeCardMessageState {
@@ -102,9 +105,8 @@ interface ActiveTurnState {
   tracker: ActivityTracker;
   debugJournal: DebugJournalWriter;
   statusCard: StatusCardState;
-  planCard: RuntimeCardMessageState | null;
   latestStatusProgressText: string | null;
-  latestPlanFingerprint: string | null;
+  latestPlanFingerprint: string;
   errorCards: ErrorCardState[];
   nextErrorCardId: number;
   surfaceQueue: Promise<void>;
@@ -336,7 +338,65 @@ export class BridgeService {
         await this.confirmManualProject(chatId, parsed.projectKey);
         return;
       }
+
+      case "plan_expand": {
+        await this.handlePlanToggle(callbackQuery.id, message.message_id, parsed.sessionId, true);
+        return;
+      }
+
+      case "plan_collapse": {
+        await this.handlePlanToggle(callbackQuery.id, message.message_id, parsed.sessionId, false);
+        return;
+      }
     }
+  }
+
+  private async handlePlanToggle(
+    callbackQueryId: string,
+    messageId: number,
+    sessionId: string,
+    expanded: boolean
+  ): Promise<void> {
+    const activeTurn = this.activeTurn;
+    if (!activeTurn || activeTurn.sessionId !== sessionId || activeTurn.statusCard.messageId !== messageId) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    const inspect = activeTurn.tracker.getInspectSnapshot();
+    if (inspect.planSnapshot.length === 0) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    if (activeTurn.statusCard.planExpanded === expanded) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个操作已处理。");
+      return;
+    }
+
+    activeTurn.statusCard.planExpanded = expanded;
+    await this.safeAnswerCallbackQuery(callbackQueryId);
+
+    const rendered = this.buildStatusCardRenderPayload(activeTurn.sessionId, activeTurn.tracker, activeTurn.statusCard);
+    await this.logRuntimeCardEvent(this.getRuntimeCardTraceContext(activeTurn), activeTurn.statusCard, "state_transition", {
+      reason: expanded ? "plan_expanded" : "plan_collapsed",
+      forced: true,
+      triggerKind: "callback",
+      triggerMethod: expanded ? "v1:plan:expand" : "v1:plan:collapse",
+      commandStateChanged: false,
+      statusProgressTextChanged: false,
+      previousStatus: summarizeActivityStatus(inspect),
+      nextStatus: summarizeActivityStatus(inspect),
+      selectedProgressText: selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null),
+      commands: summarizeRuntimeCommands(activeTurn.statusCard.commandOrder),
+      card: summarizeRuntimeCardSurface(activeTurn.statusCard),
+      renderedText: rendered.text,
+      replyMarkup: rendered.replyMarkup ?? null
+    });
+    await this.requestRuntimeCardRender(activeTurn, activeTurn.statusCard, rendered.text, rendered.replyMarkup, {
+      force: true,
+      reason: expanded ? "plan_expanded" : "plan_collapsed"
+    });
   }
 
   private async authorizeMessageSender(
@@ -1034,9 +1094,8 @@ export class BridgeService {
           turnId: turn.turn.id
         }),
         statusCard: createStatusCardMessageState(),
-        planCard: null,
         latestStatusProgressText: null,
-        latestPlanFingerprint: null,
+        latestPlanFingerprint: "",
         errorCards: [],
         nextErrorCardId: 1,
         surfaceQueue: Promise.resolve()
@@ -1286,22 +1345,28 @@ export class BridgeService {
   private buildStatusCardRenderPayload(
     sessionId: string,
     tracker: ActivityTracker,
-    _statusCard: StatusCardState
+    statusCard: StatusCardState
   ): {
     text: string;
     replyMarkup?: TelegramInlineKeyboardMarkup;
   } {
     const inspect = tracker.getInspectSnapshot();
     const context = this.getRuntimeCardContext(sessionId);
+    const text = buildRuntimeStatusCard({
+      ...context,
+      state: formatVisibleRuntimeState(inspect),
+      blockedReason: formatRuntimeBlockedReason(inspect.threadBlockedReason),
+      progressText: selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null),
+      planEntries: inspect.planSnapshot,
+      planExpanded: statusCard.planExpanded
+    });
+    const replyMarkup = buildRuntimeStatusReplyMarkup({
+      sessionId,
+      planEntries: inspect.planSnapshot,
+      planExpanded: statusCard.planExpanded
+    });
 
-    return {
-      text: buildRuntimeStatusCard({
-        ...context,
-        state: formatVisibleRuntimeState(inspect),
-        blockedReason: formatRuntimeBlockedReason(inspect.threadBlockedReason),
-        progressText: selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null)
-      })
-    };
+    return replyMarkup ? { text, replyMarkup } : { text };
   }
 
   private async handleAppServerExit(error: Error): Promise<void> {
@@ -1601,6 +1666,11 @@ export class BridgeService {
   ): Promise<void> {
     const inspect = activeTurn.tracker.getInspectSnapshot();
     const context = this.getRuntimeCardContext(activeTurn.sessionId);
+    const planFingerprint = inspect.planSnapshot.join("\n");
+    const planChanged = planFingerprint !== activeTurn.latestPlanFingerprint;
+    if (planChanged) {
+      activeTurn.latestPlanFingerprint = planFingerprint;
+    }
     const commandStateChanged = applyRuntimeCommandDelta(activeTurn.statusCard, classified, nextStatus);
     const nextStatusProgressText = selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null);
     const statusProgressTextChanged = nextStatusProgressText !== activeTurn.latestStatusProgressText;
@@ -1620,6 +1690,7 @@ export class BridgeService {
       previousStatus.finalMessageAvailable !== nextStatus.finalMessageAvailable ||
       previousStatus.errorState !== nextStatus.errorState ||
       commandStateChanged ||
+      planChanged ||
       statusProgressTextChanged ||
       options.force;
     if (statusChanged) {
@@ -1648,39 +1719,6 @@ export class BridgeService {
           ? { force: true, reason: options.reason }
           : { reason: options.reason }
       );
-    }
-
-    const planFingerprint = inspect.planSnapshot.join("\n");
-    if (inspect.planSnapshot.length > 0) {
-      if (!activeTurn.planCard) {
-        activeTurn.planCard = createRuntimeCardMessageState("plan", "plan");
-      }
-      const planChanged = planFingerprint !== activeTurn.latestPlanFingerprint;
-      if (planChanged) {
-        activeTurn.latestPlanFingerprint = planFingerprint;
-      }
-      if (planChanged || options.force) {
-        const renderedPlanText = buildRuntimePlanCard(context, inspect.planSnapshot);
-        await this.logRuntimeCardEvent(this.getRuntimeCardTraceContext(activeTurn), activeTurn.planCard, "state_transition", {
-          reason: planChanged ? "plan_changed" : options.reason,
-          forced: options.force ?? false,
-          triggerKind: classified?.kind ?? null,
-          triggerMethod: classified?.method ?? null,
-          planChanged,
-          planSnapshot: inspect.planSnapshot,
-          card: summarizeRuntimeCardSurface(activeTurn.planCard),
-          renderedText: renderedPlanText
-        });
-        await this.requestRuntimeCardRender(
-          activeTurn,
-          activeTurn.planCard,
-          renderedPlanText,
-          undefined,
-          options.force
-            ? { force: true, reason: planChanged ? "plan_changed" : options.reason }
-            : { reason: planChanged ? "plan_changed" : options.reason }
-        );
-      }
     }
 
     if (classified?.kind === "error") {
@@ -1892,7 +1930,9 @@ export class BridgeService {
       surface.pendingReason = null;
 
       if (surface.messageId === 0) {
-        const sent = await this.safeSendMessageResult(activeTurn.chatId, text, replyMarkup);
+        const sent = surface.parseMode === "HTML"
+          ? await this.safeSendHtmlMessageResult(activeTurn.chatId, text, replyMarkup)
+          : await this.safeSendMessageResult(activeTurn.chatId, text, replyMarkup);
         if (!sent) {
           surface.pendingText = text;
           surface.pendingReplyMarkup = replyMarkup ?? null;
@@ -1928,7 +1968,9 @@ export class BridgeService {
         return;
       }
 
-      const editResult = await this.safeEditMessageText(activeTurn.chatId, surface.messageId, text, replyMarkup);
+      const editResult = surface.parseMode === "HTML"
+        ? await this.safeEditHtmlMessageText(activeTurn.chatId, surface.messageId, text, replyMarkup)
+        : await this.safeEditMessageText(activeTurn.chatId, surface.messageId, text, replyMarkup);
       await this.logRuntimeCardEvent(traceContext, surface, "edit_attempted", {
         reason,
         outcome: editResult.outcome,
@@ -2003,12 +2045,6 @@ export class BridgeService {
       card: summarizeRuntimeCardSurface(activeTurn.statusCard)
     });
     this.clearRuntimeCardTimer(activeTurn.statusCard);
-    if (activeTurn.planCard) {
-      void this.logRuntimeCardEvent(traceContext, activeTurn.planCard, "card_disposed", {
-        card: summarizeRuntimeCardSurface(activeTurn.planCard)
-      });
-      this.clearRuntimeCardTimer(activeTurn.planCard);
-    }
 
     for (const errorCard of activeTurn.errorCards) {
       void this.logRuntimeCardEvent(traceContext, errorCard, "card_disposed", {
@@ -2097,17 +2133,25 @@ export class BridgeService {
 
   private async safeSendHtmlMessageResult(
     chatId: string,
-    html: string
+    html: string,
+    replyMarkup?: TelegramInlineKeyboardMarkup
   ): Promise<TelegramMessage | null> {
     if (!this.api) {
       return null;
     }
 
     try {
-      const sent = await this.api.sendMessage(chatId, html, { parseMode: "HTML" });
+      const sent = await this.api.sendMessage(
+        chatId,
+        html,
+        replyMarkup
+          ? { parseMode: "HTML", replyMarkup }
+          : { parseMode: "HTML" }
+      );
       await this.logger.info("telegram html message sent", {
         chatId,
         messageId: sent.message_id,
+        replyMarkup: replyMarkup ? "inline_keyboard" : null,
         preview: summarizeTextPreview(html)
       });
       return sent;
@@ -2120,17 +2164,26 @@ export class BridgeService {
   private async safeEditHtmlMessageText(
     chatId: string,
     messageId: number,
-    html: string
+    html: string,
+    replyMarkup?: TelegramInlineKeyboardMarkup
   ): Promise<TelegramEditResult> {
     if (!this.api?.editMessageText) {
       return { outcome: "failed" };
     }
 
     try {
-      await this.api.editMessageText(chatId, messageId, html, { parseMode: "HTML" });
+      await this.api.editMessageText(
+        chatId,
+        messageId,
+        html,
+        replyMarkup
+          ? { parseMode: "HTML", replyMarkup }
+          : { parseMode: "HTML" }
+      );
       await this.logger.info("telegram html message edited", {
         chatId,
         messageId,
+        replyMarkup: replyMarkup ? "inline_keyboard" : null,
         preview: summarizeTextPreview(html)
       });
       return { outcome: "edited" };
@@ -2260,6 +2313,7 @@ function summarizeRuntimeCardSurface(surface: RuntimeCardMessageState): Record<s
   const summary: Record<string, unknown> = {
     surface: surface.surface,
     key: surface.key,
+    parseMode: surface.parseMode,
     messageId: surface.messageId === 0 ? null : surface.messageId,
     lastRenderedText: surface.lastRenderedText || null,
     lastRenderedReplyMarkupKey: surface.lastRenderedReplyMarkupKey,
@@ -2274,6 +2328,7 @@ function summarizeRuntimeCardSurface(surface: RuntimeCardMessageState): Record<s
     const statusSurface = surface as StatusCardState;
     summary.commandCount = statusSurface.commandOrder.length;
     summary.commands = summarizeRuntimeCommands(statusSurface.commandOrder);
+    summary.planExpanded = statusSurface.planExpanded;
     return summary;
   }
 
@@ -2288,11 +2343,13 @@ function summarizeRuntimeCardSurface(surface: RuntimeCardMessageState): Record<s
 
 function createRuntimeCardMessageState(
   surface: RuntimeCardMessageState["surface"],
-  key: string
+  key: string,
+  parseMode: "HTML" | null = null
 ): RuntimeCardMessageState {
   return {
     surface,
     key,
+    parseMode,
     messageId: 0,
     lastRenderedText: "",
     lastRenderedReplyMarkupKey: null,
@@ -2307,10 +2364,12 @@ function createRuntimeCardMessageState(
 
 function createStatusCardMessageState(): StatusCardState {
   return {
-    ...createRuntimeCardMessageState("status", "status"),
+    ...createRuntimeCardMessageState("status", "status", "HTML"),
     surface: "status",
+    parseMode: "HTML",
     commandItems: new Map(),
-    commandOrder: []
+    commandOrder: [],
+    planExpanded: false
   };
 }
 

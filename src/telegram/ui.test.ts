@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 
 import type { SessionRow } from "../types.js";
 import {
+  buildRuntimeStatusReplyMarkup,
+  buildRuntimeStatusCard,
   buildSessionsText,
   renderFinalAnswerHtmlChunks
 } from "./ui.js";
@@ -107,6 +109,40 @@ test("buildSessionsText renders archived view with a dedicated title", async () 
     assert.match(text, /1\. Session Alpha \| Project One \| 空闲 \| 上次已完成 \| 10分钟前/u);
     assert.doesNotMatch(text, /\[当前\]/u);
   });
+});
+
+test("buildRuntimeStatusCard renders bold prefixes and markdown progress on a new line", () => {
+  const text = buildRuntimeStatusCard({
+    sessionName: "ansi-escape",
+    projectName: "ansi-escape",
+    state: "Completed",
+    progressText: "确认 `ansi-escape` 是 **codex-tui** 的 ANSI 到 `ratatui` 适配边界层。"
+  });
+
+  assert.equal(
+    text,
+    [
+      "<b>Runtime Status</b>",
+      "<b>Session:</b> ansi-escape",
+      "<b>State:</b> Completed",
+      "<b>Progress:</b>",
+      "确认 <code>ansi-escape</code> 是 <b>codex-tui</b> 的 ANSI 到 <code>ratatui</code> 适配边界层。",
+      "Use /inspect for full details"
+    ].join("\n")
+  );
+});
+
+test("buildRuntimeStatusReplyMarkup prefers the in-progress step over earlier pending steps", () => {
+  const replyMarkup = buildRuntimeStatusReplyMarkup({
+    sessionId: "session-1",
+    planEntries: [
+      "Collect protocol evidence (pending)",
+      "Wire inspect renderer (inProgress)"
+    ],
+    planExpanded: false
+  });
+
+  assert.equal(replyMarkup?.inline_keyboard[0]?.[0]?.text, "当前计划：Wire inspect renderer");
 });
 
 test("renderFinalAnswerHtmlChunks converts common Markdown into Telegram-safe HTML", () => {

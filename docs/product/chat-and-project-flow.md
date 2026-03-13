@@ -266,14 +266,16 @@ Final-answer handling:
 Edit versus new message:
 - edit existing messages only for bridge-owned runtime cards
 - send new messages for final answers, status views, refreshed pickers, manual-path flows, and rename prompts
-- send a new message when a new runtime card first appears, including plan and error cards
+- send a new message when a new runtime card first appears, including status and error cards
 
 While a turn is running:
 - keep one bridge-owned status card in the chat
-- current runtime-card titles are `Runtime Status`, `Plan`, and `Error`
-- create a separate plan card when plan state becomes available
+- current runtime-card titles are `Runtime Status` and `Error`
+- when plan state becomes available, expose it through a collapsed button on the status card
+- the collapsed button shows the current plan step summary and expands inline on demand
 - project `commandExecution` items into the status card instead of sending separate command cards
-- status card command activity should appear only through the compact `Progress` line when a visible progress unit exists
+- status card command activity should appear only through the `Progress` section when a visible progress unit exists
+- render the `Progress` body on its own line using Telegram HTML from a safe inline Markdown subset
 - keep full per-command detail in `/inspect`, ordered by execution sequence and including command text, state, and latest output summary when available
 - create separate error cards for runtime failures
 - update the status card only when the visible turn state changes or when a complete progress unit is available

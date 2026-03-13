@@ -690,7 +690,8 @@ function summarizePlanEntries(entries: string[]): string | null {
     return null;
   }
 
-  const activeEntry = entries.find((entry) => /\((inProgress|pending|todo)\)$/u.test(entry));
+  const activeEntry = entries.find((entry) => /\(inProgress\)$/u.test(entry))
+    ?? entries.find((entry) => /\((pending|todo)\)$/u.test(entry));
   return cleanSummary(activeEntry ?? entries.at(-1) ?? entries[0] ?? "");
 }
 

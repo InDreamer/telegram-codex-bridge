@@ -47,11 +47,11 @@ It should:
 - listen to the mixed runtime notification stream
 - reduce that stream into compact user-facing runtime surfaces
 - keep one status card for the running turn
-- create an optional plan card when plan state becomes available
+- expose current plan state through a collapsed button on the status card rather than a separate plan card
 - project command activity into the status card rather than creating per-command messages
-- surface command activity on the status card only through compact progress text when a visible progress unit exists
+- surface command activity on the status card only through the `Progress` section when a visible progress unit exists
+- render status-card labels and progress content with Telegram-safe HTML rather than raw Markdown markers
 - create separate error cards when runtime failures surface
-- render runtime cards as plain-text Telegram messages rather than HTML log blocks
 - keep reasoning deltas and raw token fragments out of the normal Telegram chat flow
 - treat completed `agentMessage` items with `phase = commentary` as the authoritative commentary source
 - keep raw `item/agentMessage/delta` traffic out of the normal Telegram chat flow
