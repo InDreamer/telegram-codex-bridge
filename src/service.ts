@@ -114,6 +114,7 @@ interface ActiveTurnState {
 type PendingThreadArchiveState = "archived" | "unarchived";
 
 interface PendingThreadArchiveOp {
+  id: number;
   sessionId: string;
   expectedRemoteState: PendingThreadArchiveState;
   requestedAt: string;
@@ -148,9 +149,10 @@ export class BridgeService {
   private readonly unauthorizedReplyAt = new Map<string, number>();
   private readonly pickerStates = new Map<string, PickerState>();
   private readonly pendingRenameSessionIds = new Map<string, string>();
-  private readonly pendingThreadArchiveOps = new Map<string, PendingThreadArchiveOp>();
+  private readonly pendingThreadArchiveOps = new Map<string, PendingThreadArchiveOp[]>();
   private readonly recentActivityBySessionId = new Map<string, RecentActivityEntry>();
   private activeTurn: ActiveTurnState | null = null;
+  private nextPendingThreadArchiveOpId = 1;
   private stopping = false;
 
   constructor(
@@ -805,9 +807,10 @@ export class BridgeService {
     }
 
     let mirroredRemotely = false;
+    let pendingOpId: number | null = null;
     try {
       if (activeSession.threadId) {
-        this.registerPendingThreadArchiveOp(
+        pendingOpId = this.registerPendingThreadArchiveOp(
           activeSession.threadId,
           activeSession.sessionId,
           "archived",
@@ -820,14 +823,22 @@ export class BridgeService {
 
       this.store.archiveSession(activeSession.sessionId);
       if (activeSession.threadId) {
-        await this.markPendingThreadArchiveLocalCommit(activeSession.threadId);
+        await this.markPendingThreadArchiveLocalCommit(activeSession.threadId, pendingOpId);
       }
-      await this.safeSendMessage(chatId, `已归档当前会话：${activeSession.projectName}`);
+      const nextActiveSession = this.store.getActiveSession(chatId);
+      const lines = [`已归档当前会话：${activeSession.projectName}`];
+      if (nextActiveSession) {
+        lines.push(`当前会话：${nextActiveSession.displayName}`);
+        lines.push(`当前项目：${nextActiveSession.projectName}`);
+      } else {
+        lines.push("当前没有活动会话，请发送 /new 选择项目。");
+      }
+      await this.safeSendMessage(chatId, lines.join("\n"));
     } catch {
       // If the remote archive succeeded but the local store update failed, best-effort
       // roll the thread back so Telegram and Codex do not silently drift apart.
-      if (activeSession.threadId) {
-        this.pendingThreadArchiveOps.delete(activeSession.threadId);
+      if (activeSession.threadId && pendingOpId !== null) {
+        this.removePendingThreadArchiveOp(activeSession.threadId, pendingOpId);
       }
       if (mirroredRemotely && activeSession.threadId) {
         try {
@@ -864,9 +875,10 @@ export class BridgeService {
     }
 
     let mirroredRemotely = false;
+    let pendingOpId: number | null = null;
     try {
       if (target.threadId) {
-        this.registerPendingThreadArchiveOp(
+        pendingOpId = this.registerPendingThreadArchiveOp(
           target.threadId,
           target.sessionId,
           "unarchived",
@@ -879,13 +891,13 @@ export class BridgeService {
 
       this.store.unarchiveSession(target.sessionId);
       if (target.threadId) {
-        await this.markPendingThreadArchiveLocalCommit(target.threadId);
+        await this.markPendingThreadArchiveLocalCommit(target.threadId, pendingOpId);
       }
       await this.safeSendMessage(chatId, `已恢复会话：${target.projectName}`);
     } catch {
       // Apply the inverse compensation on restore failures for the same reason.
-      if (target.threadId) {
-        this.pendingThreadArchiveOps.delete(target.threadId);
+      if (target.threadId && pendingOpId !== null) {
+        this.removePendingThreadArchiveOp(target.threadId, pendingOpId);
       }
       if (mirroredRemotely && target.threadId) {
         try {
@@ -1105,6 +1117,12 @@ export class BridgeService {
     const classified = classifyNotification(method, params);
 
     if (classified.kind === "thread_archived" || classified.kind === "thread_unarchived") {
+      if (this.activeTurn) {
+        await this.appendDebugJournal(this.activeTurn, method, params, {
+          threadId: classified.threadId ?? null,
+          turnId: null
+        });
+      }
       await this.handleThreadArchiveNotification(classified);
       return;
     }
@@ -1436,7 +1454,7 @@ export class BridgeService {
 
     if (this.pendingThreadArchiveOps.size > 0) {
       await this.logger.warn("clearing pending thread archive ops after app-server exit", {
-        pendingCount: this.pendingThreadArchiveOps.size
+        pendingCount: this.countPendingThreadArchiveOps()
       });
       this.pendingThreadArchiveOps.clear();
     }
@@ -1517,27 +1535,39 @@ export class BridgeService {
     sessionId: string,
     expectedRemoteState: PendingThreadArchiveState,
     origin: PendingThreadArchiveOp["origin"]
-  ): void {
+  ): number {
     const requestedAt = new Date().toISOString();
-    this.pendingThreadArchiveOps.set(threadId, {
+    const opId = this.nextPendingThreadArchiveOpId++;
+    const pending: PendingThreadArchiveOp = {
+      id: opId,
       sessionId,
       expectedRemoteState,
       requestedAt,
       origin,
       localStateCommitted: false,
       remoteStateObserved: null
-    });
+    };
+    const queue = this.pendingThreadArchiveOps.get(threadId) ?? [];
+    queue.push(pending);
+    this.pendingThreadArchiveOps.set(threadId, queue);
     void this.logger.info("thread archive op registered", {
+      opId,
       sessionId,
       threadId,
       expectedRemoteState,
       origin,
-      requestedAt
+      requestedAt,
+      pendingDepth: queue.length
     });
+    return opId;
   }
 
-  private async markPendingThreadArchiveLocalCommit(threadId: string): Promise<void> {
-    const pending = this.pendingThreadArchiveOps.get(threadId);
+  private async markPendingThreadArchiveLocalCommit(threadId: string, opId: number | null): Promise<void> {
+    if (opId === null) {
+      return;
+    }
+
+    const pending = this.findPendingThreadArchiveOp(threadId, opId);
     if (!pending) {
       return;
     }
@@ -1547,8 +1577,9 @@ export class BridgeService {
       return;
     }
 
-    this.pendingThreadArchiveOps.delete(threadId);
+    this.removePendingThreadArchiveOp(threadId, opId);
     await this.logger.info("thread archive op confirmed", {
+      opId: pending.id,
       sessionId: pending.sessionId,
       threadId,
       expectedRemoteState: pending.expectedRemoteState,
@@ -1566,7 +1597,7 @@ export class BridgeService {
 
     const actualRemoteState: PendingThreadArchiveState =
       classified.kind === "thread_archived" ? "archived" : "unarchived";
-    const pending = this.pendingThreadArchiveOps.get(classified.threadId);
+    const pending = this.pendingThreadArchiveOps.get(classified.threadId)?.[0] ?? null;
 
     if (!pending) {
       const session = this.store?.getSessionByThreadId(classified.threadId) ?? null;
@@ -1581,8 +1612,9 @@ export class BridgeService {
     }
 
     if (pending.expectedRemoteState !== actualRemoteState) {
-      this.pendingThreadArchiveOps.delete(classified.threadId);
+      this.removePendingThreadArchiveOp(classified.threadId, pending.id);
       await this.logger.warn("thread archive op conflicted", {
+        opId: pending.id,
         sessionId: pending.sessionId,
         threadId: classified.threadId,
         expectedRemoteState: pending.expectedRemoteState,
@@ -1597,6 +1629,7 @@ export class BridgeService {
     pending.remoteStateObserved = actualRemoteState;
     if (!pending.localStateCommitted) {
       await this.logger.info("thread archive op observed before local commit", {
+        opId: pending.id,
         sessionId: pending.sessionId,
         threadId: classified.threadId,
         actualRemoteState,
@@ -1607,8 +1640,9 @@ export class BridgeService {
       return;
     }
 
-    this.pendingThreadArchiveOps.delete(classified.threadId);
+    this.removePendingThreadArchiveOp(classified.threadId, pending.id);
     await this.logger.info("thread archive op confirmed", {
+      opId: pending.id,
       sessionId: pending.sessionId,
       threadId: classified.threadId,
       expectedRemoteState: pending.expectedRemoteState,
@@ -1633,11 +1667,19 @@ export class BridgeService {
     }
   }
 
-  private async appendDebugJournal(activeTurn: ActiveTurnState, method: string, params: unknown): Promise<void> {
+  private async appendDebugJournal(
+    activeTurn: ActiveTurnState,
+    method: string,
+    params: unknown,
+    overrides?: {
+      threadId?: string | null;
+      turnId?: string | null;
+    }
+  ): Promise<void> {
     const record: DebugJournalRecord = {
       receivedAt: new Date().toISOString(),
-      threadId: activeTurn.threadId,
-      turnId: activeTurn.turnId,
+      threadId: overrides?.threadId ?? activeTurn.threadId,
+      turnId: overrides?.turnId ?? activeTurn.turnId,
       method,
       params
     };
@@ -1651,6 +1693,43 @@ export class BridgeService {
         error: `${error}`
       });
     }
+  }
+
+  private findPendingThreadArchiveOp(threadId: string, opId: number): PendingThreadArchiveOp | null {
+    const queue = this.pendingThreadArchiveOps.get(threadId);
+    if (!queue) {
+      return null;
+    }
+
+    return queue.find((pending) => pending.id === opId) ?? null;
+  }
+
+  private removePendingThreadArchiveOp(threadId: string, opId: number): PendingThreadArchiveOp | null {
+    const queue = this.pendingThreadArchiveOps.get(threadId);
+    if (!queue) {
+      return null;
+    }
+
+    const index = queue.findIndex((pending) => pending.id === opId);
+    if (index === -1) {
+      return null;
+    }
+
+    const [removed] = queue.splice(index, 1);
+    if (queue.length === 0) {
+      this.pendingThreadArchiveOps.delete(threadId);
+    } else {
+      this.pendingThreadArchiveOps.set(threadId, queue);
+    }
+    return removed ?? null;
+  }
+
+  private countPendingThreadArchiveOps(): number {
+    let count = 0;
+    for (const queue of this.pendingThreadArchiveOps.values()) {
+      count += queue.length;
+    }
+    return count;
   }
 
   private async syncRuntimeCards(

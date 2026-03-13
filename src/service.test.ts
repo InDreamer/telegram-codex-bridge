@@ -272,7 +272,11 @@ test("archive command archives the active session, switches active session, and 
     store.renameSession(archivedSession.sessionId, "Session Alpha");
     store.updateSessionThreadId(archivedSession.sessionId, "thread-archive");
 
-    const fallbackSession = createSession(store, "chat-1");
+    const fallbackSession = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project Two",
+      projectPath: "/tmp/project-two"
+    });
     store.renameSession(fallbackSession.sessionId, "Session Beta");
     store.setActiveSession("chat-1", archivedSession.sessionId);
 
@@ -295,7 +299,7 @@ test("archive command archives the active session, switches active session, and 
     assert.equal(store.getActiveSession("chat-1")?.sessionId, fallbackSession.sessionId);
     assert.equal(store.listSessions("chat-1").length, 1);
     assert.equal(store.listSessions("chat-1", { archived: true, limit: 10 })[0]?.sessionId, archivedSession.sessionId);
-    assert.equal(sent.at(-1), "已归档当前会话：Project One");
+    assert.equal(sent.at(-1), "已归档当前会话：Project One\n当前会话：Session Beta\n当前项目：Project Two");
   } finally {
     await cleanup();
   }
@@ -466,6 +470,44 @@ test("thread archived notification confirms a pending archive operation", async 
   }
 });
 
+test("thread archive notifications are written to the active turn debug journal before archive reconciliation returns", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+
+  try {
+    const session = authorizeChatWithSession(store, "chat-1");
+    store.setActiveSession("chat-1", session.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => createFakeTelegramMessage(800 + text.length, text),
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) =>
+        createFakeTelegramMessage(messageId, text)
+    };
+
+    installRunningAppServer(service, "thread-debug", "turn-debug");
+
+    await (service as any).startRealTurn("chat-1", session, "Track archive notifications");
+    const debugFilePath = (service as any).activeTurn.debugJournal.filePath;
+
+    await (service as any).handleAppServerNotification("turn/started", {
+      threadId: "thread-debug",
+      turnId: "turn-debug"
+    });
+    await (service as any).handleAppServerNotification("thread/archived", {
+      threadId: "thread-other"
+    });
+    await (service as any).handleAppServerNotification("thread/unarchived", {
+      threadId: "thread-other"
+    });
+
+    const debugJournal = await readFile(debugFilePath, "utf8");
+
+    assert.match(debugJournal, /"method":"thread\/archived"/u);
+    assert.match(debugJournal, /"method":"thread\/unarchived"/u);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("conflicting thread archive notification clears the pending op and keeps local state unchanged", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: string[] = [];
@@ -519,6 +561,49 @@ test("unsolicited thread archive notification logs drift and does not mutate loc
 
     assert.equal(store.getSessionByThreadId("thread-unsolicited")?.archived, false);
     assert.ok(warn.some((entry) => entry.message === "thread archive drift observed"));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("rapid archive then unarchive on the same thread keeps both pending archive ops ordered until matching notifications arrive", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+  const { logger, info, warn } = createCapturingLogger();
+
+  try {
+    authorizeChat(store, "chat-1");
+    const session = createSession(store, "chat-1");
+    store.renameSession(session.sessionId, "Session Alpha");
+    store.updateSessionThreadId(session.sessionId, "thread-rapid-toggle");
+    (service as any).logger = logger;
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string) => {
+        sent.push(text);
+        return createFakeTelegramMessage(sent.length, text);
+      }
+    };
+    (service as any).appServer = {
+      isRunning: true,
+      archiveThread: async () => {},
+      unarchiveThread: async () => {}
+    };
+
+    await (service as any).routeCommand("chat-1", "archive", "");
+    await (service as any).routeCommand("chat-1", "unarchive", "1");
+
+    await (service as any).handleAppServerNotification("thread/archived", {
+      threadId: "thread-rapid-toggle"
+    });
+    await (service as any).handleAppServerNotification("thread/unarchived", {
+      threadId: "thread-rapid-toggle"
+    });
+
+    assert.equal(store.getSessionByThreadId("thread-rapid-toggle")?.archived, false);
+    assert.equal(warn.some((entry) => entry.message === "thread archive op conflicted"), false);
+    assert.equal(warn.some((entry) => entry.message === "thread archive drift observed"), false);
+    assert.equal(info.filter((entry) => entry.message === "thread archive op confirmed").length, 2);
   } finally {
     await cleanup();
   }
