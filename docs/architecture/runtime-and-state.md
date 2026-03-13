@@ -49,13 +49,13 @@ It should:
 - keep one status card for the running turn
 - create an optional plan card when plan state becomes available
 - project command activity into the status card rather than creating per-command messages
-- show the latest concrete execution command by default, with inline expand/collapse for the full command list when needed
+- surface command activity on the status card only through compact progress text when a visible progress unit exists
 - create separate error cards when runtime failures surface
 - render runtime cards as plain-text Telegram messages rather than HTML log blocks
 - keep reasoning deltas and raw token fragments out of the normal Telegram chat flow
 - treat completed `agentMessage` items with `phase = commentary` as the authoritative commentary source
 - keep raw `item/agentMessage/delta` traffic out of the normal Telegram chat flow
-- retain richer structured detail for `/inspect` and the on-disk debug journal
+- retain richer structured command detail for `/inspect` and the on-disk debug journal
 - capture the final assistant message emitted before `turn/completed`
 - send the final assistant message as a separate Telegram message after turn completion
 - render the final assistant message with Telegram HTML derived from a safe Markdown subset rather than sending raw Markdown literals

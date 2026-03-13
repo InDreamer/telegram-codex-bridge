@@ -23,9 +23,7 @@ export type ParsedCallbackData =
   | { kind: "scan_more" }
   | { kind: "path_manual" }
   | { kind: "path_back" }
-  | { kind: "path_confirm"; projectKey: string }
-  | { kind: "command_list_expand"; sessionId: string }
-  | { kind: "command_list_collapse"; sessionId: string };
+  | { kind: "path_confirm"; projectKey: string };
 
 export function parseCommand(text: string): { name: string; args: string } | null {
   const trimmed = text.trim();
@@ -69,14 +67,6 @@ export function encodePathConfirmCallback(projectKey: string): string {
   return `v1:path:confirm:${projectKey}`;
 }
 
-export function encodeCommandListExpandCallback(sessionId: string): string {
-  return `v1:cmd:expand:${sessionId}`;
-}
-
-export function encodeCommandListCollapseCallback(sessionId: string): string {
-  return `v1:cmd:collapse:${sessionId}`;
-}
-
 export function parseCallbackData(data: string): ParsedCallbackData | null {
   const parts = data.split(":");
   if (parts[0] !== "v1") {
@@ -101,14 +91,6 @@ export function parseCallbackData(data: string): ParsedCallbackData | null {
 
   if (parts[1] === "path" && parts[2] === "confirm" && parts[3]) {
     return { kind: "path_confirm", projectKey: parts[3] };
-  }
-
-  if (parts[1] === "cmd" && parts[2] === "expand" && parts[3]) {
-    return { kind: "command_list_expand", sessionId: parts[3] };
-  }
-
-  if (parts[1] === "cmd" && parts[2] === "collapse" && parts[3]) {
-    return { kind: "command_list_collapse", sessionId: parts[3] };
   }
 
   return null;
@@ -292,8 +274,6 @@ export function buildRuntimeStatusCard(
     state: string;
     progressText?: string | null;
     blockedReason?: string | null;
-    commands?: RuntimeCommandEntryView[];
-    commandsExpanded?: boolean;
   }
 ): string {
   const lines: string[] = ["Runtime Status"];
@@ -308,7 +288,6 @@ export function buildRuntimeStatusCard(
     lines.push(`Progress: ${truncateRuntimeCardText(options.progressText, 240)}`);
   }
 
-  pushRuntimeCommandLines(lines, options.commands ?? [], options.commandsExpanded ?? false);
   lines.push("Use /inspect for full details");
   return lines.join("\n");
 }
@@ -346,25 +325,6 @@ export function buildRuntimeErrorCard(
   }
 
   return lines.join("\n");
-}
-
-export function buildRuntimeCommandListReplyMarkup(
-  sessionId: string,
-  commandCount: number,
-  expanded: boolean
-): TelegramInlineKeyboardMarkup | undefined {
-  if (commandCount <= 1) {
-    return undefined;
-  }
-
-  return {
-    inline_keyboard: [[{
-      text: expanded ? "折叠命令" : `展开全部命令 (${commandCount})`,
-      callback_data: expanded
-        ? encodeCommandListCollapseCallback(sessionId)
-        : encodeCommandListExpandCallback(sessionId)
-    }]]
-  };
 }
 
 export function buildTurnStatusCard(
@@ -419,6 +379,7 @@ export function buildInspectText(
     debugFilePath?: string | null;
     sessionName?: string | null;
     projectName?: string | null;
+    commands?: RuntimeCommandEntryView[];
   }
 ): string {
   const lines = ["Task details"];
@@ -471,8 +432,8 @@ export function buildInspectText(
     });
   }
 
-  lines.push("", "Recent commands");
-  lines.push(...formatInspectSection(snapshot.recentCommandSummaries));
+  lines.push("", "Commands");
+  lines.push(...formatInspectCommandSection(options?.commands ?? []));
 
   lines.push("", "Recent file changes");
   lines.push(...formatInspectSection(snapshot.recentFileChangeSummaries));
@@ -542,37 +503,7 @@ function truncateRuntimeCardText(text: string, limit: number): string {
   return `${text.slice(0, limit)}…`;
 }
 
-function pushRuntimeCommandLines(
-  lines: string[],
-  commands: RuntimeCommandEntryView[],
-  expanded: boolean
-): void {
-  if (commands.length === 0) {
-    return;
-  }
-
-  const visibleCommands = expanded ? commands : commands.slice(-1);
-  lines.push(expanded ? `Commands: ${commands.length}` : "Latest command");
-
-  let rendered = 0;
-  for (const [index, command] of visibleCommands.entries()) {
-    const commandLines = buildRuntimeCommandLines(command, expanded ? index + 1 : null);
-    const nextLength = lines.join("\n").length + commandLines.join("\n").length + 8;
-    if (expanded && rendered > 0 && nextLength > 3500) {
-      lines.push(`... ${visibleCommands.length - rendered} more commands hidden`);
-      break;
-    }
-
-    lines.push(...commandLines);
-    rendered += 1;
-  }
-
-  if (!expanded && commands.length > 1) {
-    lines.push(`Earlier commands: ${commands.length - 1} hidden`);
-  }
-}
-
-function buildRuntimeCommandLines(
+function buildDetailedRuntimeCommandLines(
   command: RuntimeCommandEntryView,
   index: number | null
 ): string[] {
@@ -586,6 +517,14 @@ function buildRuntimeCommandLines(
   }
 
   return lines;
+}
+
+function formatInspectCommandSection(commands: RuntimeCommandEntryView[]): string[] {
+  if (commands.length === 0) {
+    return ["- None"];
+  }
+
+  return commands.flatMap((command, index) => buildDetailedRuntimeCommandLines(command, index + 1));
 }
 
 function formatRuntimeCommandText(commandText: string): string {

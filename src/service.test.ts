@@ -10,11 +10,7 @@ import type { BridgePaths } from "./paths.js";
 import type { ActivityStatus } from "./activity/types.js";
 import { BridgeService } from "./service.js";
 import { BridgeStateStore } from "./state/store.js";
-import {
-  buildTurnStatusCard,
-  encodeCommandListCollapseCallback,
-  encodeCommandListExpandCallback
-} from "./telegram/ui.js";
+import { buildTurnStatusCard } from "./telegram/ui.js";
 
 const testLogger: Logger = {
   info: async () => {},
@@ -704,8 +700,9 @@ test("runtime cards keep command activity on the status message and final answer
     assert.ok(statusTexts.some((text) => /State: Starting/u.test(text)));
     assert.ok(statusTexts.some((text) => /State: Running/u.test(text)));
     assert.ok(statusTexts.some((text) => /State: Completed/u.test(text)));
-    assert.ok(statusTexts.some((text) => /Command: \$ pnpm test/u.test(text)));
-    assert.ok(statusTexts.some((text) => /Output: 26\/26 tests passed/u.test(text)));
+    assert.ok(statusTexts.some((text) => /Progress: pnpm test -> 26\/26 tests passed/u.test(text)));
+    assert.equal(statusTexts.some((text) => /Command: /u.test(text)), false);
+    assert.equal(statusTexts.some((text) => /Output: /u.test(text)), false);
     assert.equal(statusTexts.some((text) => /Collect protocol evidence/u.test(text)), false);
 
     const planTexts = getMessageTexts(sent, edited, 101);
@@ -718,7 +715,7 @@ test("runtime cards keep command activity on the status message and final answer
   }
 });
 
-test("status card expands and collapses command history with Telegram callbacks", async () => {
+test("status card removes command toggles and treats old command callbacks as expired", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ messageId: number; text: string; replyMarkup?: any }> = [];
   const edited: Array<{ messageId: number; text: string; replyMarkup?: any }> = [];
@@ -799,13 +796,12 @@ test("status card expands and collapses command history with Telegram callbacks"
     });
 
     const collapsed = edited.at(-1);
-    assert.match(collapsed?.text ?? "", /Latest command/u);
-    assert.match(collapsed?.text ?? "", /Command: \$ pnpm test/u);
-    assert.doesNotMatch(collapsed?.text ?? "", /pnpm install/u);
-    assert.equal(
-      collapsed?.replyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data,
-      encodeCommandListExpandCallback(session.sessionId)
-    );
+    assert.doesNotMatch(collapsed?.text ?? "", /Latest command/u);
+    assert.doesNotMatch(collapsed?.text ?? "", /Command: \$ pnpm test/u);
+    assert.doesNotMatch(collapsed?.text ?? "", /Earlier commands/u);
+    assert.equal(collapsed?.replyMarkup, undefined);
+
+    const editCountBeforeCallbacks = edited.length;
 
     await (service as any).handleCallback({
       id: "callback-expand",
@@ -816,17 +812,11 @@ test("status card expands and collapses command history with Telegram callbacks"
         date: 0,
         text: "Runtime Status"
       },
-      data: encodeCommandListExpandCallback(session.sessionId)
+      data: `v1:cmd:expand:${session.sessionId}`
     });
 
-    const expanded = edited.at(-1);
-    assert.match(expanded?.text ?? "", /Commands: 2/u);
-    assert.match(expanded?.text ?? "", /1\. Command: \$ pnpm install/u);
-    assert.match(expanded?.text ?? "", /2\. Command: \$ pnpm test/u);
-    assert.equal(
-      expanded?.replyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data,
-      encodeCommandListCollapseCallback(session.sessionId)
-    );
+    assert.equal(callbackAnswers.at(-1), "这个按钮已过期，请重新操作。");
+    assert.equal(edited.length, editCountBeforeCallbacks);
 
     await (service as any).handleCallback({
       id: "callback-collapse",
@@ -837,13 +827,11 @@ test("status card expands and collapses command history with Telegram callbacks"
         date: 0,
         text: "Runtime Status"
       },
-      data: encodeCommandListCollapseCallback(session.sessionId)
+      data: `v1:cmd:collapse:${session.sessionId}`
     });
 
-    const recollapsed = edited.at(-1);
-    assert.match(recollapsed?.text ?? "", /Latest command/u);
-    assert.doesNotMatch(recollapsed?.text ?? "", /1\. Command: \$ pnpm install/u);
-    assert.equal(callbackAnswers.length, 2);
+    assert.equal(callbackAnswers.at(-1), "这个按钮已过期，请重新操作。");
+    assert.equal(edited.length, editCountBeforeCallbacks);
   } finally {
     await cleanup();
   }
@@ -1198,8 +1186,9 @@ test("status card accumulates fragmented command output before rendering command
     });
 
     const statusTexts = getMessageTexts(sent, edited, 620);
-    assert.match(statusTexts.at(-1) ?? "", /Command: \$ pnpm test/u);
-    assert.match(statusTexts.at(-1) ?? "", /Output: 26\/26 tests passed/u);
+    assert.match(statusTexts.at(-1) ?? "", /Progress: pnpm test -> 26\/26 tests passed/u);
+    assert.doesNotMatch(statusTexts.at(-1) ?? "", /Command: \$ pnpm test/u);
+    assert.doesNotMatch(statusTexts.at(-1) ?? "", /Output: 26\/26 tests passed/u);
   } finally {
     await cleanup();
   }
@@ -1472,7 +1461,8 @@ test("runtime card rate limits keep the same message and retry later without rep
 
     assert.equal(sent.length, 1);
     assert.equal(edited.length, 2);
-    assert.match(activeTurn.statusCard.lastRenderedText, /Command: \$ pnpm test/u);
+    assert.match(activeTurn.statusCard.lastRenderedText, /State: Running/u);
+    assert.doesNotMatch(activeTurn.statusCard.lastRenderedText, /Command: \$ pnpm test/u);
     (service as any).clearRuntimeCardTimer(activeTurn.statusCard);
   } finally {
     await cleanup();
@@ -1596,7 +1586,10 @@ test("inspect renders structured activity details while running and after comple
     assert.match(sent.at(-1) ?? "", /Project: Project One/u);
     assert.match(sent.at(-1) ?? "", /Status: Running/u);
     assert.match(sent.at(-1) ?? "", /Searching docs/u);
-    assert.match(sent.at(-1) ?? "", /pnpm test -> 26\/26 tests passed/u);
+    assert.match(sent.at(-1) ?? "", /Commands/u);
+    assert.match(sent.at(-1) ?? "", /1\. Command: \$ pnpm test/u);
+    assert.match(sent.at(-1) ?? "", /State: Running/u);
+    assert.match(sent.at(-1) ?? "", /Output: 26\/26 tests passed/u);
     assert.match(sent.at(-1) ?? "", /Updated src\/service\.ts to enforce Telegram cooldown/u);
     assert.match(sent.at(-1) ?? "", /Plan snapshot/u);
     assert.match(sent.at(-1) ?? "", /Collect protocol evidence \(completed\)/u);
@@ -1616,6 +1609,8 @@ test("inspect renders structured activity details while running and after comple
 
     await (service as any).routeCommand("chat-1", "inspect", "");
     assert.match(sent.at(-1) ?? "", /Status: Completed/u);
+    assert.match(sent.at(-1) ?? "", /1\. Command: \$ pnpm test/u);
+    assert.match(sent.at(-1) ?? "", /State: Completed/u);
     assert.match(sent.at(-1) ?? "", /Latest milestone: Assistant reply: All done\./u);
     assert.match(sent.at(-1) ?? "", /Final answer: ready/u);
   } finally {
@@ -1673,9 +1668,11 @@ test("debug journal write failures do not break inspect or turn progress handlin
 
     assert.ok(sent.some((text) => /^Runtime Status/u.test(text)));
     assert.equal(sent.some((text) => /^Command/u.test(text)), false);
-    assert.ok(edited.some((text) => /Command: \$ pnpm test/u.test(text)));
+    assert.equal(edited.some((text) => /Command: \$ pnpm test/u.test(text)), false);
     assert.ok(edited.some((text) => /State: Running/u.test(text)));
     assert.match(sent.at(-1) ?? "", /Task details/u);
+    assert.match(sent.at(-1) ?? "", /Commands/u);
+    assert.match(sent.at(-1) ?? "", /1\. Command: \$ pnpm test/u);
   } finally {
     await cleanup();
   }

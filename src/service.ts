@@ -21,7 +21,6 @@ import {
   buildNoNewProjectsMessage,
   buildProjectPickerMessage,
   buildProjectSelectedText,
-  buildRuntimeCommandListReplyMarkup,
   buildRuntimeErrorCard,
   buildRuntimePlanCard,
   buildRuntimeStatusCard,
@@ -80,7 +79,6 @@ interface StatusCardState extends RuntimeCardMessageState {
   surface: "status";
   commandItems: Map<string, RuntimeCommandState>;
   commandOrder: RuntimeCommandState[];
-  commandsExpanded: boolean;
 }
 
 interface ErrorCardState extends RuntimeCardMessageState {
@@ -336,16 +334,6 @@ export class BridgeService {
       case "path_confirm": {
         await this.safeAnswerCallbackQuery(callbackQuery.id);
         await this.confirmManualProject(chatId, parsed.projectKey);
-        return;
-      }
-
-      case "command_list_expand": {
-        await this.handleCommandListToggle(callbackQuery, chatId, parsed.sessionId, true);
-        return;
-      }
-
-      case "command_list_collapse": {
-        await this.handleCommandListToggle(callbackQuery, chatId, parsed.sessionId, false);
         return;
       }
     }
@@ -1227,7 +1215,8 @@ export class BridgeService {
     const activity = this.activeTurn?.sessionId === activeSession.sessionId
       ? {
           tracker: this.activeTurn.tracker,
-          debugFilePath: this.activeTurn.debugJournal.filePath
+          debugFilePath: this.activeTurn.debugJournal.filePath,
+          statusCard: this.activeTurn.statusCard
         }
       : this.recentActivityBySessionId.get(activeSession.sessionId);
 
@@ -1247,123 +1236,10 @@ export class BridgeService {
       buildInspectText(snapshot, {
         debugFilePath: activity.debugFilePath,
         sessionName: activeSession.displayName,
-        projectName: activeSession.projectName
+        projectName: activeSession.projectName,
+        commands: buildInspectCommandEntries(activity.statusCard)
       })
     );
-  }
-
-  private async handleCommandListToggle(
-    callbackQuery: TelegramCallbackQuery,
-    chatId: string,
-    sessionId: string,
-    expanded: boolean
-  ): Promise<void> {
-    const record = this.getStatusCardRecord(sessionId);
-    if (!record || !callbackQuery.message) {
-      await this.safeAnswerCallbackQuery(callbackQuery.id, "这个按钮已过期，请重新操作。");
-      return;
-    }
-
-    const { activeTurn, statusCard, tracker } = record;
-    const traceContext = activeTurn
-      ? this.getRuntimeCardTraceContext(activeTurn)
-      : {
-          sessionId,
-          chatId,
-          threadId: null,
-          turnId: null
-        } satisfies RuntimeCardTraceContext;
-    if (
-      statusCard.messageId === 0 ||
-      callbackQuery.message.message_id !== statusCard.messageId ||
-      statusCard.commandOrder.length <= 1
-    ) {
-      await this.logRuntimeCardEvent(traceContext, statusCard, "command_toggle_rejected", {
-        requestedExpanded: expanded,
-        callbackMessageId: callbackQuery.message.message_id,
-        commandCount: statusCard.commandOrder.length,
-        reason: "expired"
-      });
-      await this.safeAnswerCallbackQuery(callbackQuery.id, "这个按钮已过期，请重新操作。");
-      return;
-    }
-
-    if (statusCard.commandsExpanded === expanded) {
-      await this.logRuntimeCardEvent(traceContext, statusCard, "command_toggle_noop", {
-        requestedExpanded: expanded,
-        commandCount: statusCard.commandOrder.length
-      });
-      await this.safeAnswerCallbackQuery(callbackQuery.id);
-      return;
-    }
-
-    statusCard.commandsExpanded = expanded;
-    await this.logRuntimeCardEvent(traceContext, statusCard, "command_toggle_requested", {
-      requestedExpanded: expanded,
-      activeTurn: Boolean(activeTurn),
-      commandCount: statusCard.commandOrder.length,
-      commands: summarizeRuntimeCommands(statusCard.commandOrder),
-      card: summarizeRuntimeCardSurface(statusCard)
-    });
-    if (activeTurn) {
-      await this.syncRuntimeCards(activeTurn, null, null, activeTurn.tracker.getStatus(), {
-        force: true,
-        reason: expanded ? "command_list_expand" : "command_list_collapse"
-      });
-      await this.safeAnswerCallbackQuery(callbackQuery.id);
-      return;
-    }
-
-    const rendered = this.buildStatusCardRenderPayload(sessionId, tracker, statusCard);
-    const editResult = await this.safeEditMessageText(chatId, statusCard.messageId, rendered.text, rendered.replyMarkup);
-    if (editResult.outcome !== "edited") {
-      statusCard.commandsExpanded = !expanded;
-      await this.logRuntimeCardEvent(traceContext, statusCard, "command_toggle_reverted", {
-        requestedExpanded: expanded,
-        outcome: editResult.outcome,
-        renderedText: rendered.text,
-        replyMarkup: rendered.replyMarkup ?? null,
-        card: summarizeRuntimeCardSurface(statusCard)
-      });
-      await this.safeAnswerCallbackQuery(callbackQuery.id, "消息暂时无法更新，请稍后重试。");
-      return;
-    }
-
-    statusCard.lastRenderedText = rendered.text;
-    statusCard.lastRenderedReplyMarkupKey = serializeReplyMarkup(rendered.replyMarkup);
-    statusCard.lastRenderedAtMs = Date.now();
-    await this.logRuntimeCardEvent(traceContext, statusCard, "command_toggle_rendered", {
-      requestedExpanded: expanded,
-      renderedText: rendered.text,
-      replyMarkup: rendered.replyMarkup ?? null,
-      card: summarizeRuntimeCardSurface(statusCard)
-    });
-    await this.safeAnswerCallbackQuery(callbackQuery.id);
-  }
-
-  private getStatusCardRecord(sessionId: string): {
-    activeTurn: ActiveTurnState | null;
-    tracker: ActivityTracker;
-    statusCard: StatusCardState;
-  } | null {
-    if (this.activeTurn?.sessionId === sessionId) {
-      return {
-        activeTurn: this.activeTurn,
-        tracker: this.activeTurn.tracker,
-        statusCard: this.activeTurn.statusCard
-      };
-    }
-
-    const recentActivity = this.recentActivityBySessionId.get(sessionId);
-    if (!recentActivity?.statusCard) {
-      return null;
-    }
-
-    return {
-      activeTurn: null,
-      tracker: recentActivity.tracker,
-      statusCard: recentActivity.statusCard
-    };
   }
 
   private getRuntimeCardTraceContext(activeTurn: ActiveTurnState): RuntimeCardTraceContext {
@@ -1410,41 +1286,21 @@ export class BridgeService {
   private buildStatusCardRenderPayload(
     sessionId: string,
     tracker: ActivityTracker,
-    statusCard: StatusCardState
+    _statusCard: StatusCardState
   ): {
     text: string;
     replyMarkup?: TelegramInlineKeyboardMarkup;
   } {
     const inspect = tracker.getInspectSnapshot();
     const context = this.getRuntimeCardContext(sessionId);
-    const replyMarkup = buildRuntimeCommandListReplyMarkup(
-      sessionId,
-      statusCard.commandOrder.length,
-      statusCard.commandsExpanded
-    );
 
-    const payload = {
+    return {
       text: buildRuntimeStatusCard({
         ...context,
         state: formatVisibleRuntimeState(inspect),
         blockedReason: formatRuntimeBlockedReason(inspect.threadBlockedReason),
-        progressText: selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null),
-        commands: statusCard.commandOrder.map((command) => ({
-          commandText: command.commandText,
-          state: formatRuntimeCommandState(command.status),
-          latestSummary: command.latestSummary
-        })),
-        commandsExpanded: statusCard.commandsExpanded
+        progressText: selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null)
       })
-    };
-
-    if (!replyMarkup) {
-      return payload;
-    }
-
-    return {
-      ...payload,
-      replyMarkup
     };
   }
 
@@ -2416,7 +2272,6 @@ function summarizeRuntimeCardSurface(surface: RuntimeCardMessageState): Record<s
 
   if (surface.surface === "status") {
     const statusSurface = surface as StatusCardState;
-    summary.commandsExpanded = statusSurface.commandsExpanded;
     summary.commandCount = statusSurface.commandOrder.length;
     summary.commands = summarizeRuntimeCommands(statusSurface.commandOrder);
     return summary;
@@ -2455,8 +2310,7 @@ function createStatusCardMessageState(): StatusCardState {
     ...createRuntimeCardMessageState("status", "status"),
     surface: "status",
     commandItems: new Map(),
-    commandOrder: [],
-    commandsExpanded: false
+    commandOrder: []
   };
 }
 
@@ -2510,6 +2364,14 @@ function selectStatusProgressText(status: ActivityStatus, latestProgressUnit: st
   }
 
   if (status.latestProgress && /^Reconnecting/i.test(status.latestProgress)) {
+    return status.latestProgress;
+  }
+
+  if (status.turnStatus === "failed") {
+    return null;
+  }
+
+  if (status.latestProgress) {
     return status.latestProgress;
   }
 
@@ -2679,6 +2541,22 @@ function formatRuntimeCommandState(status: RuntimeCommandState["status"]): strin
     default:
       return "Unknown";
   }
+}
+
+function buildInspectCommandEntries(statusCard: StatusCardState | null | undefined): Array<{
+  commandText: string;
+  state: string;
+  latestSummary: string | null;
+}> {
+  if (!statusCard) {
+    return [];
+  }
+
+  return statusCard.commandOrder.map((command) => ({
+    commandText: command.commandText,
+    state: formatRuntimeCommandState(command.status),
+    latestSummary: command.latestSummary
+  }));
 }
 
 function cleanRuntimeErrorMessage(message: string | null | undefined): string {
