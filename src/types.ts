@@ -86,6 +86,8 @@ export interface SessionRow {
   projectPath: string;
   status: SessionStatus;
   failureReason: FailureReason | null;
+  archived: boolean;
+  archivedAt: string | null;
   createdAt: string;
   lastUsedAt: string;
   lastTurnId: string | null;

@@ -441,11 +441,12 @@ export class BridgeService {
       }
 
       case "sessions": {
-        if (!this.store) {
-          return;
-        }
+        await this.handleSessions(chatId, args);
+        return;
+      }
 
-        await this.safeSendMessage(chatId, buildSessionsText(this.store.listSessions(chatId)));
+      case "archive": {
+        await this.handleArchive(chatId);
         return;
       }
 
@@ -470,6 +471,11 @@ export class BridgeService {
 
       case "use": {
         await this.handleUse(chatId, args);
+        return;
+      }
+
+      case "unarchive": {
+        await this.handleUnarchive(chatId, args);
         return;
       }
 
@@ -723,6 +729,24 @@ export class BridgeService {
     );
   }
 
+  private async handleSessions(chatId: string, args: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const archived = args.trim() === "archived";
+    const sessions = this.store.listSessions(chatId, { archived, limit: 10 });
+    const activeSession = archived ? null : this.store.getActiveSession(chatId);
+    await this.safeSendMessage(
+      chatId,
+      buildSessionsText({
+        sessions,
+        activeSessionId: activeSession?.sessionId ?? null,
+        archived
+      })
+    );
+  }
+
   private async handleUse(chatId: string, args: string): Promise<void> {
     if (!this.store) {
       return;
@@ -749,6 +773,97 @@ export class BridgeService {
 
     this.store.setActiveSession(chatId, target.sessionId);
     await this.safeSendMessage(chatId, `已切换到项目：${target.projectName}`);
+  }
+
+  private async handleArchive(chatId: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession) {
+      await this.safeSendMessage(chatId, "当前没有活动会话。");
+      return;
+    }
+
+    if (activeSession.status === "running") {
+      await this.safeSendMessage(chatId, "当前项目仍在执行，请先等待完成或停止当前操作。");
+      return;
+    }
+
+    let mirroredRemotely = false;
+    try {
+      if (activeSession.threadId) {
+        await this.ensureAppServerAvailable();
+        await this.appServer?.archiveThread(activeSession.threadId);
+        mirroredRemotely = true;
+      }
+
+      this.store.archiveSession(activeSession.sessionId);
+      await this.safeSendMessage(chatId, `已归档当前会话：${activeSession.projectName}`);
+    } catch {
+      // If the remote archive succeeded but the local store update failed, best-effort
+      // roll the thread back so Telegram and Codex do not silently drift apart.
+      if (mirroredRemotely && activeSession.threadId) {
+        try {
+          await this.appServer?.unarchiveThread(activeSession.threadId);
+        } catch (rollbackError) {
+          await this.logger.warn("archive rollback failed after local persistence error", {
+            sessionId: activeSession.sessionId,
+            threadId: activeSession.threadId,
+            error: `${rollbackError}`
+          });
+        }
+      }
+
+      await this.safeSendMessage(chatId, "当前无法归档这个会话，请稍后重试。");
+    }
+  }
+
+  private async handleUnarchive(chatId: string, args: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const index = Number.parseInt(args.trim(), 10);
+    if (!Number.isFinite(index) || index < 1) {
+      await this.safeSendMessage(chatId, "找不到这个会话。");
+      return;
+    }
+
+    const archivedSessions = this.store.listSessions(chatId, { archived: true, limit: 10 });
+    const target = archivedSessions[index - 1];
+    if (!target) {
+      await this.safeSendMessage(chatId, "找不到这个会话。");
+      return;
+    }
+
+    let mirroredRemotely = false;
+    try {
+      if (target.threadId) {
+        await this.ensureAppServerAvailable();
+        await this.appServer?.unarchiveThread(target.threadId);
+        mirroredRemotely = true;
+      }
+
+      this.store.unarchiveSession(target.sessionId);
+      await this.safeSendMessage(chatId, `已恢复会话：${target.projectName}`);
+    } catch {
+      // Apply the inverse compensation on restore failures for the same reason.
+      if (mirroredRemotely && target.threadId) {
+        try {
+          await this.appServer?.archiveThread(target.threadId);
+        } catch (rollbackError) {
+          await this.logger.warn("unarchive rollback failed after local persistence error", {
+            sessionId: target.sessionId,
+            threadId: target.threadId,
+            error: `${rollbackError}`
+          });
+        }
+      }
+
+      await this.safeSendMessage(chatId, "当前无法恢复这个会话，请稍后重试。");
+    }
   }
 
   private async handleRename(chatId: string, args: string): Promise<void> {

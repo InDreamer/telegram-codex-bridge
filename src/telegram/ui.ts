@@ -210,7 +210,14 @@ export function buildStatusText(
 ): string {
   const issueText = snapshot.details.issues.length === 0 ? "无" : snapshot.details.issues.join("；");
   const activeSessionText = activeSession
-    ? `${activeSession.projectName} / ${activeSession.displayName} / ${activeSession.status}${activeSession.failureReason ? ` / ${activeSession.failureReason}` : ""}`
+    ? [
+        activeSession.projectName,
+        activeSession.displayName,
+        formatSessionState(activeSession),
+        formatLastTurnSummary(activeSession)
+      ]
+        .filter((value): value is string => Boolean(value))
+        .join(" / ")
     : "无";
 
   return [
@@ -229,26 +236,44 @@ export function buildWhereText(session: SessionRow | null): string {
     return "当前没有活动会话。";
   }
 
-  return [
+  const lines = [
     "当前会话",
     `会话名：${session.displayName}`,
     `项目：${session.projectName}`,
     `路径：${session.projectPath}`,
-    `状态：${session.status}`
-  ].join("\n");
-}
+    `状态：${formatSessionState(session)}`
+  ];
 
-export function buildSessionsText(sessions: SessionRow[]): string {
-  if (sessions.length === 0) {
-    return "最近会话\n暂无会话。";
+  const lastTurnSummary = formatLastTurnSummary(session);
+  if (lastTurnSummary) {
+    lines.push(`上次结果：${lastTurnSummary}`);
   }
 
-  const lines = ["最近会话"];
-  sessions.forEach((session, index) => {
-    const runningMarker = session.status === "running" ? " [running]" : "";
-    lines.push(
-      `${index + 1}. ${session.displayName} | ${session.projectName} | ${formatRelativeTime(session.lastUsedAt)}${runningMarker}`
-    );
+  return lines.join("\n");
+}
+
+export function buildSessionsText(options: {
+  sessions: SessionRow[];
+  activeSessionId: string | null;
+  archived?: boolean;
+}): string {
+  const title = options.archived ? "已归档会话" : "最近会话";
+  if (options.sessions.length === 0) {
+    return `${title}\n暂无会话。`;
+  }
+
+  const lines = [title];
+  options.sessions.forEach((session, index) => {
+    const marker = !options.archived && session.sessionId === options.activeSessionId ? "[当前] " : "";
+    const parts = [
+      `${marker}${session.displayName}`,
+      session.projectName,
+      formatSessionState(session),
+      formatLastTurnSummary(session),
+      formatRelativeTime(session.lastUsedAt)
+    ].filter((value): value is string => Boolean(value));
+
+    lines.push(`${index + 1}. ${parts.join(" | ")}`);
   });
 
   return lines.join("\n");
@@ -487,16 +512,16 @@ function formatRelativeTime(isoTime: string): string {
   }
 
   if (minutes < 60) {
-    return `${minutes} 分钟前`;
+    return `${minutes}分钟前`;
   }
 
   const hours = Math.floor(minutes / 60);
   if (hours < 24) {
-    return `${hours} 小时前`;
+    return `${hours}小时前`;
   }
 
   const days = Math.floor(hours / 24);
-  return `${days} 天前`;
+  return `${days}天前`;
 }
 
 function pushRuntimeCardContext(lines: string[], context: RuntimeCardContext): void {
@@ -570,6 +595,53 @@ function formatRuntimeCommandText(commandText: string): string {
   }
 
   return truncateRuntimeCardText(`$ ${trimmed}`, 220);
+}
+
+function formatSessionState(session: SessionRow): string {
+  switch (session.status) {
+    case "running":
+      return "执行中";
+    case "interrupted":
+      return "已中断";
+    case "failed":
+      return session.failureReason
+        ? `失败（${formatSessionFailureReason(session.failureReason)}）`
+        : "失败";
+    case "idle":
+    default:
+      return "空闲";
+  }
+}
+
+function formatSessionFailureReason(reason: SessionRow["failureReason"]): string {
+  switch (reason) {
+    case "bridge_restart":
+      return "桥接服务重启";
+    case "app_server_lost":
+      return "Codex 服务断开";
+    case "turn_failed":
+      return "执行失败";
+    case "unknown":
+    default:
+      return "未知原因";
+  }
+}
+
+function formatLastTurnSummary(session: SessionRow): string | null {
+  if (session.status === "running" || session.status === "failed" || session.status === "interrupted") {
+    return null;
+  }
+
+  switch (session.lastTurnStatus) {
+    case "completed":
+      return "上次已完成";
+    case "interrupted":
+      return "上次已中断";
+    case "failed":
+      return session.failureReason ? `上次失败（${formatSessionFailureReason(session.failureReason)}）` : "上次失败";
+    default:
+      return null;
+  }
 }
 
 function formatInspectSection(values: string[]): string[] {

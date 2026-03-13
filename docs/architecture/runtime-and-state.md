@@ -124,6 +124,8 @@ Important fields:
 - `project_path`
 - `status`
 - `failure_reason`
+- `archived`
+- `archived_at`
 - `created_at`
 - `last_used_at`
 - `last_turn_id`
@@ -134,6 +136,10 @@ Allowed `status` values:
 - `running`
 - `interrupted`
 - `failed`
+
+Archive note:
+- archive state is tracked separately from runtime `status`
+- archived sessions are hidden from the default session list and active-session lookup
 
 Allowed v1 `failure_reason` values:
 - `bridge_restart`

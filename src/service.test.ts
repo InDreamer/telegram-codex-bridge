@@ -241,6 +241,175 @@ test("flushRuntimeNotices clears notices after a successful Telegram delivery", 
   }
 });
 
+test("archive command archives the active session, switches active session, and mirrors to app-server", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+  const archivedThreadIds: string[] = [];
+
+  try {
+    authorizeChat(store, "chat-1");
+    const archivedSession = createSession(store, "chat-1");
+    store.renameSession(archivedSession.sessionId, "Session Alpha");
+    store.updateSessionThreadId(archivedSession.sessionId, "thread-archive");
+
+    const fallbackSession = createSession(store, "chat-1");
+    store.renameSession(fallbackSession.sessionId, "Session Beta");
+    store.setActiveSession("chat-1", archivedSession.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string) => {
+        sent.push(text);
+        return createFakeTelegramMessage(sent.length, text);
+      }
+    };
+    (service as any).appServer = {
+      isRunning: true,
+      archiveThread: async (threadId: string) => {
+        archivedThreadIds.push(threadId);
+      }
+    };
+
+    await (service as any).routeCommand("chat-1", "archive", "");
+
+    assert.deepEqual(archivedThreadIds, ["thread-archive"]);
+    assert.equal(store.getActiveSession("chat-1")?.sessionId, fallbackSession.sessionId);
+    assert.equal(store.listSessions("chat-1").length, 1);
+    assert.equal(store.listSessions("chat-1", { archived: true, limit: 10 })[0]?.sessionId, archivedSession.sessionId);
+    assert.equal(sent.at(-1), "已归档当前会话：Project One");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("sessions archived and unarchive command expose and restore archived sessions", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+  const unarchivedThreadIds: string[] = [];
+
+  try {
+    authorizeChat(store, "chat-1");
+    const session = createSession(store, "chat-1");
+    store.renameSession(session.sessionId, "Session Alpha");
+    store.updateSessionThreadId(session.sessionId, "thread-unarchive");
+    store.archiveSession(session.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string) => {
+        sent.push(text);
+        return createFakeTelegramMessage(sent.length, text);
+      }
+    };
+    (service as any).appServer = {
+      isRunning: true,
+      unarchiveThread: async (threadId: string) => {
+        unarchivedThreadIds.push(threadId);
+      }
+    };
+
+    await (service as any).routeCommand("chat-1", "sessions", "archived");
+    assert.match(sent.at(-1) ?? "", /^已归档会话/u);
+    assert.match(sent.at(-1) ?? "", /Session Alpha/u);
+
+    await (service as any).routeCommand("chat-1", "unarchive", "1");
+
+    assert.deepEqual(unarchivedThreadIds, ["thread-unarchive"]);
+    assert.equal(store.getActiveSession("chat-1")?.sessionId, session.sessionId);
+    assert.equal(store.listSessions("chat-1")[0]?.sessionId, session.sessionId);
+    assert.equal(sent.at(-1), "已恢复会话：Project One");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("archive command compensates remote state when local archive persistence fails", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+  const archivedThreadIds: string[] = [];
+  const unarchivedThreadIds: string[] = [];
+
+  try {
+    authorizeChat(store, "chat-1");
+    const session = createSession(store, "chat-1");
+    store.updateSessionThreadId(session.sessionId, "thread-compensate");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string) => {
+        sent.push(text);
+        return createFakeTelegramMessage(sent.length, text);
+      }
+    };
+    (service as any).appServer = {
+      isRunning: true,
+      archiveThread: async (threadId: string) => {
+        archivedThreadIds.push(threadId);
+      },
+      unarchiveThread: async (threadId: string) => {
+        unarchivedThreadIds.push(threadId);
+      }
+    };
+
+    const originalArchiveSession = store.archiveSession.bind(store);
+    (store as any).archiveSession = () => {
+      throw new Error("db write failed");
+    };
+
+    await (service as any).routeCommand("chat-1", "archive", "");
+
+    assert.deepEqual(archivedThreadIds, ["thread-compensate"]);
+    assert.deepEqual(unarchivedThreadIds, ["thread-compensate"]);
+    assert.equal(sent.at(-1), "当前无法归档这个会话，请稍后重试。");
+
+    (store as any).archiveSession = originalArchiveSession;
+  } finally {
+    await cleanup();
+  }
+});
+
+test("unarchive command compensates remote state when local unarchive persistence fails", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+  const archivedThreadIds: string[] = [];
+  const unarchivedThreadIds: string[] = [];
+
+  try {
+    authorizeChat(store, "chat-1");
+    const session = createSession(store, "chat-1");
+    store.updateSessionThreadId(session.sessionId, "thread-unarchive-compensate");
+    store.archiveSession(session.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string) => {
+        sent.push(text);
+        return createFakeTelegramMessage(sent.length, text);
+      }
+    };
+    (service as any).appServer = {
+      isRunning: true,
+      archiveThread: async (threadId: string) => {
+        archivedThreadIds.push(threadId);
+      },
+      unarchiveThread: async (threadId: string) => {
+        unarchivedThreadIds.push(threadId);
+      }
+    };
+
+    const originalUnarchiveSession = store.unarchiveSession.bind(store);
+    (store as any).unarchiveSession = () => {
+      throw new Error("db write failed");
+    };
+
+    await (service as any).routeCommand("chat-1", "unarchive", "1");
+
+    assert.deepEqual(unarchivedThreadIds, ["thread-unarchive-compensate"]);
+    assert.deepEqual(archivedThreadIds, ["thread-unarchive-compensate"]);
+    assert.equal(sent.at(-1), "当前无法恢复这个会话，请稍后重试。");
+
+    (store as any).unarchiveSession = originalUnarchiveSession;
+  } finally {
+    await cleanup();
+  }
+});
+
 test("runtime cards keep command activity on the status message and final answer separate", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{

@@ -187,6 +187,14 @@ export class CodexAppServerClient {
     });
   }
 
+  async archiveThread(threadId: string): Promise<void> {
+    await this.request("thread/archive", { threadId });
+  }
+
+  async unarchiveThread(threadId: string): Promise<void> {
+    await this.request("thread/unarchive", { threadId });
+  }
+
   async startTurn(options: {
     threadId: string;
     cwd: string;

@@ -140,9 +140,17 @@ Invalid path feedback:
 ### `/sessions`
 
 Shows:
-- title `最近会话`
+- default title `最近会话`
+- default view hides archived sessions
 - up to 10 sessions, newest first
-- session index, display name, project name, relative last-used time, and running marker
+- session index, active marker when applicable, display name, project name, user-visible state, optional last-result summary, and relative last-used time
+
+### `/sessions archived`
+
+Shows:
+- title `已归档会话`
+- up to 10 archived sessions, newest first by last-used time
+- session index, display name, project name, user-visible state, optional last-result summary, and relative last-used time
 
 ### `/use <n>`
 
@@ -153,6 +161,30 @@ Responses:
 If the current active session is running:
 - reject the switch
 - return `当前项目仍在执行，请先等待完成或停止当前操作。`
+
+### `/archive`
+
+Responses:
+- success: `已归档当前会话：{project_name}`
+- no active session: `当前没有活动会话。`
+- active session running: `当前项目仍在执行，请先等待完成或停止当前操作。`
+- archive unavailable: `当前无法归档这个会话，请稍后重试。`
+
+Archive rules:
+- archive only applies to the current active session
+- archived sessions are hidden from default `/sessions`
+- after archiving the active session, the bridge switches to the most recent remaining visible session when one exists
+
+### `/unarchive <n>`
+
+Responses:
+- success: `已恢复会话：{project_name}`
+- failure: `找不到这个会话。`
+- unarchive unavailable: `当前无法恢复这个会话，请稍后重试。`
+
+Rules:
+- `<n>` is indexed against `/sessions archived`, not the default `/sessions` view
+- if no active visible session remains, the restored session becomes active automatically
 
 ### `/rename <name>`
 

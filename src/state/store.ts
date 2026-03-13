@@ -62,6 +62,8 @@ interface SessionRecord {
   project_path: string;
   status: SessionStatus;
   failure_reason: FailureReason | null;
+  archived: number;
+  archived_at: string | null;
   created_at: string;
   last_used_at: string;
   last_turn_id: string | null;
@@ -153,6 +155,8 @@ function mapSession(record: SessionRecord): SessionRow {
     projectPath: record.project_path,
     status: record.status,
     failureReason: record.failure_reason,
+    archived: record.archived === 1,
+    archivedAt: record.archived_at,
     createdAt: record.created_at,
     lastUsedAt: record.last_used_at,
     lastTurnId: record.last_turn_id,
@@ -252,6 +256,8 @@ function initialSchema(): string {
       project_path TEXT NOT NULL,
       status TEXT NOT NULL,
       failure_reason TEXT NULL,
+      archived INTEGER NOT NULL DEFAULT 0,
+      archived_at TEXT NULL,
       created_at TEXT NOT NULL,
       last_used_at TEXT NOT NULL,
       last_turn_id TEXT NULL,
@@ -302,6 +308,82 @@ function initialSchema(): string {
   `;
 }
 
+const CURRENT_SCHEMA_VERSION = 2;
+
+function listColumns(db: DatabaseSync, tableName: string): string[] {
+  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+  return rows.map((row) => row.name);
+}
+
+function hasColumn(db: DatabaseSync, tableName: string, columnName: string): boolean {
+  return listColumns(db, tableName).includes(columnName);
+}
+
+function getAppliedMigrations(db: DatabaseSync): Set<number> {
+  const rows = db
+    .prepare("SELECT version FROM schema_migrations ORDER BY version ASC")
+    .all() as Array<{ version: number | bigint }>;
+
+  return new Set(rows.map((row) => Number(row.version)));
+}
+
+function recordMigration(db: DatabaseSync, version: number): void {
+  db.prepare(
+    `
+      INSERT OR REPLACE INTO schema_migrations (version, applied_at)
+      VALUES (?, ?)
+    `
+  ).run(version, nowIso());
+}
+
+function applyMigrations(db: DatabaseSync): void {
+  db.exec(
+    `
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL
+      )
+    `
+  );
+
+  const applied = getAppliedMigrations(db);
+
+  if (!applied.has(1)) {
+    // Version 1 is the historical bootstrap schema used before explicit migrations existed.
+    db.exec(initialSchema());
+    recordMigration(db, 1);
+  }
+
+  if (!applied.has(2)) {
+    if (!hasColumn(db, "session", "archived")) {
+      db.exec("ALTER TABLE session ADD COLUMN archived INTEGER NOT NULL DEFAULT 0");
+    }
+
+    if (!hasColumn(db, "session", "archived_at")) {
+      db.exec("ALTER TABLE session ADD COLUMN archived_at TEXT NULL");
+    }
+
+    recordMigration(db, 2);
+  }
+}
+
+function resolveSessionListOptions(limitOrOptions?: number | { archived?: boolean; limit?: number }): {
+  archived: boolean;
+  limit: number;
+} {
+  if (typeof limitOrOptions === "number") {
+    return {
+      archived: false,
+      limit: limitOrOptions
+    };
+  }
+
+  return {
+    archived: limitOrOptions?.archived ?? false,
+    limit: limitOrOptions?.limit ?? 10
+  };
+}
+
 export class BridgeStateStore {
   private constructor(
     private readonly db: DatabaseSync,
@@ -317,13 +399,17 @@ export class BridgeStateStore {
       const db = new DatabaseSync(dbPath);
       initializeDatabase(db);
       verifyIntegrity(db);
-      return new BridgeStateStore(db, logger, recoveredFromCorruption);
+      const store = new BridgeStateStore(db, logger, recoveredFromCorruption);
+      store.normalizeAllActiveSessions();
+      return store;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT") {
         const db = new DatabaseSync(dbPath);
         initializeDatabase(db);
-        return new BridgeStateStore(db, logger, recoveredFromCorruption);
+        const store = new BridgeStateStore(db, logger, recoveredFromCorruption);
+        store.normalizeAllActiveSessions();
+        return store;
       }
 
       recoveredFromCorruption = true;
@@ -345,6 +431,7 @@ export class BridgeStateStore {
       const db = new DatabaseSync(dbPath);
       initializeDatabase(db);
       const store = new BridgeStateStore(db, logger, recoveredFromCorruption);
+      store.normalizeAllActiveSessions();
       store.writeReadinessSnapshot({
         state: "bridge_unhealthy",
         checkedAt: nowIso(),
@@ -364,6 +451,13 @@ export class BridgeStateStore {
 
   close(): void {
     this.db.close();
+  }
+
+  private normalizeAllActiveSessions(): void {
+    const bindings = this.listChatBindings();
+    for (const binding of bindings) {
+      this.normalizeActiveSession(binding.telegramChatId);
+    }
   }
 
   getAuthorizedUser(): AuthorizedUserRow | null {
@@ -537,6 +631,8 @@ export class BridgeStateStore {
           timestamp
         );
 
+      this.normalizeActiveSession(candidate.telegramChatId);
+
       this.db.prepare("DELETE FROM pending_authorization").run();
 
       if (previousSnapshot) {
@@ -670,18 +766,19 @@ export class BridgeStateStore {
     }
   }
 
-  listSessions(telegramChatId: string, limit = 10): SessionRow[] {
+  listSessions(telegramChatId: string, limitOrOptions?: number | { archived?: boolean; limit?: number }): SessionRow[] {
+    const options = resolveSessionListOptions(limitOrOptions);
     const rows = this.db
       .prepare(
         `
           SELECT *
           FROM session
-          WHERE telegram_chat_id = ?
+          WHERE telegram_chat_id = ? AND archived = ?
           ORDER BY last_used_at DESC, created_at DESC
           LIMIT ?
         `
       )
-      .all(telegramChatId, limit) as unknown as SessionRecord[];
+      .all(telegramChatId, options.archived ? 1 : 0, options.limit) as unknown as SessionRecord[];
 
     return rows.map(mapSession);
   }
@@ -701,7 +798,7 @@ export class BridgeStateStore {
           SELECT s.*
           FROM chat_binding cb
           JOIN session s ON s.session_id = cb.active_session_id
-          WHERE cb.telegram_chat_id = ?
+          WHERE cb.telegram_chat_id = ? AND s.archived = 0
         `
       )
       .get(telegramChatId) as SessionRecord | undefined;
@@ -726,6 +823,8 @@ export class BridgeStateStore {
       projectPath: options.projectPath,
       status: "idle",
       failureReason: null,
+      archived: false,
+      archivedAt: null,
       createdAt: timestamp,
       lastUsedAt: timestamp,
       lastTurnId: null,
@@ -747,12 +846,14 @@ export class BridgeStateStore {
               project_path,
               status,
               failure_reason,
+              archived,
+              archived_at,
               created_at,
               last_used_at,
               last_turn_id,
               last_turn_status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `
         )
         .run(
@@ -764,6 +865,8 @@ export class BridgeStateStore {
           session.projectPath,
           session.status,
           session.failureReason,
+          session.archived ? 1 : 0,
+          session.archivedAt,
           session.createdAt,
           session.lastUsedAt,
           session.lastTurnId,
@@ -823,6 +926,132 @@ export class BridgeStateStore {
         `
       )
       .run(sessionId, nowIso(), telegramChatId);
+  }
+
+  private getVisibleSessionById(sessionId: string): SessionRow | null {
+    const row = this.db
+      .prepare("SELECT * FROM session WHERE session_id = ? AND archived = 0")
+      .get(sessionId) as SessionRecord | undefined;
+
+    return row ? mapSession(row) : null;
+  }
+
+  private selectMostRecentVisibleSessionId(telegramChatId: string): string | null {
+    const row = this.db
+      .prepare(
+        `
+          SELECT session_id
+          FROM session
+          WHERE telegram_chat_id = ? AND archived = 0
+          ORDER BY last_used_at DESC, created_at DESC
+          LIMIT 1
+        `
+      )
+      .get(telegramChatId) as { session_id: string } | undefined;
+
+    return row?.session_id ?? null;
+  }
+
+  private normalizeActiveSession(telegramChatId: string): void {
+    const binding = this.getChatBinding(telegramChatId);
+    if (!binding) {
+      return;
+    }
+
+    // Archived sessions must never remain active in the Telegram UX.
+    const currentVisibleSession = binding.activeSessionId ? this.getVisibleSessionById(binding.activeSessionId) : null;
+    const nextActiveSessionId = currentVisibleSession?.sessionId ?? this.selectMostRecentVisibleSessionId(telegramChatId);
+
+    this.db
+      .prepare(
+        `
+          UPDATE chat_binding
+          SET active_session_id = ?, updated_at = ?
+          WHERE telegram_chat_id = ?
+        `
+      )
+      .run(nextActiveSessionId, nowIso(), telegramChatId);
+  }
+
+  archiveSession(sessionId: string): SessionRow | null {
+    const session = this.getSessionById(sessionId);
+    if (!session) {
+      return null;
+    }
+
+    if (session.status === "running") {
+      throw new Error("cannot archive a running session");
+    }
+
+    const timestamp = nowIso();
+    this.db.exec("BEGIN");
+
+    try {
+      this.db
+        .prepare(
+          `
+            UPDATE session
+            SET archived = 1, archived_at = ?
+            WHERE session_id = ?
+          `
+        )
+        .run(timestamp, sessionId);
+
+      this.normalizeActiveSession(session.telegramChatId);
+
+      this.db.exec("COMMIT");
+      return this.getSessionById(sessionId);
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  unarchiveSession(sessionId: string): SessionRow | null {
+    const session = this.getSessionById(sessionId);
+    if (!session) {
+      return null;
+    }
+
+    if (session.status === "running") {
+      throw new Error("cannot unarchive a running session");
+    }
+
+    const timestamp = nowIso();
+    this.db.exec("BEGIN");
+
+    try {
+      this.db
+        .prepare(
+          `
+            UPDATE session
+            SET archived = 0, archived_at = NULL
+            WHERE session_id = ?
+          `
+        )
+        .run(sessionId);
+
+      const activeSession = this.getActiveSession(session.telegramChatId);
+      if (!activeSession) {
+        this.db
+          .prepare(
+            `
+              UPDATE chat_binding
+              SET active_session_id = ?, updated_at = ?
+              WHERE telegram_chat_id = ?
+            `
+          )
+          .run(sessionId, timestamp, session.telegramChatId);
+      } else {
+        this.normalizeActiveSession(session.telegramChatId);
+      }
+
+      this.db.exec("COMMIT");
+      return this.getSessionById(sessionId);
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   renameSession(sessionId: string, displayName: string): void {
@@ -1180,7 +1409,12 @@ export class BridgeStateStore {
 function initializeDatabase(db: DatabaseSync): void {
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
-  db.exec(initialSchema());
+  applyMigrations(db);
+
+  const applied = getAppliedMigrations(db);
+  if (!applied.has(CURRENT_SCHEMA_VERSION)) {
+    throw new Error(`schema migrations incomplete; expected version ${CURRENT_SCHEMA_VERSION}`);
+  }
 }
 
 function verifyIntegrity(db: DatabaseSync): void {
