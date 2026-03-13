@@ -791,6 +791,14 @@ export class BridgeStateStore {
     return row ? mapSession(row) : null;
   }
 
+  getSessionByThreadId(threadId: string): SessionRow | null {
+    const row = this.db
+      .prepare("SELECT * FROM session WHERE thread_id = ?")
+      .get(threadId) as SessionRecord | undefined;
+
+    return row ? mapSession(row) : null;
+  }
+
   getActiveSession(telegramChatId: string): SessionRow | null {
     const row = this.db
       .prepare(

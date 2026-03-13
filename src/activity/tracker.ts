@@ -166,6 +166,10 @@ export class ActivityTracker {
         return;
       }
 
+      case "thread_archived":
+      case "thread_unarchived":
+        return;
+
       case "item_started": {
         const activeItemType = mapActiveItemType(notification.itemType);
         this.state.activeItemType = activeItemType;

@@ -105,6 +105,8 @@ interface ClassifiedNotificationBase {
     | "turn_started"
     | "turn_completed"
     | "thread_status_changed"
+    | "thread_archived"
+    | "thread_unarchived"
     | "item_started"
     | "item_completed"
     | "progress"
@@ -135,6 +137,14 @@ export interface ThreadStatusChangedNotification extends ClassifiedNotificationB
   kind: "thread_status_changed";
   status: string | null;
   activeFlags: string[];
+}
+
+export interface ThreadArchivedNotification extends ClassifiedNotificationBase {
+  kind: "thread_archived";
+}
+
+export interface ThreadUnarchivedNotification extends ClassifiedNotificationBase {
+  kind: "thread_unarchived";
 }
 
 export interface ItemStartedNotification extends ClassifiedNotificationBase {
@@ -208,6 +218,8 @@ export type ClassifiedNotification =
   | TurnStartedNotification
   | TurnCompletedNotification
   | ThreadStatusChangedNotification
+  | ThreadArchivedNotification
+  | ThreadUnarchivedNotification
   | ItemStartedNotification
   | ItemCompletedNotification
   | ProgressNotification

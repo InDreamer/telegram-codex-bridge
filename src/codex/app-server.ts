@@ -79,6 +79,32 @@ export interface TurnStartResult {
   };
 }
 
+export interface ThreadListResult {
+  data: Array<{
+    id: string;
+    name?: string | null;
+    cwd: string;
+    preview: string;
+    updatedAt: number;
+    createdAt: number;
+    status: unknown;
+  }>;
+  nextCursor?: string | null;
+}
+
+export interface ThreadReadResult {
+  thread: {
+    id: string;
+    name?: string | null;
+    cwd: string;
+    preview: string;
+    updatedAt: number;
+    createdAt: number;
+    status: unknown;
+    turns: unknown[];
+  };
+}
+
 export function buildThreadStartParams(cwd: string): ThreadStartParams {
   return {
     cwd,
@@ -193,6 +219,40 @@ export class CodexAppServerClient {
 
   async unarchiveThread(threadId: string): Promise<void> {
     await this.request("thread/unarchive", { threadId });
+  }
+
+  async listThreads(options?: {
+    archived?: boolean;
+    cursor?: string;
+    cwd?: string;
+    limit?: number;
+    sortKey?: "created_at" | "updated_at";
+  }): Promise<ThreadListResult> {
+    const params: Record<string, unknown> = {};
+    if (options?.archived !== undefined) {
+      params.archived = options.archived;
+    }
+    if (options?.cursor !== undefined) {
+      params.cursor = options.cursor;
+    }
+    if (options?.cwd !== undefined) {
+      params.cwd = options.cwd;
+    }
+    if (options?.limit !== undefined) {
+      params.limit = options.limit;
+    }
+    if (options?.sortKey !== undefined) {
+      params.sortKey = options.sortKey;
+    }
+
+    return await this.request<ThreadListResult>("thread/list", params);
+  }
+
+  async readThread(threadId: string, includeTurns = false): Promise<ThreadReadResult> {
+    return await this.request<ThreadReadResult>("thread/read", {
+      threadId,
+      includeTurns
+    });
   }
 
   async startTurn(options: {

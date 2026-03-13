@@ -174,6 +174,7 @@ Archive rules:
 - archive only applies to the current active session
 - archived sessions are hidden from default `/sessions`
 - after archiving the active session, the bridge switches to the most recent remaining visible session when one exists
+- low-level Codex protocol events such as `thread/archived` are internal bridge signals, not Telegram commands
 
 ### `/unarchive <n>`
 

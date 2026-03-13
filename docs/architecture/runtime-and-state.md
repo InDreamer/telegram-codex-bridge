@@ -57,6 +57,7 @@ It should:
 - retain richer structured detail for `/inspect` and the on-disk debug journal
 - capture the final assistant message emitted before `turn/completed`
 - send the final assistant message as a separate Telegram message after turn completion
+- observe internal `thread/archived` / `thread/unarchived` notifications for reconciliation and drift diagnosis without exposing them as user commands
 
 If the turn completes successfully but no final assistant message is available, send:
 - `本次操作已完成，但没有可返回的最终答复。`

@@ -111,6 +111,17 @@ interface ActiveTurnState {
   surfaceQueue: Promise<void>;
 }
 
+type PendingThreadArchiveState = "archived" | "unarchived";
+
+interface PendingThreadArchiveOp {
+  sessionId: string;
+  expectedRemoteState: PendingThreadArchiveState;
+  requestedAt: string;
+  origin: "telegram_archive" | "telegram_unarchive";
+  localStateCommitted: boolean;
+  remoteStateObserved: PendingThreadArchiveState | null;
+}
+
 type TelegramEditResult =
   | { outcome: "edited" }
   | { outcome: "rate_limited"; retryAfterMs: number }
@@ -137,6 +148,7 @@ export class BridgeService {
   private readonly unauthorizedReplyAt = new Map<string, number>();
   private readonly pickerStates = new Map<string, PickerState>();
   private readonly pendingRenameSessionIds = new Map<string, string>();
+  private readonly pendingThreadArchiveOps = new Map<string, PendingThreadArchiveOp>();
   private readonly recentActivityBySessionId = new Map<string, RecentActivityEntry>();
   private activeTurn: ActiveTurnState | null = null;
   private stopping = false;
@@ -207,6 +219,7 @@ export class BridgeService {
   async stop(): Promise<void> {
     this.stopping = true;
     this.poller?.stop();
+    this.pendingThreadArchiveOps.clear();
     if (this.activeTurn) {
       this.disposeRuntimeCards(this.activeTurn);
     }
@@ -794,16 +807,28 @@ export class BridgeService {
     let mirroredRemotely = false;
     try {
       if (activeSession.threadId) {
+        this.registerPendingThreadArchiveOp(
+          activeSession.threadId,
+          activeSession.sessionId,
+          "archived",
+          "telegram_archive"
+        );
         await this.ensureAppServerAvailable();
         await this.appServer?.archiveThread(activeSession.threadId);
         mirroredRemotely = true;
       }
 
       this.store.archiveSession(activeSession.sessionId);
+      if (activeSession.threadId) {
+        await this.markPendingThreadArchiveLocalCommit(activeSession.threadId);
+      }
       await this.safeSendMessage(chatId, `已归档当前会话：${activeSession.projectName}`);
     } catch {
       // If the remote archive succeeded but the local store update failed, best-effort
       // roll the thread back so Telegram and Codex do not silently drift apart.
+      if (activeSession.threadId) {
+        this.pendingThreadArchiveOps.delete(activeSession.threadId);
+      }
       if (mirroredRemotely && activeSession.threadId) {
         try {
           await this.appServer?.unarchiveThread(activeSession.threadId);
@@ -841,15 +866,27 @@ export class BridgeService {
     let mirroredRemotely = false;
     try {
       if (target.threadId) {
+        this.registerPendingThreadArchiveOp(
+          target.threadId,
+          target.sessionId,
+          "unarchived",
+          "telegram_unarchive"
+        );
         await this.ensureAppServerAvailable();
         await this.appServer?.unarchiveThread(target.threadId);
         mirroredRemotely = true;
       }
 
       this.store.unarchiveSession(target.sessionId);
+      if (target.threadId) {
+        await this.markPendingThreadArchiveLocalCommit(target.threadId);
+      }
       await this.safeSendMessage(chatId, `已恢复会话：${target.projectName}`);
     } catch {
       // Apply the inverse compensation on restore failures for the same reason.
+      if (target.threadId) {
+        this.pendingThreadArchiveOps.delete(target.threadId);
+      }
       if (mirroredRemotely && target.threadId) {
         try {
           await this.appServer?.archiveThread(target.threadId);
@@ -1065,6 +1102,13 @@ export class BridgeService {
   }
 
   private async handleAppServerNotification(method: string, params: unknown): Promise<void> {
+    const classified = classifyNotification(method, params);
+
+    if (classified.kind === "thread_archived" || classified.kind === "thread_unarchived") {
+      await this.handleThreadArchiveNotification(classified);
+      return;
+    }
+
     if (!this.activeTurn) {
       return;
     }
@@ -1072,7 +1116,6 @@ export class BridgeService {
     const activeTurn = this.activeTurn;
     await this.appendDebugJournal(activeTurn, method, params);
     const before = activeTurn.tracker.getStatus();
-    const classified = classifyNotification(method, params);
 
     if (classified.kind === "final_message_available" && classified.message) {
       activeTurn.finalMessage = classified.message;
@@ -1391,6 +1434,13 @@ export class BridgeService {
       return;
     }
 
+    if (this.pendingThreadArchiveOps.size > 0) {
+      await this.logger.warn("clearing pending thread archive ops after app-server exit", {
+        pendingCount: this.pendingThreadArchiveOps.size
+      });
+      this.pendingThreadArchiveOps.clear();
+    }
+
     await this.logger.warn("app-server exit observed", { error: `${error}` });
 
     if (this.activeTurn) {
@@ -1460,6 +1510,112 @@ export class BridgeService {
     await client.initializeAndProbe();
     this.appServer = client;
     this.attachAppServerListeners();
+  }
+
+  private registerPendingThreadArchiveOp(
+    threadId: string,
+    sessionId: string,
+    expectedRemoteState: PendingThreadArchiveState,
+    origin: PendingThreadArchiveOp["origin"]
+  ): void {
+    const requestedAt = new Date().toISOString();
+    this.pendingThreadArchiveOps.set(threadId, {
+      sessionId,
+      expectedRemoteState,
+      requestedAt,
+      origin,
+      localStateCommitted: false,
+      remoteStateObserved: null
+    });
+    void this.logger.info("thread archive op registered", {
+      sessionId,
+      threadId,
+      expectedRemoteState,
+      origin,
+      requestedAt
+    });
+  }
+
+  private async markPendingThreadArchiveLocalCommit(threadId: string): Promise<void> {
+    const pending = this.pendingThreadArchiveOps.get(threadId);
+    if (!pending) {
+      return;
+    }
+
+    pending.localStateCommitted = true;
+    if (pending.remoteStateObserved !== pending.expectedRemoteState) {
+      return;
+    }
+
+    this.pendingThreadArchiveOps.delete(threadId);
+    await this.logger.info("thread archive op confirmed", {
+      sessionId: pending.sessionId,
+      threadId,
+      expectedRemoteState: pending.expectedRemoteState,
+      origin: pending.origin,
+      requestedAt: pending.requestedAt
+    });
+  }
+
+  private async handleThreadArchiveNotification(
+    classified: Extract<ReturnType<typeof classifyNotification>, { kind: "thread_archived" | "thread_unarchived" }>
+  ): Promise<void> {
+    if (!classified.threadId) {
+      return;
+    }
+
+    const actualRemoteState: PendingThreadArchiveState =
+      classified.kind === "thread_archived" ? "archived" : "unarchived";
+    const pending = this.pendingThreadArchiveOps.get(classified.threadId);
+
+    if (!pending) {
+      const session = this.store?.getSessionByThreadId(classified.threadId) ?? null;
+      await this.logger.warn("thread archive drift observed", {
+        threadId: classified.threadId,
+        actualRemoteState,
+        sessionId: session?.sessionId ?? null,
+        localArchived: session?.archived ?? null,
+        method: classified.method
+      });
+      return;
+    }
+
+    if (pending.expectedRemoteState !== actualRemoteState) {
+      this.pendingThreadArchiveOps.delete(classified.threadId);
+      await this.logger.warn("thread archive op conflicted", {
+        sessionId: pending.sessionId,
+        threadId: classified.threadId,
+        expectedRemoteState: pending.expectedRemoteState,
+        actualRemoteState,
+        origin: pending.origin,
+        requestedAt: pending.requestedAt,
+        method: classified.method
+      });
+      return;
+    }
+
+    pending.remoteStateObserved = actualRemoteState;
+    if (!pending.localStateCommitted) {
+      await this.logger.info("thread archive op observed before local commit", {
+        sessionId: pending.sessionId,
+        threadId: classified.threadId,
+        actualRemoteState,
+        origin: pending.origin,
+        requestedAt: pending.requestedAt,
+        method: classified.method
+      });
+      return;
+    }
+
+    this.pendingThreadArchiveOps.delete(classified.threadId);
+    await this.logger.info("thread archive op confirmed", {
+      sessionId: pending.sessionId,
+      threadId: classified.threadId,
+      expectedRemoteState: pending.expectedRemoteState,
+      origin: pending.origin,
+      requestedAt: pending.requestedAt,
+      method: classified.method
+    });
   }
 
   private async sendFinalAnswer(chatId: string, finalMessage: string | null): Promise<void> {

@@ -479,6 +479,20 @@ test("classifies web search progress notifications as progress events", () => {
   assert.equal(classified.message, "Searching the web");
 });
 
+test("classifies thread archive notifications explicitly", () => {
+  const archived = classifyNotification("thread/archived", {
+    threadId: "thread-archive"
+  });
+  assert.equal(archived.kind, "thread_archived");
+  assert.equal(archived.threadId, "thread-archive");
+
+  const unarchived = classifyNotification("thread/unarchived", {
+    threadId: "thread-archive"
+  });
+  assert.equal(unarchived.kind, "thread_unarchived");
+  assert.equal(unarchived.threadId, "thread-archive");
+});
+
 test("getStreamSnapshot keeps agent commentary out of the stream body", () => {
   const tracker = new ActivityTracker({
     threadId: "thread-stream",

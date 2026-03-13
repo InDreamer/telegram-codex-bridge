@@ -11,7 +11,9 @@ import type {
   PlanDeltaNotification,
   PlanUpdatedNotification,
   ProgressNotification,
+  ThreadArchivedNotification,
   ThreadStatusChangedNotification,
+  ThreadUnarchivedNotification,
   TurnAbortedNotification,
   TurnCompletedNotification,
   TurnStartedNotification
@@ -41,6 +43,18 @@ export function classifyNotification(method: string, params: unknown): Classifie
         status: getString(params, "status") ?? getString(getObject(params)?.thread, "status") ?? null,
         activeFlags: getStringArray(getObject(params)?.activeFlags ?? getObject(getObject(params)?.thread)?.activeFlags)
       } satisfies ThreadStatusChangedNotification;
+
+    case "thread/archived":
+      return {
+        kind: "thread_archived",
+        ...context
+      } satisfies ThreadArchivedNotification;
+
+    case "thread/unarchived":
+      return {
+        kind: "thread_unarchived",
+        ...context
+      } satisfies ThreadUnarchivedNotification;
 
     case "item/started":
       return {

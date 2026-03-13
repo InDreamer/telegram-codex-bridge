@@ -91,6 +91,26 @@ async function createServiceContext(): Promise<{
   };
 }
 
+function createCapturingLogger() {
+  const info: Array<{ message: string; meta?: unknown }> = [];
+  const warn: Array<{ message: string; meta?: unknown }> = [];
+  const error: Array<{ message: string; meta?: unknown }> = [];
+
+  const logger: Logger = {
+    info: async (message: string, meta?: unknown) => {
+      info.push({ message, meta });
+    },
+    warn: async (message: string, meta?: unknown) => {
+      warn.push({ message, meta });
+    },
+    error: async (message: string, meta?: unknown) => {
+      error.push({ message, meta });
+    }
+  };
+
+  return { logger, info, warn, error };
+}
+
 function createFakeTelegramMessage(messageId: number, text: string) {
   return {
     message_id: messageId,
@@ -405,6 +425,100 @@ test("unarchive command compensates remote state when local unarchive persistenc
     assert.equal(sent.at(-1), "当前无法恢复这个会话，请稍后重试。");
 
     (store as any).unarchiveSession = originalUnarchiveSession;
+  } finally {
+    await cleanup();
+  }
+});
+
+test("thread archived notification confirms a pending archive operation", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+  const { logger, info } = createCapturingLogger();
+
+  try {
+    authorizeChat(store, "chat-1");
+    const session = createSession(store, "chat-1");
+    store.updateSessionThreadId(session.sessionId, "thread-confirm-archive");
+    (service as any).logger = logger;
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string) => {
+        sent.push(text);
+        return createFakeTelegramMessage(sent.length, text);
+      }
+    };
+    (service as any).appServer = {
+      isRunning: true,
+      archiveThread: async () => {}
+    };
+
+    await (service as any).routeCommand("chat-1", "archive", "");
+    assert.equal((service as any).pendingThreadArchiveOps.size, 1);
+
+    await (service as any).handleAppServerNotification("thread/archived", {
+      threadId: "thread-confirm-archive"
+    });
+
+    assert.equal((service as any).pendingThreadArchiveOps.size, 0);
+    assert.ok(info.some((entry) => entry.message === "thread archive op confirmed"));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("conflicting thread archive notification clears the pending op and keeps local state unchanged", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+  const { logger, warn } = createCapturingLogger();
+
+  try {
+    authorizeChat(store, "chat-1");
+    const session = createSession(store, "chat-1");
+    store.updateSessionThreadId(session.sessionId, "thread-conflict");
+    (service as any).logger = logger;
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string) => {
+        sent.push(text);
+        return createFakeTelegramMessage(sent.length, text);
+      }
+    };
+    (service as any).appServer = {
+      isRunning: true,
+      archiveThread: async () => {}
+    };
+
+    await (service as any).routeCommand("chat-1", "archive", "");
+    assert.equal(store.getSessionByThreadId("thread-conflict")?.archived, true);
+
+    await (service as any).handleAppServerNotification("thread/unarchived", {
+      threadId: "thread-conflict"
+    });
+
+    assert.equal((service as any).pendingThreadArchiveOps.size, 0);
+    assert.equal(store.getSessionByThreadId("thread-conflict")?.archived, true);
+    assert.ok(warn.some((entry) => entry.message === "thread archive op conflicted"));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("unsolicited thread archive notification logs drift and does not mutate local session state", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const { logger, warn } = createCapturingLogger();
+
+  try {
+    authorizeChat(store, "chat-1");
+    const session = createSession(store, "chat-1");
+    store.updateSessionThreadId(session.sessionId, "thread-unsolicited");
+    (service as any).logger = logger;
+
+    await (service as any).handleAppServerNotification("thread/archived", {
+      threadId: "thread-unsolicited"
+    });
+
+    assert.equal(store.getSessionByThreadId("thread-unsolicited")?.archived, false);
+    assert.ok(warn.some((entry) => entry.message === "thread archive drift observed"));
   } finally {
     await cleanup();
   }

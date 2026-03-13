@@ -497,3 +497,40 @@ test("open normalizes archived active-session pointers to the newest visible ses
     await cleanup();
   }
 });
+
+test("getSessionByThreadId returns archived and visible sessions for diagnostics", async () => {
+  const { store, cleanup } = await openStore();
+
+  try {
+    store.upsertPendingAuthorization({
+      telegramUserId: "user-thread-lookup",
+      telegramChatId: "chat-thread-lookup",
+      telegramUsername: "lookup",
+      displayName: "Lookup"
+    });
+    const [candidate] = store.listPendingAuthorizations();
+    assert.ok(candidate);
+    store.confirmPendingAuthorization(candidate);
+
+    const visibleSession = store.createSession({
+      telegramChatId: "chat-thread-lookup",
+      projectName: "Visible Project",
+      projectPath: "/tmp/visible-project"
+    });
+    store.updateSessionThreadId(visibleSession.sessionId, "thread-visible");
+
+    const archivedSession = store.createSession({
+      telegramChatId: "chat-thread-lookup",
+      projectName: "Archived Project",
+      projectPath: "/tmp/archived-project"
+    });
+    store.updateSessionThreadId(archivedSession.sessionId, "thread-archived");
+    store.archiveSession(archivedSession.sessionId);
+
+    assert.equal(store.getSessionByThreadId("thread-visible")?.sessionId, visibleSession.sessionId);
+    assert.equal(store.getSessionByThreadId("thread-archived")?.sessionId, archivedSession.sessionId);
+    assert.equal(store.getSessionByThreadId("thread-missing"), null);
+  } finally {
+    await cleanup();
+  }
+});
