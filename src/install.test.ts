@@ -66,12 +66,16 @@ async function createReleaseFixture(paths: BridgePaths): Promise<void> {
 async function createSkillFixture(root: string): Promise<void> {
   const skillDir = join(root, "skills", "telegram-codex-linker");
   await mkdir(join(skillDir, "agents"), { recursive: true });
+  await mkdir(join(skillDir, "references"), { recursive: true });
+  await mkdir(join(skillDir, "scripts"), { recursive: true });
   await writeFile(join(skillDir, "SKILL.md"), "---\nname: telegram-codex-linker\ndescription: test skill\n---\n", "utf8");
   await writeFile(
     join(skillDir, "agents", "openai.yaml"),
     'interface:\n  display_name: "Telegram Codex Linker"\n',
     "utf8"
   );
+  await writeFile(join(skillDir, "references", "install-strategy.md"), "# test strategy\n", "utf8");
+  await writeFile(join(skillDir, "scripts", "install-bridge-from-github.sh"), "#!/usr/bin/env bash\n", "utf8");
 }
 
 function withEnvironment<T>(overrides: Record<string, string | undefined>, run: () => Promise<T>): Promise<T> {
@@ -172,6 +176,13 @@ test("prepareRelease builds before copying dist into the install root", async ()
       await readFile(join(paths.installRoot, "skills", "telegram-codex-linker", "SKILL.md"), "utf8"),
       "---\nname: telegram-codex-linker\ndescription: test skill\n---\n"
     );
+    assert.equal(
+      await readFile(
+        join(paths.installRoot, "skills", "telegram-codex-linker", "references", "install-strategy.md"),
+        "utf8"
+      ),
+      "# test strategy\n"
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -254,6 +265,13 @@ test("installCodexSkill copies the bundled skill into CODEX_HOME", async () => {
             "utf8"
           ),
           'interface:\n  display_name: "Telegram Codex Linker"\n'
+        );
+        assert.equal(
+          await readFile(
+            join(root, "codex-home", "skills", "telegram-codex-linker", "scripts", "install-bridge-from-github.sh"),
+            "utf8"
+          ),
+          "#!/usr/bin/env bash\n"
         );
       }
     );
