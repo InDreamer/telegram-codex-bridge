@@ -29,8 +29,10 @@ export async function collectArchiveDriftDiagnostics(options: {
     cursor?: string;
   }) => Promise<ThreadListResult>;
 }): Promise<ArchiveDriftSummary> {
-  const visibleRemoteThreads = await collectThreadIds(options.listThreads, false);
-  const archivedRemoteThreads = await collectThreadIds(options.listThreads, true);
+  const [visibleRemoteThreads, archivedRemoteThreads] = await Promise.all([
+    collectThreadIds(options.listThreads, false),
+    collectThreadIds(options.listThreads, true)
+  ]);
   const localSessions = options.store.listSessionsWithThreads();
   const issues: ArchiveDriftIssue[] = [];
 

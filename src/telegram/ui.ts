@@ -422,24 +422,6 @@ export function buildRuntimeStatusReplyMarkup(options: {
   };
 }
 
-export function buildRuntimePlanCard(
-  context: RuntimeCardContext,
-  entries: string[]
-): string {
-  const lines: string[] = ["Plan"];
-  pushRuntimeCardContext(lines, context);
-
-  for (const [index, entry] of entries.slice(0, 10).entries()) {
-    lines.push(`${index + 1}. ${truncateRuntimeCardText(entry, 200)}`);
-  }
-
-  if (entries.length > 10) {
-    lines.push(`... ${entries.length - 10} more steps`);
-  }
-
-  return lines.join("\n");
-}
-
 export function buildRuntimeErrorCard(
   options: RuntimeCardContext & {
     title: string;
@@ -609,16 +591,6 @@ function formatRelativeTime(isoTime: string): string {
 
   const days = Math.floor(hours / 24);
   return `${days}天前`;
-}
-
-function pushRuntimeCardContext(lines: string[], context: RuntimeCardContext): void {
-  if (context.sessionName) {
-    lines.push(`Session: ${context.sessionName}`);
-  }
-
-  if (context.projectName && context.projectName !== context.sessionName) {
-    lines.push(`Project: ${context.projectName}`);
-  }
 }
 
 function pushHtmlRuntimeCardContext(lines: string[], context: RuntimeCardContext): void {

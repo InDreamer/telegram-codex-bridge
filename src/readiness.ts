@@ -393,9 +393,11 @@ export async function probeReadiness(options: {
     return finalizeFailure("bridge_unhealthy", details, store, persist);
   }
 
-  details.stateRootWritable = await isDirectoryWritable(paths.stateRoot);
-  details.configRootWritable = await isDirectoryWritable(paths.configRoot);
-  details.installRootWritable = await isDirectoryWritable(paths.installRoot);
+  [details.stateRootWritable, details.configRootWritable, details.installRootWritable] = await Promise.all([
+    isDirectoryWritable(paths.stateRoot),
+    isDirectoryWritable(paths.configRoot),
+    isDirectoryWritable(paths.installRoot)
+  ]);
 
   if (!details.stateRootWritable) {
     details.issues.push(`state root is not writable: ${paths.stateRoot}`);
