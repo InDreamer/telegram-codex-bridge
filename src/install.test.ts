@@ -9,7 +9,7 @@ import { buildLaunchAgentPlist, getStatus, installCodexSkill, prepareRelease, ru
 import type { Logger } from "./logger.js";
 import { BridgeStateStore } from "./state/store.js";
 import type { BridgePaths } from "./paths.js";
-import type { CommandResult } from "./process.js";
+import { runCommand, type CommandResult } from "./process.js";
 import type { ReadinessSnapshot } from "./types.js";
 
 function createTestPaths(root: string): BridgePaths {
@@ -278,6 +278,11 @@ test("installCodexSkill copies the bundled skill into CODEX_HOME", async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("bundled bridge install script parses cleanly in bash", async () => {
+  const result = await runCommand("bash", ["-n", "skills/telegram-codex-linker/scripts/install-bridge-from-github.sh"]);
+  assert.equal(result.exitCode, 0, result.stderr || result.stdout);
 });
 
 test("buildLaunchAgentPlist keeps launchd passthrough env only and does not pin bridge config", async () => {

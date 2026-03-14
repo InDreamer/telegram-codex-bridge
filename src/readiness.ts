@@ -31,7 +31,6 @@ const REQUIRED_SERVER_NOTIFICATIONS = [
   "item/started",
   "item/completed",
   "item/mcpToolCall/progress",
-  "item/webSearch/progress",
   "turn/plan/updated",
   "thread/archived",
   "thread/unarchived",

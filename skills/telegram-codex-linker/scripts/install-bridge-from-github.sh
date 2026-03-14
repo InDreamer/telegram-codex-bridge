@@ -59,7 +59,7 @@ for cmd in curl tar node npm; do
   fi
 done
 
-NODE_MAJOR="$(node -p 'process.versions.node.split(\".\")[0]')"
+NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 if [[ "${NODE_MAJOR}" -lt 25 ]]; then
   echo "Node >=25 is required; found $(node -v)" >&2
   exit 1
