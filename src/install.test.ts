@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { buildLaunchAgentPlist, getStatus, prepareRelease, runDoctor } from "./install.js";
+import { buildLaunchAgentPlist, getStatus, installCodexSkill, prepareRelease, runDoctor } from "./install.js";
 import type { Logger } from "./logger.js";
 import { BridgeStateStore } from "./state/store.js";
 import type { BridgePaths } from "./paths.js";
@@ -61,6 +61,17 @@ async function createReleaseFixture(paths: BridgePaths): Promise<void> {
   await mkdir(paths.repoRoot, { recursive: true });
   await mkdir(paths.installRoot, { recursive: true });
   await writeFile(paths.repoRoot + "/package.json", '{ "name": "telegram-codex-bridge" }\n', "utf8");
+}
+
+async function createSkillFixture(root: string): Promise<void> {
+  const skillDir = join(root, "skills", "telegram-codex-linker");
+  await mkdir(join(skillDir, "agents"), { recursive: true });
+  await writeFile(join(skillDir, "SKILL.md"), "---\nname: telegram-codex-linker\ndescription: test skill\n---\n", "utf8");
+  await writeFile(
+    join(skillDir, "agents", "openai.yaml"),
+    'interface:\n  display_name: "Telegram Codex Linker"\n',
+    "utf8"
+  );
 }
 
 function withEnvironment<T>(overrides: Record<string, string | undefined>, run: () => Promise<T>): Promise<T> {
@@ -132,6 +143,7 @@ test("prepareRelease builds before copying dist into the install root", async ()
 
   try {
     await createReleaseFixture(paths);
+    await createSkillFixture(paths.repoRoot);
 
     await prepareRelease(paths, async (command, args, options) => {
       calls.push({ command, args, cwd: options?.cwd });
@@ -155,6 +167,10 @@ test("prepareRelease builds before copying dist into the install root", async ()
     assert.equal(
       await readFile(join(paths.installRoot, "package.json"), "utf8"),
       '{ "name": "telegram-codex-bridge" }\n'
+    );
+    assert.equal(
+      await readFile(join(paths.installRoot, "skills", "telegram-codex-linker", "SKILL.md"), "utf8"),
+      "---\nname: telegram-codex-linker\ndescription: test skill\n---\n"
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -207,6 +223,40 @@ test("prepareRelease rejects successful builds that do not produce dist/cli.js",
     );
 
     assert.equal(await pathExists(join(paths.installRoot, "dist")), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("installCodexSkill copies the bundled skill into CODEX_HOME", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctb-install-test-"));
+  const paths = createTestPaths(root);
+
+  try {
+    await createReleaseFixture(paths);
+    await createSkillFixture(paths.repoRoot);
+
+    await withEnvironment(
+      {
+        CODEX_HOME: join(root, "codex-home")
+      },
+      async () => {
+        const result = await installCodexSkill(paths);
+
+        assert.match(result, /restart Codex to load it/u);
+        assert.equal(
+          await readFile(join(root, "codex-home", "skills", "telegram-codex-linker", "SKILL.md"), "utf8"),
+          "---\nname: telegram-codex-linker\ndescription: test skill\n---\n"
+        );
+        assert.equal(
+          await readFile(
+            join(root, "codex-home", "skills", "telegram-codex-linker", "agents", "openai.yaml"),
+            "utf8"
+          ),
+          'interface:\n  display_name: "Telegram Codex Linker"\n'
+        );
+      }
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

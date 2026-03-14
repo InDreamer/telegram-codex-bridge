@@ -1,4 +1,4 @@
-import { cp, chmod, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { cp, chmod, mkdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { loadConfig, withInstallOverrides, writeConfig, type BridgeConfig } from "./config.js";
@@ -47,6 +47,7 @@ interface InstallDependencies {
 }
 
 const SERVICE_LABEL = "com.codex.telegram-bridge";
+const CODEX_SKILL_NAME = "telegram-codex-linker";
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -61,6 +62,26 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+async function replaceOptionalDirectory(sourcePath: string, targetPath: string): Promise<void> {
+  await rm(targetPath, { recursive: true, force: true });
+
+  if (await pathExists(sourcePath)) {
+    await cp(sourcePath, targetPath, { recursive: true });
+  }
+}
+
+function formatOptionalBoolean(value: boolean | undefined): string {
+  if (value === undefined) {
+    return "unknown";
+  }
+
+  return value ? "true" : "false";
+}
+
+function formatOptionalValue(value: string | undefined): string {
+  return value ?? "unknown";
+}
+
 function formatSnapshot(snapshot: ReadinessSnapshot | null): string {
   if (!snapshot) {
     return "readiness=unknown";
@@ -68,14 +89,6 @@ function formatSnapshot(snapshot: ReadinessSnapshot | null): string {
 
   const issueText =
     snapshot.details.issues.length === 0 ? "issues=none" : `issues=${snapshot.details.issues.join("; ")}`;
-  const formatOptionalBoolean = (value: boolean | undefined): string => {
-    if (value === undefined) {
-      return "unknown";
-    }
-
-    return value ? "true" : "false";
-  };
-  const formatOptionalValue = (value: string | undefined): string => value ?? "unknown";
   return [
     `readiness=${snapshot.state}`,
     `checked_at=${snapshot.checkedAt}`,
@@ -383,6 +396,34 @@ export async function prepareRelease(paths: BridgePaths, run: CommandRunner = ru
   await rm(join(paths.installRoot, "dist"), { recursive: true, force: true });
   await cp(join(paths.repoRoot, "dist"), join(paths.installRoot, "dist"), { recursive: true });
   await cp(join(paths.repoRoot, "package.json"), join(paths.installRoot, "package.json"));
+  await replaceOptionalDirectory(join(paths.repoRoot, "skills"), join(paths.installRoot, "skills"));
+}
+
+async function resolveBundledSkillPath(paths: BridgePaths): Promise<string> {
+  const candidates = [
+    join(paths.installRoot, "skills", CODEX_SKILL_NAME),
+    join(paths.repoRoot, "skills", CODEX_SKILL_NAME)
+  ];
+
+  for (const candidate of candidates) {
+    if (await pathExists(join(candidate, "SKILL.md"))) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`bundled skill ${CODEX_SKILL_NAME} not found in install or source tree`);
+}
+
+export async function installCodexSkill(paths: BridgePaths): Promise<string> {
+  const sourcePath = await resolveBundledSkillPath(paths);
+  const codexHome = process.env.CODEX_HOME ?? join(paths.homeDir, ".codex");
+  const targetPath = join(codexHome, "skills", CODEX_SKILL_NAME);
+
+  await mkdir(join(codexHome, "skills"), { recursive: true });
+  await rm(targetPath, { recursive: true, force: true });
+  await cp(sourcePath, targetPath, { recursive: true });
+
+  return `codex skill ${CODEX_SKILL_NAME} installed at ${targetPath}; restart Codex to load it`;
 }
 
 export async function installBridge(
@@ -488,8 +529,9 @@ export async function getStatus(paths: BridgePaths, deps: InstallDependencies = 
   let activeSessionSummary = "none";
   let pendingNotices = 0;
   let stateStoreFailure: StateStoreFailureRecord | null = null;
-  let stateStoreOpen = await pathExists(paths.dbPath) ? "ok" : "missing";
-  if (await pathExists(paths.dbPath)) {
+  const dbExists = await pathExists(paths.dbPath);
+  let stateStoreOpen = dbExists ? "ok" : "missing";
+  if (dbExists) {
     try {
       const store = await BridgeStateStore.open(paths, {
         info: async () => {},

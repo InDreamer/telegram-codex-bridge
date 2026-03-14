@@ -1,0 +1,4 @@
+interface:
+  display_name: "Telegram Codex Linker"
+  short_description: "Use Codex as the low-friction installer and repair agent for the Telegram bridge."
+  default_prompt: "Use $telegram-codex-linker to take over Telegram bridge setup or repair, interrupting me only for unavoidable external steps like giving a bot token or messaging the bot once."

@@ -6,6 +6,7 @@ import {
   clearAuthorization,
   getStatus,
   installBridge,
+  installCodexSkill,
   listPendingAuthorizations,
   restartService,
   runDoctor,
@@ -46,6 +47,7 @@ function parseFlags(args: string[]): ParsedFlags {
 function printUsage(): void {
   process.stdout.write(`Usage:
   ctb install --telegram-token <token> [--codex-bin <bin>]
+  ctb install-skill
   ctb status
   ctb doctor
   ctb start | stop | restart | update
@@ -90,6 +92,11 @@ async function main(): Promise<void> {
 
     case "status": {
       process.stdout.write(`${await getStatus(paths)}\n`);
+      return;
+    }
+
+    case "install-skill": {
+      process.stdout.write(`${await installCodexSkill(paths)}\n`);
       return;
     }
 

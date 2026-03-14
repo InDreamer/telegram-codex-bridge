@@ -9,6 +9,7 @@ Package manager and build scripts:
 Actual admin and runtime surface:
 - `ctb ...` is the operator command surface
 - `ctb service run` is the long-lived service entrypoint used by `systemd --user`, `launchd`, or another supervisor
+- `ctb install-skill` installs the bundled Codex skill into `${CODEX_HOME:-~/.codex}/skills/telegram-codex-linker`
 
 Node requirement:
 - Node `>=25.0.0`
@@ -93,6 +94,7 @@ Reason:
 
 Supported subcommands:
 - `ctb install --telegram-token <token> [--codex-bin <bin>]`
+- `ctb install-skill`
 - `ctb status`
 - `ctb restart`
 - `ctb stop`
@@ -109,6 +111,43 @@ Platform note:
 - `ctb start`, `ctb stop`, and `ctb restart` use `launchctl` and a per-user LaunchAgent on macOS
 - when neither `systemctl` nor `launchctl` is available, install still writes release files and validates readiness, but does not enable a long-lived service
 - on those hosts, the operator must run `ctb service run` under another supervisor or in a persistent shell
+
+## GitHub Install Shortcuts
+
+Recommended public entry:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/main/scripts/install-skill-from-github.sh | bash
+```
+
+Then in Codex:
+
+```text
+Use $telegram-codex-linker to set up my Telegram bridge.
+```
+
+Reason:
+- install the skill once
+- let the skill take over bridge install, repair, token collection, authorization, and verification
+- interrupt the user only for unavoidable external actions such as providing a Telegram bot token or messaging the bot once
+
+Bridge install from GitHub:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/main/scripts/install-from-github.sh | bash -s -- --telegram-token "<BOT_TOKEN>"
+```
+
+Bundled Codex skill install from GitHub:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/main/scripts/install-skill-from-github.sh | bash
+```
+
+Notes:
+- the bridge install shortcut downloads a repository archive, runs `npm install`, runs `npm run build`, and then runs `node dist/cli.js install`
+- the skill install shortcut copies `skills/telegram-codex-linker` into `${CODEX_HOME:-~/.codex}/skills/`
+- both scripts accept `--ref <name>` plus `--ref-type branch|tag`; default is `main`
+- after skill install, restart Codex so the new skill is discovered
 
 Authorization intent:
 - `ctb authorize pending` lists pending Telegram candidates by default
