@@ -26,6 +26,7 @@ function createCustomPaths(root: string): BridgePaths {
     runtimeDir,
     cacheDir,
     dbPath: join(stateRoot, "bridge.db"),
+    stateStoreFailurePath: join(stateRoot, "state-store-open-failure.json"),
     envPath: join(configRoot, "bridge.env"),
     servicePath: join(root, "systemd", "bridge.service"),
     launchAgentPath: join(root, "LaunchAgents", "bridge.plist"),

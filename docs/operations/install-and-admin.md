@@ -41,11 +41,17 @@ State directory:
 
 State contents:
 - `bridge.db`
+- `state-store-open-failure.json`
 - `runtime/`
 - `cache/`
 
 Structured activity debug path:
 - `~/.local/state/codex-telegram-bridge/runtime/debug/<threadId>/<turnId>.jsonl`
+
+State-store failure marker:
+- `~/.local/state/codex-telegram-bridge/state-store-open-failure.json`
+- written only when the bridge cannot safely open the SQLite state store
+- removed automatically after a successful state-store open
 
 Log directory:
 - `~/.local/state/codex-telegram-bridge/logs`
@@ -142,6 +148,12 @@ Primary operator diagnostics:
 - inspect the per-turn JSONL files under `~/.local/state/codex-telegram-bridge/runtime/debug/`
 - inspect Telegram session-surface trace logs under `~/.local/state/codex-telegram-bridge/logs/telegram-session-flow/`
 
+`/where` operator note:
+- `Bridge 会话 ID` maps to `session.session_id` in SQLite
+- `Codex 线程 ID` maps to `session.thread_id` and the per-turn debug directory name
+- `最近 Turn ID` maps to `session.last_turn_id` and the `<turnId>.jsonl` debug file name
+- before the first real task, `/where` may show that the Codex thread has not been created yet
+
 `ctb status` reports:
 - install and state roots
 - config and service presence
@@ -149,24 +161,47 @@ Primary operator diagnostics:
 - installed version and timestamp
 - active session summary
 - readiness snapshot
+- Node version and whether it satisfies the declared engine floor
+- Codex version and whether it satisfies the bridge's minimum supported floor
+- service-manager health summary
+- path writability summary for install/config/state roots
+- capability-check summary for the required V2 app-server surface
 
 `ctb doctor` behavior:
 - reruns the readiness probe
 - persists the latest readiness snapshot
 - resyncs Telegram commands when the configured bot token is valid
+- uses the same centralized readiness/preflight matrix as install and service startup
+- hard-fails for unsupported Node or Codex capability floors instead of entering a degraded run loop
+- includes doctor-only archive drift diagnostics based on local sessions versus remote `thread/list` membership
+- local `ctb` output remains plain text for terminal and script compatibility; bold field labels are a Telegram-only presentation rule
+
+Readiness / preflight behavior:
+- the bridge reads the Node requirement from `package.json` and treats an unsupported runtime as `bridge_unhealthy`
+- the bridge requires `codex-cli >= 0.114.0` and checks the current schema surface against the V2 request/notification floor
+- current capability-check results are cached under `~/.local/state/codex-telegram-bridge/cache/`
+- missing `systemctl` or `launchctl` is reported as a warning, not a hard blocker, because `ctb service run` may still be supervised externally
+- non-writable state or config roots are treated as hard failures
 
 Structured activity visibility:
 - the Telegram chat keeps one bridge-owned status card per running turn
 - the bridge exposes current plan state through an inline expand/collapse button on the status card
 - the bridge keeps per-command detail out of the main chat flow and still creates separate error cards when needed
 - the bridge updates cards only when visible state changes or when a complete progress unit is available
+- the status-card `State` line is reduced from app-server runtime state, while `Progress` remains commentary-aware user-facing phase text
 - the status card renders bold labels plus a Markdown-aware `Progress` body through Telegram HTML
 - raw agent-message deltas and reasoning deltas stay out of the default Telegram flow
 - completed `agentMessage` items with `phase = commentary` are the authoritative commentary source for user-visible progress
 - if Telegram refuses an edit or rate-limits it, the bridge retries the same card later instead of sending replacement-message spam
-- `/inspect` shows the latest structured snapshot for the active session
+- `/inspect` shows a compact Chinese activity snapshot for the active session, hides empty sections, and does not expose local debug file paths
+- when live inspect state is unavailable for a completed session, `/inspect` can recover best-effort detail from Codex thread history
 - raw native notifications stay on disk in the runtime debug journal instead of being streamed to Telegram
 - dedicated Telegram session-surface trace logs record per-card state transitions and render lifecycle events in JSONL files for `status` and `error`
+
+State-store safety rule:
+- the bridge now fails closed if the SQLite state store cannot be opened safely
+- it must not rotate the database away or create a fresh empty state database for transient or uncertain startup errors
+- operator diagnostics should come from the bootstrap log plus `state-store-open-failure.json`
 
 ## Update Behavior
 
@@ -202,3 +237,8 @@ Operational effect:
 
 `codex_not_authenticated`:
 - installer or doctor output should guide the local admin to complete Codex login or initialization on the host machine
+
+`state_store_open_failed`:
+- the bridge should stop before entering the normal run loop
+- `ctb status` and `ctb doctor` should still surface the failure marker fields
+- operator should inspect the bootstrap log, read `state-store-open-failure.json`, and preserve the existing `bridge.db` for offline inspection

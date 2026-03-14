@@ -40,8 +40,8 @@ export function classifyNotification(method: string, params: unknown): Classifie
       return {
         kind: "thread_status_changed",
         ...context,
-        status: getString(params, "status") ?? getString(getObject(params)?.thread, "status") ?? null,
-        activeFlags: getStringArray(getObject(params)?.activeFlags ?? getObject(getObject(params)?.thread)?.activeFlags)
+        status: getThreadStatusType(params),
+        activeFlags: getThreadStatusActiveFlags(params)
       } satisfies ThreadStatusChangedNotification;
 
     case "thread/archived":
@@ -175,13 +175,44 @@ function getItemType(params: unknown): string | null {
 }
 
 function getItemLabel(params: unknown): string | null {
-  return (
+  const directLabel = (
     getString(params, "label") ??
     getString(params, "title") ??
     getString(getObject(params)?.item, "label") ??
-    getString(getObject(params)?.item, "title") ??
-    null
+    getString(getObject(params)?.item, "title")
   );
+  if (directLabel) {
+    return directLabel;
+  }
+
+  const item = getObject(params)?.item;
+  const itemType = getString(item, "type");
+  switch (itemType) {
+    case "commandExecution":
+      return getString(item, "command");
+    case "mcpToolCall": {
+      const server = getString(item, "server");
+      const tool = getString(item, "tool");
+      const labelParts = [server, tool].filter((value): value is string => Boolean(value));
+      return labelParts.length > 0 ? labelParts.join(" / ") : null;
+    }
+    case "webSearch":
+      return getString(item, "query")
+        ?? getString(getObject(item)?.action, "query")
+        ?? getString(getObject(item)?.action, "url");
+    case "fileChange": {
+      const changes = getObject(item)?.changes;
+      if (!Array.isArray(changes)) {
+        return null;
+      }
+      const firstChange = changes.find((change) => typeof getString(change, "path") === "string");
+      return firstChange ? getString(firstChange, "path") : null;
+    }
+    case "plan":
+      return getString(item, "text");
+    default:
+      return null;
+  }
 }
 
 function getDeltaText(params: unknown): string | null {
@@ -234,6 +265,38 @@ function getPlanEntries(params: unknown): string[] {
 
   const text = getString(plan, "text");
   return text ? [text] : [];
+}
+
+function getThreadStatusType(params: unknown): ThreadStatusChangedNotification["status"] {
+  const directStatus = getObject(params)?.status;
+  const threadStatus = getObject(getObject(params)?.thread)?.status;
+  const statusType =
+    getString(directStatus, "type") ??
+    getString(threadStatus, "type") ??
+    getString(params, "status") ??
+    getString(getObject(params)?.thread, "status");
+
+  switch (statusType) {
+    case "notLoaded":
+    case "idle":
+    case "active":
+    case "systemError":
+      return statusType;
+    default:
+      return null;
+  }
+}
+
+function getThreadStatusActiveFlags(params: unknown): string[] {
+  const directStatus = getObject(params)?.status;
+  const threadStatus = getObject(getObject(params)?.thread)?.status;
+
+  return getStringArray(
+    getObject(params)?.activeFlags ??
+    getObject(getObject(params)?.thread)?.activeFlags ??
+    getObject(directStatus)?.activeFlags ??
+    getObject(threadStatus)?.activeFlags
+  );
 }
 
 function getObject(value: unknown): Record<string, unknown> | null {

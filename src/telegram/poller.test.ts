@@ -25,6 +25,7 @@ function createTestPaths(root: string): BridgePaths {
     runtimeDir,
     cacheDir: join(root, "cache"),
     dbPath: join(root, "state", "bridge.db"),
+    stateStoreFailurePath: join(root, "state", "state-store-open-failure.json"),
     envPath: join(root, "config", "bridge.env"),
     servicePath: join(root, "service", "bridge.service"),
     launchAgentPath: join(root, "LaunchAgents", "bridge.plist"),

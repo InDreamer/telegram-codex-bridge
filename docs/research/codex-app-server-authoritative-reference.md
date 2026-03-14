@@ -1,6 +1,6 @@
 # Codex App-Server Authoritative Reference
 
-Last refreshed: 2026-03-12
+Last refreshed: 2026-03-14
 
 Primary audience:
 - in-repo Codex/LLM agents
@@ -31,7 +31,7 @@ When sources disagree, use this order:
 4. Repository code and current-state docs
 5. Historical verification docs and planning docs
 
-For this host on 2026-03-12:
+For this host on 2026-03-14:
 - `codex --version` returned `codex-cli 0.114.0`
 - `codex app-server --help` confirmed:
   - `--listen stdio://` default transport
@@ -159,7 +159,7 @@ Commentary rule for integrations:
 
 ## Current Host Baseline
 
-Current host runtime facts captured on 2026-03-12:
+Current host runtime facts captured on 2026-03-14:
 
 - CLI version: `codex-cli 0.114.0`
 - app-server help confirms:
@@ -401,12 +401,17 @@ Implemented today:
 - readiness probe with `thread/list`
 - `thread/start`
 - `thread/resume`
+- `thread/read` for `/inspect` history fallback
+- `thread/archive`
+- `thread/unarchive`
 - `turn/start`
 - `turn/interrupt`
 - classification of selected notifications such as:
   - `turn/started`
   - `turn/completed`
   - `thread/status/changed`
+  - `thread/archived`
+  - `thread/unarchived`
   - `item/started`
   - `item/completed`
   - `item/agentMessage/delta`
@@ -414,12 +419,22 @@ Implemented today:
   - `item/commandExecution/outputDelta`
   - `item/fileChange/outputDelta`
   - `item/mcpToolCall/progress`
+  - `item/webSearch/progress`
+  - `error`
   - compatibility handling for `codex/event/task_complete`
   - compatibility handling for `codex/event/turn_aborted`
+
+Current implementation note:
+- the bridge still does not handle app-server server requests such as approval or structured user-input flows; those remain protocol-available but bridge-unimplemented
+
+Current-host note for `codex-cli 0.114.0`:
+- `thread/status/changed` carries a structured `status` object such as `active` plus nested `activeFlags`, not only a flat status string
 
 Explicitly not relied on by current v1 bridge behavior:
 - approval workflows
 - server-side user-input workflows
+- server-request response handling
+- `turn/steer`
 - realtime thread APIs
 - plugin or skills management APIs
 - MCP OAuth flows

@@ -37,8 +37,11 @@ Read the smallest relevant file first and treat code plus observed runtime behav
 
 - Current-state docs: `docs/product/`, `docs/architecture/`, `docs/operations/`, `docs/research/`.
 - If a current-state doc conflicts with runtime behavior, verify against `package.json`, `src/cli.ts`, `src/config.ts`, `src/install.ts`, `src/paths.ts`, `src/service.ts`, `src/state/store.ts`, and `src/telegram/ui.ts`.
+- For Codex app-server questions, separate:
+  - protocol availability, which should follow the live CLI plus generated schema
+  - current bridge adoption, which should follow repository code first
 - Planning and non-primary docs: `docs/roadmap/`, `docs/future/`, `docs/plans/`, `docs/archive/`.
-- In `docs/future/`, treat `v2-prd.md` and `v2-engineering-evaluation*.md` as product/evaluation inputs, not shipped behavior.
+- In `docs/future/`, treat `v2-prd.md`, `v3-prd.md`, and `v2-engineering-evaluation*.md` as product/evaluation inputs, not shipped behavior.
 - Do not treat roadmap, future, plan, or archive docs as shipped behavior.
 
 ## Fast Lookup
@@ -71,11 +74,19 @@ Read the smallest relevant file first and treat code plus observed runtime behav
 - Per-method Codex app-server API quick reference
   - `docs/research/codex-app-server-api-quick-reference.md`
 
+- Current bridge app-server adoption versus broader protocol surface
+  - `docs/research/codex-app-server-authoritative-reference.md`
+  - `docs/research/codex-app-server-api-quick-reference.md`
+  - verify implementation against `src/codex/app-server.ts` and `src/service.ts`
+
 - Phase 1 acceptance criteria
   - `docs/roadmap/phase-1-delivery.md`
 
 - V2 product intent and scope
   - `docs/future/v2-prd.md`
+
+- V3 product intent and capability-alignment scope
+  - `docs/future/v3-prd.md`
 
 - V2 feasibility and engineering assessment
   - `docs/future/v2-engineering-evaluation.md`
@@ -86,6 +97,12 @@ Read the smallest relevant file first and treat code plus observed runtime behav
 - Future implementation handoffs and rollout sequencing
   - `docs/plans/`
   - Treat these as implementation records, not current behavior.
+
+- V3 engineering design for protocol-capability alignment
+  - `docs/plans/2026-03-14-codex-cli-capability-alignment-design.md`
+
+- V3 first implementation plan for interaction broker and blocked-turn recovery
+  - `docs/plans/2026-03-14-v3-interaction-broker-phase-1-2-implementation-plan.md`
 
 - Historical drafts
   - `docs/archive/`

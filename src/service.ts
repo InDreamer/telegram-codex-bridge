@@ -3,7 +3,7 @@ import { TurnDebugJournal, type DebugJournalWriter } from "./activity/debug-jour
 import { ensureBridgeDirectories, getBridgePaths, getDebugRuntimeDir, type BridgePaths } from "./paths.js";
 import { loadConfig, type BridgeConfig } from "./config.js";
 import { probeReadiness } from "./readiness.js";
-import { BridgeStateStore } from "./state/store.js";
+import { BridgeStateStore, StateStoreOpenError } from "./state/store.js";
 import { TelegramApi, TelegramApiError,
   type TelegramCallbackQuery,
   type TelegramInlineKeyboardMarkup,
@@ -12,25 +12,33 @@ import { TelegramApi, TelegramApiError,
 } from "./telegram/api.js";
 import { TelegramPoller } from "./telegram/poller.js";
 import { ActivityTracker } from "./activity/tracker.js";
-import type { ActivityStatus, DebugJournalRecord } from "./activity/types.js";
+import type { ActivityStatus, DebugJournalRecord, InspectSnapshot } from "./activity/types.js";
 import { classifyNotification } from "./codex/notification-classifier.js";
 import {
+  buildArchiveSuccessText,
+  buildCollapsibleFinalAnswerView,
+  buildFinalAnswerReplyMarkup,
   buildInspectText,
   buildManualPathConfirmMessage,
   buildManualPathPrompt,
   buildNoNewProjectsMessage,
+  buildProjectPinnedText,
   buildProjectPickerMessage,
   buildProjectSelectedText,
   buildRuntimeErrorCard,
   buildRuntimeStatusReplyMarkup,
   buildRuntimeStatusCard,
+  buildSessionRenamedText,
+  buildSessionSwitchedText,
   buildSessionsText,
   buildStatusText,
+  buildUnarchiveSuccessText,
   buildUnsupportedCommandText,
   buildWhereText,
   renderFinalAnswerHtmlChunks,
   parseCallbackData,
-  parseCommand
+  parseCommand,
+  type RuntimeCommandEntryView
 } from "./telegram/ui.js";
 import { buildHelpText, syncTelegramCommands } from "./telegram/commands.js";
 import type { ProjectCandidate, ProjectPickerResult, ReadinessSnapshot, SessionRow } from "./types.js";
@@ -42,6 +50,16 @@ interface RecentActivityEntry {
   debugFilePath: string | null;
   statusCard: StatusCardState | null;
 }
+
+interface InspectRenderPayload {
+  snapshot: InspectSnapshot;
+  commands: RuntimeCommandEntryView[];
+  note: string | null;
+}
+
+const INSPECT_PLAIN_TEXT_FALLBACK_LIMIT = 3500;
+const HISTORY_SUMMARY_LIMIT = 5;
+const HISTORY_TEXT_LIMIT = 220;
 
 const MAX_RECENT_ACTIVITY_ENTRIES = 20;
 const RUNTIME_CARD_THROTTLE_MS = 2000;
@@ -95,6 +113,18 @@ type RuntimeCardTraceContext = {
   threadId: string | null;
   turnId: string | null;
 };
+
+interface BridgeServiceDependencies {
+  probeReadiness?: typeof probeReadiness;
+  createTelegramApi?: (token: string, baseUrl: string) => TelegramApi;
+  createPoller?: (
+    api: TelegramApi,
+    config: BridgeConfig,
+    paths: BridgePaths,
+    logger: Logger,
+    onUpdate: (update: TelegramUpdate) => Promise<void>
+  ) => TelegramPoller;
+}
 
 interface ActiveTurnState {
   sessionId: string;
@@ -158,7 +188,8 @@ export class BridgeService {
 
   constructor(
     private readonly paths: BridgePaths,
-    private readonly config: BridgeConfig
+    private readonly config: BridgeConfig,
+    private readonly deps: BridgeServiceDependencies = {}
   ) {
     this.logger = createLogger("bridge", paths.bridgeLogPath);
     this.bootstrapLogger = createLogger("bootstrap", paths.bootstrapLogPath);
@@ -176,7 +207,24 @@ export class BridgeService {
   }
 
   async run(): Promise<void> {
-    this.store = await BridgeStateStore.open(this.paths, this.bootstrapLogger);
+    const readinessProbe = this.deps.probeReadiness ?? probeReadiness;
+    const createTelegramApi = this.deps.createTelegramApi ?? ((token: string, baseUrl: string) =>
+      new TelegramApi(token, baseUrl));
+    const createPoller = this.deps.createPoller ?? ((api, config, paths, logger, onUpdate) =>
+      new TelegramPoller(api, config, paths, logger, onUpdate));
+    try {
+      this.store = await BridgeStateStore.open(this.paths, this.bootstrapLogger);
+    } catch (error) {
+      if (error instanceof StateStoreOpenError) {
+        await this.bootstrapLogger.error("state store open prevented service startup", { ...error.failure });
+      } else {
+        await this.bootstrapLogger.error("state store open prevented service startup", {
+          dbPath: this.paths.dbPath,
+          error: `${error}`
+        });
+      }
+      throw error;
+    }
     const recovered = this.store.recoveredFromCorruption;
     const recoveryNotices = this.store.markRunningSessionsFailedWithNotices("bridge_restart");
     const failedSessions = recoveryNotices.length;
@@ -185,7 +233,7 @@ export class BridgeService {
       await this.bootstrapLogger.warn("startup recovery applied", { failedSessions, recovered });
     }
 
-    const { snapshot, appServer } = await probeReadiness({
+    const { snapshot, appServer } = await readinessProbe({
       config: this.config,
       store: this.store,
       paths: this.paths,
@@ -198,12 +246,16 @@ export class BridgeService {
     this.appServer = appServer;
     this.attachAppServerListeners();
 
-    if (snapshot.state === "telegram_token_invalid") {
-      throw new Error("telegram token invalid; service will not enter run loop");
+    if (snapshot.state !== "ready" && snapshot.state !== "awaiting_authorization") {
+      if (this.appServer) {
+        await this.appServer.stop().catch(() => {});
+        this.appServer = null;
+      }
+      throw new Error(`readiness ${snapshot.state}; service will not enter run loop`);
     }
 
-    this.api = new TelegramApi(this.config.telegramBotToken, this.config.telegramApiBaseUrl);
-    this.poller = new TelegramPoller(
+    this.api = createTelegramApi(this.config.telegramBotToken, this.config.telegramApiBaseUrl);
+    this.poller = createPoller(
       this.api,
       this.config,
       this.paths,
@@ -348,6 +400,27 @@ export class BridgeService {
         await this.handlePlanToggle(callbackQuery.id, message.message_id, parsed.sessionId, false);
         return;
       }
+
+      case "final_open": {
+        await this.handleFinalAnswerOpen(callbackQuery.id, chatId, message.message_id, parsed.answerId);
+        return;
+      }
+
+      case "final_close": {
+        await this.handleFinalAnswerClose(callbackQuery.id, chatId, message.message_id, parsed.answerId);
+        return;
+      }
+
+      case "final_page": {
+        await this.handleFinalAnswerPage(
+          callbackQuery.id,
+          chatId,
+          message.message_id,
+          parsed.answerId,
+          parsed.page
+        );
+        return;
+      }
     }
   }
 
@@ -397,6 +470,119 @@ export class BridgeService {
       force: true,
       reason: expanded ? "plan_expanded" : "plan_collapsed"
     });
+  }
+
+  private async handleFinalAnswerOpen(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    answerId: string
+  ): Promise<void> {
+    await this.renderPersistedFinalAnswer(callbackQueryId, chatId, messageId, answerId, {
+      expanded: true,
+      page: 1
+    });
+  }
+
+  private async handleFinalAnswerClose(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    answerId: string
+  ): Promise<void> {
+    await this.renderPersistedFinalAnswer(callbackQueryId, chatId, messageId, answerId, {
+      expanded: false
+    });
+  }
+
+  private async handleFinalAnswerPage(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    answerId: string,
+    page: number
+  ): Promise<void> {
+    await this.renderPersistedFinalAnswer(callbackQueryId, chatId, messageId, answerId, {
+      expanded: true,
+      page
+    });
+  }
+
+  private async renderPersistedFinalAnswer(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    answerId: string,
+    mode: {
+      expanded: boolean;
+      page?: number;
+    }
+  ): Promise<void> {
+    if (!this.store) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    const view = this.store.getFinalAnswerView(answerId, chatId);
+    if (!view) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    if (!mode.expanded) {
+      const result = await this.safeEditHtmlMessageText(
+        chatId,
+        messageId,
+        view.previewHtml,
+        buildFinalAnswerReplyMarkup({
+          answerId,
+          totalPages: view.pages.length,
+          expanded: false
+        })
+      );
+      await this.finishPersistedFinalAnswerRender(callbackQueryId, answerId, messageId, result);
+      return;
+    }
+
+    const page = mode.page ?? 1;
+    const pageHtml = view.pages[page - 1];
+    if (!pageHtml) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    const result = await this.safeEditHtmlMessageText(
+      chatId,
+      messageId,
+      pageHtml,
+      buildFinalAnswerReplyMarkup({
+        answerId,
+        totalPages: view.pages.length,
+        expanded: true,
+        currentPage: page
+      })
+    );
+    await this.finishPersistedFinalAnswerRender(callbackQueryId, answerId, messageId, result);
+  }
+
+  private async finishPersistedFinalAnswerRender(
+    callbackQueryId: string,
+    answerId: string,
+    messageId: number,
+    result: TelegramEditResult
+  ): Promise<void> {
+    switch (result.outcome) {
+      case "edited":
+        this.store?.setFinalAnswerMessageId(answerId, messageId);
+        await this.safeAnswerCallbackQuery(callbackQueryId);
+        return;
+      case "rate_limited":
+        await this.safeAnswerCallbackQuery(callbackQueryId, "Telegram 正在限流，请稍后再试。");
+        return;
+      default:
+        await this.safeAnswerCallbackQuery(callbackQueryId, "暂时无法更新这条消息，请稍后再试。");
+        return;
+    }
   }
 
   private async authorizeMessageSender(
@@ -519,7 +705,7 @@ export class BridgeService {
           return;
         }
 
-        await this.safeSendMessage(chatId, buildWhereText(this.store.getActiveSession(chatId)));
+        await this.safeSendHtmlMessage(chatId, buildWhereText(this.store.getActiveSession(chatId)));
         return;
       }
 
@@ -595,7 +781,7 @@ export class BridgeService {
     }
 
     if (!text) {
-      await this.safeSendMessage(chatId, buildProjectSelectedText(activeSession.projectName));
+      await this.safeSendHtmlMessage(chatId, buildProjectSelectedText(activeSession.projectName));
       return;
     }
 
@@ -654,7 +840,7 @@ export class BridgeService {
 
     pickerState.resolved = true;
     pickerState.awaitingManualProjectPath = false;
-    await this.safeSendMessage(chatId, buildProjectSelectedText(candidate.projectName));
+    await this.safeSendHtmlMessage(chatId, buildProjectSelectedText(candidate.projectName));
   }
 
   private async handleScanMore(chatId: string): Promise<void> {
@@ -718,7 +904,7 @@ export class BridgeService {
 
     pickerState.picker.projectMap.set(candidate.projectKey, candidate);
     const confirmation = buildManualPathConfirmMessage(candidate);
-    await this.safeSendMessage(chatId, confirmation.text, confirmation.replyMarkup);
+    await this.safeSendHtmlMessage(chatId, confirmation.text, confirmation.replyMarkup);
   }
 
   private async confirmManualProject(chatId: string, projectKey: string): Promise<void> {
@@ -757,7 +943,7 @@ export class BridgeService {
 
     pickerState.resolved = true;
     pickerState.awaitingManualProjectPath = false;
-    await this.safeSendMessage(chatId, buildProjectSelectedText(candidate.projectName));
+    await this.safeSendHtmlMessage(chatId, buildProjectSelectedText(candidate.projectName));
   }
 
   private async returnToProjectPicker(chatId: string): Promise<void> {
@@ -787,10 +973,12 @@ export class BridgeService {
 
     const snapshot = this.store.getReadinessSnapshot() ?? this.snapshot;
     const activeSession = this.store.getActiveSession(chatId);
-    await this.safeSendMessage(
-      chatId,
-      snapshot ? buildStatusText(snapshot, activeSession) : "桥接状态未知，请在本机运行 ctb doctor。"
-    );
+    if (!snapshot) {
+      await this.safeSendMessage(chatId, "桥接状态未知，请在本机运行 ctb doctor。");
+      return;
+    }
+
+    await this.safeSendHtmlMessage(chatId, buildStatusText(snapshot, activeSession));
   }
 
   private async handleSessions(chatId: string, args: string): Promise<void> {
@@ -836,7 +1024,7 @@ export class BridgeService {
     }
 
     this.store.setActiveSession(chatId, target.sessionId);
-    await this.safeSendMessage(chatId, `已切换到项目：${target.projectName}`);
+    await this.safeSendHtmlMessage(chatId, buildSessionSwitchedText(target.projectName));
   }
 
   private async handleArchive(chatId: string): Promise<void> {
@@ -875,14 +1063,18 @@ export class BridgeService {
         await this.markPendingThreadArchiveLocalCommit(activeSession.threadId, pendingOpId);
       }
       const nextActiveSession = this.store.getActiveSession(chatId);
-      const lines = [`已归档当前会话：${activeSession.projectName}`];
-      if (nextActiveSession) {
-        lines.push(`当前会话：${nextActiveSession.displayName}`);
-        lines.push(`当前项目：${nextActiveSession.projectName}`);
-      } else {
-        lines.push("当前没有活动会话，请发送 /new 选择项目。");
-      }
-      await this.safeSendMessage(chatId, lines.join("\n"));
+      await this.safeSendHtmlMessage(
+        chatId,
+        buildArchiveSuccessText(
+          activeSession.projectName,
+          nextActiveSession
+            ? {
+                displayName: nextActiveSession.displayName,
+                projectName: nextActiveSession.projectName
+              }
+            : null
+        )
+      );
     } catch {
       // If the remote archive succeeded but the local store update failed, best-effort
       // roll the thread back so Telegram and Codex do not silently drift apart.
@@ -942,7 +1134,7 @@ export class BridgeService {
       if (target.threadId) {
         await this.markPendingThreadArchiveLocalCommit(target.threadId, pendingOpId);
       }
-      await this.safeSendMessage(chatId, `已恢复会话：${target.projectName}`);
+      await this.safeSendHtmlMessage(chatId, buildUnarchiveSuccessText(target.projectName));
     } catch {
       // Apply the inverse compensation on restore failures for the same reason.
       if (target.threadId && pendingOpId !== null) {
@@ -984,7 +1176,7 @@ export class BridgeService {
 
     this.store.renameSession(activeSession.sessionId, name);
     this.pendingRenameSessionIds.delete(chatId);
-    await this.safeSendMessage(chatId, `当前会话已重命名为：${name}`);
+    await this.safeSendHtmlMessage(chatId, buildSessionRenamedText(name));
   }
 
   private async handleRenameInput(chatId: string, text: string): Promise<void> {
@@ -1012,7 +1204,7 @@ export class BridgeService {
 
     this.store.renameSession(sessionId, name);
     this.pendingRenameSessionIds.delete(chatId);
-    await this.safeSendMessage(chatId, `当前会话已重命名为：${name}`);
+    await this.safeSendHtmlMessage(chatId, buildSessionRenamedText(name));
   }
 
   private async handlePin(chatId: string): Promise<void> {
@@ -1036,7 +1228,7 @@ export class BridgeService {
       projectName: activeSession.projectName,
       sessionId: activeSession.sessionId
     });
-    await this.safeSendMessage(chatId, `已收藏项目：${activeSession.projectName}`);
+    await this.safeSendHtmlMessage(chatId, buildProjectPinnedText(activeSession.projectName));
   }
 
   private async handleInterrupt(chatId: string): Promise<void> {
@@ -1224,7 +1416,7 @@ export class BridgeService {
 
       this.store.markSessionSuccessful(activeTurn.sessionId);
       this.disposeRuntimeCards(activeTurn);
-      await this.sendFinalAnswer(activeTurn.chatId, finalMessage);
+      await this.sendFinalAnswer(activeTurn, finalMessage);
       return;
     }
 
@@ -1271,6 +1463,26 @@ export class BridgeService {
       return;
     }
 
+    const payload = await this.getInspectRenderPayload(activeSession);
+    if (!payload) {
+      await this.safeSendMessage(chatId, "当前没有可用的活动详情。");
+      return;
+    }
+
+    const inspectHtml = buildInspectText(payload.snapshot, {
+      sessionName: activeSession.displayName,
+      projectName: activeSession.projectName,
+      commands: payload.commands,
+      note: payload.note
+    });
+
+    // Keep `/inspect` usable even when Telegram rejects the richer HTML rendering.
+    if (!await this.safeSendHtmlMessage(chatId, inspectHtml)) {
+      await this.safeSendMessage(chatId, buildInspectPlainTextFallback(inspectHtml));
+    }
+  }
+
+  private async getInspectRenderPayload(activeSession: SessionRow): Promise<InspectRenderPayload | null> {
     const activity = this.activeTurn?.sessionId === activeSession.sessionId
       ? {
           tracker: this.activeTurn.tracker,
@@ -1279,26 +1491,64 @@ export class BridgeService {
         }
       : this.recentActivityBySessionId.get(activeSession.sessionId);
 
-    if (!activity) {
-      await this.safeSendMessage(chatId, "当前没有可用的活动详情。");
-      return;
+    if (activity) {
+      const snapshot = activity.tracker.getInspectSnapshot();
+      if (snapshot.inspectAvailable) {
+        return {
+          snapshot,
+          commands: buildInspectCommandEntries(activity.statusCard),
+          note: null
+        };
+      }
+
+      if (shouldRetryInspectFromHistory(activeSession, snapshot)) {
+        const historicalPayload = await this.buildHistoricalInspectRenderPayload(activeSession);
+        if (historicalPayload) {
+          return historicalPayload;
+        }
+      }
+
+      if (snapshot.turnStatus !== "starting") {
+        return {
+          snapshot,
+          commands: buildInspectCommandEntries(activity.statusCard),
+          note: null
+        };
+      }
     }
 
-    const snapshot = activity.tracker.getInspectSnapshot();
-    if (!snapshot.inspectAvailable && snapshot.turnStatus === "starting") {
-      await this.safeSendMessage(chatId, "当前没有可用的活动详情。");
-      return;
+    return await this.buildHistoricalInspectRenderPayload(activeSession);
+  }
+
+  private async buildHistoricalInspectRenderPayload(activeSession: SessionRow): Promise<InspectRenderPayload | null> {
+    if (!activeSession.threadId || !activeSession.lastTurnId) {
+      return null;
     }
 
-    await this.safeSendMessage(
-      chatId,
-      buildInspectText(snapshot, {
-        debugFilePath: activity.debugFilePath,
-        sessionName: activeSession.displayName,
-        projectName: activeSession.projectName,
-        commands: buildInspectCommandEntries(activity.statusCard)
-      })
-    );
+    const appServer = this.appServer as { readThread?: (threadId: string, includeTurns?: boolean) => Promise<unknown> } | null;
+    if (!appServer?.readThread) {
+      return null;
+    }
+
+    try {
+      const result = await appServer.readThread(activeSession.threadId, true) as { thread?: { turns?: unknown[] } };
+      const turns = Array.isArray(result.thread?.turns) ? result.thread.turns : [];
+      const targetTurn = turns.find((turn) => getString(turn, "id") === activeSession.lastTurnId)
+        ?? turns.at(-1);
+      if (!targetTurn) {
+        return null;
+      }
+
+      return buildInspectPayloadFromThreadHistory(targetTurn, activeSession.lastTurnStatus);
+    } catch (error) {
+      await this.logger.warn("inspect history fallback failed", {
+        sessionId: activeSession.sessionId,
+        threadId: activeSession.threadId,
+        turnId: activeSession.lastTurnId,
+        error: `${error}`
+      });
+      return null;
+    }
   }
 
   private getRuntimeCardTraceContext(activeTurn: ActiveTurnState): RuntimeCardTraceContext {
@@ -1574,18 +1824,66 @@ export class BridgeService {
     });
   }
 
-  private async sendFinalAnswer(chatId: string, finalMessage: string | null): Promise<void> {
+  private async sendFinalAnswer(activeTurn: ActiveTurnState, finalMessage: string | null): Promise<void> {
     const text = finalMessage || "本次操作已完成，但没有可返回的最终答复。";
-    const chunks = renderFinalAnswerHtmlChunks(text, 3000);
+    const rendered = buildCollapsibleFinalAnswerView(text);
     await this.logger.info("sending final answer", {
-      chatId,
-      chunkCount: chunks.length,
+      chatId: activeTurn.chatId,
+      chunkCount: rendered.pages.length,
+      collapsible: rendered.truncated,
       hasFinalMessage: finalMessage !== null,
       preview: summarizeTextPreview(text)
     });
 
+    if (rendered.truncated && this.store) {
+      let answerId: string | null = null;
+
+      try {
+        const saved = this.store.saveFinalAnswerView({
+          telegramChatId: activeTurn.chatId,
+          sessionId: activeTurn.sessionId,
+          threadId: activeTurn.threadId,
+          turnId: activeTurn.turnId,
+          previewHtml: rendered.previewHtml,
+          pages: rendered.pages
+        });
+        answerId = saved.answerId;
+
+        const sent = await this.safeSendHtmlMessageResult(
+          activeTurn.chatId,
+          saved.previewHtml,
+          buildFinalAnswerReplyMarkup({
+            answerId: saved.answerId,
+            totalPages: saved.pages.length,
+            expanded: false
+          })
+        );
+
+        if (sent) {
+          this.store.setFinalAnswerMessageId(saved.answerId, sent.message_id);
+          return;
+        }
+      } catch (error) {
+        await this.logger.warn("persisted final answer delivery failed; falling back to chunked send", {
+          chatId: activeTurn.chatId,
+          sessionId: activeTurn.sessionId,
+          error: `${error}`
+        });
+      }
+
+      if (answerId) {
+        this.store.deleteFinalAnswerView(answerId);
+      }
+    }
+
+    if (!rendered.truncated && rendered.pages.length === 1) {
+      await this.safeSendHtmlMessageResult(activeTurn.chatId, rendered.pages[0] ?? "");
+      return;
+    }
+
+    const chunks = renderFinalAnswerHtmlChunks(text, 3000);
     for (const chunk of chunks) {
-      await this.safeSendHtmlMessageResult(chatId, chunk);
+      await this.safeSendHtmlMessageResult(activeTurn.chatId, chunk);
     }
   }
 
@@ -1722,7 +2020,11 @@ export class BridgeService {
     }
 
     if (classified?.kind === "error") {
-      const errorCard = createRuntimeCardMessageState("error", `error-${activeTurn.nextErrorCardId++}`) as ErrorCardState;
+      const errorCard = createRuntimeCardMessageState(
+        "error",
+        `error-${activeTurn.nextErrorCardId++}`,
+        "HTML"
+      ) as ErrorCardState;
       errorCard.title = "Runtime error";
       errorCard.detail = cleanRuntimeErrorMessage(classified.message);
       activeTurn.errorCards.push(errorCard);
@@ -1754,7 +2056,11 @@ export class BridgeService {
 
     if (classified?.kind === "turn_completed") {
       if (classified.status === "failed" && activeTurn.errorCards.length === 0) {
-        const errorCard = createRuntimeCardMessageState("error", `error-${activeTurn.nextErrorCardId++}`) as ErrorCardState;
+        const errorCard = createRuntimeCardMessageState(
+          "error",
+          `error-${activeTurn.nextErrorCardId++}`,
+          "HTML"
+        ) as ErrorCardState;
         errorCard.title = "Turn failed";
         errorCard.detail = "This operation did not complete successfully.";
         activeTurn.errorCards.push(errorCard);
@@ -2069,6 +2375,14 @@ export class BridgeService {
     };
   }
 
+  private async safeSendHtmlMessage(
+    chatId: string,
+    html: string,
+    replyMarkup?: TelegramInlineKeyboardMarkup
+  ): Promise<boolean> {
+    return (await this.safeSendHtmlMessageResult(chatId, html, replyMarkup)) !== null;
+  }
+
   private async safeSendMessage(
     chatId: string,
     text: string,
@@ -2273,6 +2587,7 @@ function getTelegramRetryAfterMs(error: unknown): number | null {
 function summarizeActivityStatus(status: ActivityStatus): Record<string, unknown> {
   return {
     turnStatus: status.turnStatus,
+    threadRuntimeState: status.threadRuntimeState,
     activeItemType: status.activeItemType,
     activeItemId: status.activeItemId,
     activeItemLabel: status.activeItemLabel,
@@ -2387,18 +2702,33 @@ function formatVisibleRuntimeState(status: ActivityStatus): string {
   }
 
   switch (status.turnStatus) {
-    case "starting":
-      return "Starting";
-    case "running":
-      return "Running";
-    case "blocked":
-      return "Blocked";
     case "completed":
       return "Completed";
     case "failed":
       return "Failed";
     case "interrupted":
       return "Interrupted";
+    default:
+      break;
+  }
+
+  if (status.threadBlockedReason || status.turnStatus === "blocked") {
+    return "Blocked";
+  }
+
+  if (status.threadRuntimeState === "systemError") {
+    return "Failed";
+  }
+
+  if (status.threadRuntimeState === "active") {
+    return "Running";
+  }
+
+  switch (status.turnStatus) {
+    case "starting":
+      return "Starting";
+    case "running":
+      return "Running";
     case "idle":
       return "Idle";
     default:
@@ -2602,11 +2932,7 @@ function formatRuntimeCommandState(status: RuntimeCommandState["status"]): strin
   }
 }
 
-function buildInspectCommandEntries(statusCard: StatusCardState | null | undefined): Array<{
-  commandText: string;
-  state: string;
-  latestSummary: string | null;
-}> {
+function buildInspectCommandEntries(statusCard: StatusCardState | null | undefined): RuntimeCommandEntryView[] {
   if (!statusCard) {
     return [];
   }
@@ -2616,6 +2942,177 @@ function buildInspectCommandEntries(statusCard: StatusCardState | null | undefin
     state: formatRuntimeCommandState(command.status),
     latestSummary: command.latestSummary
   }));
+}
+
+function buildInspectPayloadFromThreadHistory(
+  turn: unknown,
+  fallbackTurnStatus: string | null
+): InspectRenderPayload | null {
+  const turnRecord = getRecord(turn);
+  const items = getArray(turnRecord?.items);
+  if (items.length === 0) {
+    return null;
+  }
+
+  const commands: RuntimeCommandEntryView[] = [];
+  const recentCommandSummaries: string[] = [];
+  const recentFileChangeSummaries: string[] = [];
+  const recentMcpSummaries: string[] = [];
+  const recentWebSearches: string[] = [];
+  const planSnapshot: string[] = [];
+  const completedCommentary: string[] = [];
+  let finalMessageAvailable = false;
+  let latestConclusion: string | null = null;
+
+  for (const item of items) {
+    const itemRecord = getRecord(item);
+    const itemType = getString(itemRecord, "type");
+    switch (itemType) {
+      case "commandExecution": {
+        const commandText = getString(itemRecord, "command") ?? "command";
+        const aggregatedOutput = getString(itemRecord, "aggregatedOutput");
+        const parsedOutput = summarizeHistoryCommandOutput(aggregatedOutput, commandText);
+        const latestSummary = truncateHistoryText(parsedOutput.summary);
+        commands.push({
+          commandText: truncateHistoryText(commandText) ?? "command",
+          state: formatHistoryCommandState(getString(itemRecord, "status")),
+          latestSummary,
+          cwd: truncateHistoryText(getString(itemRecord, "cwd")),
+          exitCode: getNumber(itemRecord, "exitCode"),
+          durationMs: getNumber(itemRecord, "durationMs")
+        });
+        if (latestSummary) {
+          pushHistorySummary(recentCommandSummaries, `${commandText} -> ${latestSummary}`);
+          latestConclusion = latestSummary;
+        } else {
+          pushHistorySummary(recentCommandSummaries, commandText);
+          latestConclusion = commandText;
+        }
+        break;
+      }
+
+      case "fileChange": {
+        const changes = getArray(itemRecord?.changes);
+        const paths = changes
+          .map((change) => {
+            const changeRecord = getRecord(change);
+            const path = getString(changeRecord, "path");
+            const kind = getString(changeRecord, "kind");
+            if (!path) {
+              return null;
+            }
+            return kind ? `${path} (${kind})` : path;
+          })
+          .filter((value): value is string => value !== null);
+        if (paths.length > 0) {
+          for (const path of paths) {
+            pushHistorySummary(recentFileChangeSummaries, path);
+          }
+          latestConclusion = truncateHistoryText(paths[0] ?? null) ?? latestConclusion;
+        }
+        break;
+      }
+
+      case "mcpToolCall": {
+        const server = getString(itemRecord, "server");
+        const tool = getString(itemRecord, "tool");
+        const label = [server, tool].filter((value): value is string => Boolean(value)).join(" / ");
+        const resultSummary = summarizeHistoryToolResult(getRecord(itemRecord?.result));
+        const errorSummary = getString(getRecord(itemRecord?.error), "message");
+        const summary = resultSummary ?? errorSummary;
+        const line = summary
+          ? `${label || "MCP 工具"} -> ${summary}`
+          : label || "MCP 工具";
+        pushHistorySummary(recentMcpSummaries, line);
+        latestConclusion = truncateHistoryText(summary ?? label) ?? latestConclusion;
+        break;
+      }
+
+      case "webSearch": {
+        const query = getString(itemRecord, "query")
+          ?? getString(getRecord(itemRecord?.action), "query")
+          ?? getString(getRecord(itemRecord?.action), "url")
+          ?? "web search";
+        pushHistorySummary(recentWebSearches, query);
+        latestConclusion = truncateHistoryText(query) ?? latestConclusion;
+        break;
+      }
+
+      case "plan": {
+        const text = getString(itemRecord, "text");
+        if (text) {
+          for (const line of text.split(/\r?\n/u).map((entry) => entry.trim()).filter((entry) => entry.length > 0)) {
+            pushHistorySummary(planSnapshot, line);
+          }
+        }
+        break;
+      }
+
+      case "agentMessage": {
+        const phase = getString(itemRecord, "phase");
+        const text = getString(itemRecord, "text");
+        if (!text) {
+          break;
+        }
+        if (phase === "commentary") {
+          pushHistorySummary(completedCommentary, text);
+        } else if (phase === "final_answer") {
+          finalMessageAvailable = true;
+        }
+        break;
+      }
+
+      default:
+        break;
+    }
+  }
+
+  const turnStatus = mapStoredTurnStatus(getString(turnRecord, "status") ?? fallbackTurnStatus);
+  const snapshot: InspectSnapshot = {
+    turnStatus,
+    threadRuntimeState: null,
+    activeItemType: null,
+    activeItemId: null,
+    activeItemLabel: null,
+    lastActivityAt: null,
+    currentItemStartedAt: null,
+    currentItemDurationSec: null,
+    lastHighValueEventType: finalMessageAvailable ? "done" : null,
+    lastHighValueTitle: finalMessageAvailable ? "Done: final answer ready" : null,
+    lastHighValueDetail: null,
+    latestProgress: null,
+    recentStatusUpdates: latestConclusion ? [latestConclusion] : [],
+    threadBlockedReason: null,
+    finalMessageAvailable,
+    inspectAvailable: true,
+    debugAvailable: true,
+    errorState: null,
+    recentTransitions: [],
+    recentCommandSummaries,
+    recentFileChangeSummaries,
+    recentMcpSummaries,
+    recentWebSearches,
+    planSnapshot,
+    completedCommentary
+  };
+
+  const hasStructuredDetail = commands.length > 0
+    || recentFileChangeSummaries.length > 0
+    || recentMcpSummaries.length > 0
+    || recentWebSearches.length > 0
+    || planSnapshot.length > 0
+    || completedCommentary.length > 0
+    || finalMessageAvailable;
+
+  if (!hasStructuredDetail) {
+    return null;
+  }
+
+  return {
+    snapshot,
+    commands,
+    note: "以下内容来自最近一次执行的历史记录。"
+  };
 }
 
 function cleanRuntimeErrorMessage(message: string | null | undefined): string {
@@ -2639,4 +3136,163 @@ async function extractFinalAnswerFromHistory(
   );
 
   return finalItem?.text ?? null;
+}
+
+function summarizeHistoryCommandOutput(aggregatedOutput: string | null, fallbackCommand: string): {
+  command: string;
+  summary: string | null;
+} {
+  const normalized = `${aggregatedOutput ?? ""}`.trim();
+  if (!normalized) {
+    return {
+      command: fallbackCommand,
+      summary: null
+    };
+  }
+
+  const lines = normalized
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  if (lines.length === 0) {
+    return {
+      command: fallbackCommand,
+      summary: null
+    };
+  }
+
+  const command = lines[0]?.replace(/^[>$#]\s*/u, "") || fallbackCommand;
+  const detail = lines.at(-1) && lines.at(-1) !== lines[0] ? lines.at(-1) ?? null : null;
+  return {
+    command,
+    summary: detail
+  };
+}
+
+function summarizeHistoryToolResult(result: Record<string, unknown> | null): string | null {
+  if (!result) {
+    return null;
+  }
+
+  const content = getArray(result.content);
+  const firstContent = content[0];
+  if (typeof firstContent === "string" && firstContent.trim().length > 0) {
+    return firstContent.trim();
+  }
+
+  if (typeof result.structuredContent === "string" && result.structuredContent.trim().length > 0) {
+    return result.structuredContent.trim();
+  }
+
+  return null;
+}
+
+function shouldRetryInspectFromHistory(activeSession: SessionRow, snapshot: InspectSnapshot): boolean {
+  if (!activeSession.threadId || !activeSession.lastTurnId) {
+    return false;
+  }
+
+  return snapshot.turnStatus === "completed"
+    || snapshot.turnStatus === "interrupted"
+    || snapshot.turnStatus === "failed"
+    || activeSession.status !== "running";
+}
+
+function truncateHistoryText(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = value.replace(/\s+/gu, " ").trim();
+  if (normalized.length === 0) {
+    return null;
+  }
+
+  return normalized.length <= HISTORY_TEXT_LIMIT
+    ? normalized
+    : `${normalized.slice(0, HISTORY_TEXT_LIMIT)}…`;
+}
+
+function pushHistorySummary(target: string[], value: string): void {
+  const nextValue = truncateHistoryText(value);
+  if (!nextValue || target.at(-1) === nextValue) {
+    return;
+  }
+
+  target.push(nextValue);
+  if (target.length > HISTORY_SUMMARY_LIMIT) {
+    target.splice(0, target.length - HISTORY_SUMMARY_LIMIT);
+  }
+}
+
+function mapStoredTurnStatus(status: string | null): InspectSnapshot["turnStatus"] {
+  switch (status) {
+    case "completed":
+      return "completed";
+    case "interrupted":
+      return "interrupted";
+    case "failed":
+    case "error":
+      return "failed";
+    case "inProgress":
+      return "running";
+    default:
+      return "unknown";
+  }
+}
+
+function formatHistoryCommandState(status: string | null): string {
+  switch (status) {
+    case "running":
+    case "inProgress":
+      return "Running";
+    case "completed":
+      return "Completed";
+    case "failed":
+    case "error":
+      return "Failed";
+    case "interrupted":
+      return "Interrupted";
+    default:
+      return "Unknown";
+  }
+}
+
+function getRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function getString(value: unknown, key: string): string | null {
+  const record = getRecord(value);
+  const candidate = record?.[key];
+  return typeof candidate === "string" ? candidate : null;
+}
+
+function getNumber(value: unknown, key: string): number | null {
+  const record = getRecord(value);
+  const candidate = record?.[key];
+  return typeof candidate === "number" ? candidate : null;
+}
+
+function getArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function buildInspectPlainTextFallback(html: string): string {
+  const plainText = html
+    .replace(/<\/?b>/gu, "")
+    .replace(/<\/?i>/gu, "")
+    .replace(/<br\s*\/?>/gu, "\n")
+    .replace(/&lt;/gu, "<")
+    .replace(/&gt;/gu, ">")
+    .replace(/&amp;/gu, "&");
+
+  return plainText.length <= INSPECT_PLAIN_TEXT_FALLBACK_LIMIT
+    ? plainText
+    : `${plainText.slice(0, INSPECT_PLAIN_TEXT_FALLBACK_LIMIT)}…`;
 }

@@ -462,8 +462,10 @@ test("reduces blocked, interrupted, failed, and unknown item flows safely", () =
     classifyNotification("thread/status/changed", {
       threadId: "thread-2",
       turnId: "turn-2",
-      status: "blocked",
-      activeFlags: ["waitingOnApproval"]
+      status: {
+        type: "active",
+        activeFlags: ["waitingOnApproval"]
+      }
     }),
     "2026-03-10T11:00:01.000Z"
   );
@@ -533,6 +535,77 @@ test("classifies web search progress notifications as progress events", () => {
   assert.equal(classified.kind, "progress");
   assert.equal(classified.itemId, "web-1");
   assert.equal(classified.message, "Searching the web");
+});
+
+test("classifies concrete item labels from structured item payloads when titles are missing", () => {
+  const command = classifyNotification("item/started", {
+    threadId: "thread-labels",
+    turnId: "turn-labels",
+    item: {
+      id: "cmd-1",
+      type: "commandExecution",
+      command: "pnpm test"
+    }
+  });
+  assert.equal(command.kind, "item_started");
+  assert.equal(command.label, "pnpm test");
+
+  const mcp = classifyNotification("item/started", {
+    threadId: "thread-labels",
+    turnId: "turn-labels",
+    item: {
+      id: "mcp-1",
+      type: "mcpToolCall",
+      server: "docs",
+      tool: "search_docs"
+    }
+  });
+  assert.equal(mcp.kind, "item_started");
+  assert.equal(mcp.label, "docs / search_docs");
+
+  const web = classifyNotification("item/started", {
+    threadId: "thread-labels",
+    turnId: "turn-labels",
+    item: {
+      id: "web-1",
+      type: "webSearch",
+      query: "telegram html inspect"
+    }
+  });
+  assert.equal(web.kind, "item_started");
+  assert.equal(web.label, "telegram html inspect");
+
+  const fileChange = classifyNotification("item/started", {
+    threadId: "thread-labels",
+    turnId: "turn-labels",
+    item: {
+      id: "file-1",
+      type: "fileChange",
+      changes: [
+        {
+          path: "src/service.ts",
+          kind: "modified",
+          diff: "@@"
+        }
+      ]
+    }
+  });
+  assert.equal(fileChange.kind, "item_started");
+  assert.equal(fileChange.label, "src/service.ts");
+});
+
+test("classifies structured thread status notifications from the current app-server shape", () => {
+  const classified = classifyNotification("thread/status/changed", {
+    threadId: "thread-5",
+    status: {
+      type: "active",
+      activeFlags: ["waitingOnUserInput"]
+    }
+  });
+
+  assert.equal(classified.kind, "thread_status_changed");
+  assert.equal(classified.status, "active");
+  assert.deepEqual(classified.activeFlags, ["waitingOnUserInput"]);
 });
 
 test("classifies thread archive notifications explicitly", () => {

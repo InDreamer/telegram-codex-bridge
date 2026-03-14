@@ -93,6 +93,8 @@ Degradation:
 General rule:
 - Telegram is not a debug console
 - every command returns a compact user-facing response
+- structured Telegram command replies render field labels in bold via Telegram HTML
+- plain one-line prompts and session lists may stay plain text when they do not expose label-value fields
 
 ### `/new`
 
@@ -206,6 +208,9 @@ Shows:
 - current project name
 - current project path
 - session status
+- bridge `session_id`
+- Codex `thread_id` when available, otherwise an explicit not-created-yet note
+- latest `turn_id` when available
 
 ### `/inspect`
 
@@ -213,15 +218,23 @@ Shows a structured activity snapshot for the active session.
 
 Responses:
 - with activity data:
-  - session and project identity
-  - turn status, blocked state, current step, and step elapsed time when available
-  - recent updates and latest milestone when available
-  - recent activity timeline
-  - recent command, file-change, MCP, and web-search summaries when available
-  - plan snapshot
-  - completed commentary entries
-  - debug file path note when available
+  - Telegram HTML in compact Chinese, optimized for normal chat reading instead of debug-dump fidelity
+  - deduplicated session and project identity
+  - current turn status, blocker, active step, and elapsed step time when available
+  - one concise latest conclusion when available
+  - recent action timeline when live activity data exists
+  - recent command details, including command text and latest result summary when available
+  - recent file-change summaries
+  - recent MCP and web-search summaries grouped into one user-facing section
+  - current plan snapshot
+  - completed commentary entries when available
+  - when no live snapshot exists but the session has a completed turn, best-effort detail recovered from thread history
 - with no activity data: `当前没有可用的活动详情。`
+
+Rules:
+- do not mirror raw delta, raw reasoning, or raw protocol frames
+- do not show debug file paths in the normal Telegram inspect response
+- omit empty sections instead of printing placeholder noise such as `None`
 
 ### `/interrupt`
 
@@ -246,6 +259,11 @@ Versioned callback formats:
 - `v1:path:manual`
 - `v1:path:back`
 - `v1:path:confirm:{project_key}`
+- `v1:plan:expand:{session_id}`
+- `v1:plan:collapse:{session_id}`
+- `v1:final:open:{answer_id}`
+- `v1:final:close:{answer_id}`
+- `v1:final:page:{answer_id}:{page}`
 
 Rules:
 - `project_key` is a stable short hash of the project path, never the raw path
@@ -258,14 +276,17 @@ Rules:
 Final-answer handling:
 - send the final assistant answer as a separate Telegram message after the turn finishes
 - render the final assistant answer with Telegram formatting rather than exposing raw Markdown markers
-- if the answer exceeds safe size, split the rendered output into safe continuation chunks without cutting code blocks or Telegram tags
-- prefix later chunks with `(2/3)` style markers
+- if the answer is long enough to harm chat readability, send a collapsed preview with an inline `展开全文` button
+- keep long final answers on a single bridge-owned message by editing that message for `展开全文`, `收起`, and page navigation
+- persist collapsed previews plus rendered pages locally so final-answer buttons still work after bridge restart
+- if an expanded final answer still exceeds Telegram single-message size, page through the rendered HTML instead of sending a cascade of long continuation messages
+- keep the older `(2/3)` continuation fallback only when the collapsible path cannot be established safely
 - never truncate silently
 - if no final assistant answer is available after a successful turn, send `本次操作已完成，但没有可返回的最终答复。`
 
 Edit versus new message:
-- edit existing messages only for bridge-owned runtime cards
-- send new messages for final answers, status views, refreshed pickers, manual-path flows, and rename prompts
+- edit existing messages for bridge-owned runtime cards and bridge-owned long final-answer views
+- send new messages for initial final answers, status views, refreshed pickers, manual-path flows, and rename prompts
 - send a new message when a new runtime card first appears, including status and error cards
 
 While a turn is running:
@@ -274,8 +295,10 @@ While a turn is running:
 - when plan state becomes available, expose it through a collapsed button on the status card
 - the collapsed button shows the current plan step summary and expands inline on demand
 - project `commandExecution` items into the status card instead of sending separate command cards
+- keep the `State` line aligned with reduced Codex runtime state such as running, blocked, and terminal outcomes
 - status card command activity should appear only through the `Progress` section when a visible progress unit exists
 - render the `Progress` body on its own line using Telegram HTML from a safe inline Markdown subset
+- keep `Progress` for commentary and other user-readable stage updates rather than using it as the only running-state signal
 - keep full per-command detail in `/inspect`, ordered by execution sequence and including command text, state, and latest output summary when available
 - create separate error cards for runtime failures
 - update the status card only when the visible turn state changes or when a complete progress unit is available

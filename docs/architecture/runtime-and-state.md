@@ -50,16 +50,20 @@ It should:
 - expose current plan state through a collapsed button on the status card rather than a separate plan card
 - project command activity into the status card rather than creating per-command messages
 - surface command activity on the status card only through the `Progress` section when a visible progress unit exists
+- keep the status-card `State` label aligned with reduced app-server runtime state such as active, blocked, and terminal turn outcomes
 - render status-card labels and progress content with Telegram-safe HTML rather than raw Markdown markers
 - create separate error cards when runtime failures surface
 - keep reasoning deltas and raw token fragments out of the normal Telegram chat flow
 - treat completed `agentMessage` items with `phase = commentary` as the authoritative commentary source
+- keep commentary-driven `Progress` separate from the reduced runtime `State` so phase narration does not replace the running or blocked indicator
 - keep raw `item/agentMessage/delta` traffic out of the normal Telegram chat flow
 - retain richer structured command detail for `/inspect` and the on-disk debug journal
 - capture the final assistant message emitted before `turn/completed`
 - send the final assistant message as a separate Telegram message after turn completion
 - render the final assistant message with Telegram HTML derived from a safe Markdown subset rather than sending raw Markdown literals
-- split oversized final answers on rendered block boundaries so code fences and Telegram tags stay intact across `(2/N)` continuation chunks
+- prefer a persisted collapsed preview plus inline expand/collapse/page controls for oversized final answers so one bridge-owned final-answer message remains readable in chat
+- persist collapsed previews and rendered pages in SQLite so final-answer buttons survive bridge restart without relying on Telegram as a state store
+- keep chunked `(2/N)` continuation sends only as a delivery fallback when the collapsible path cannot be established safely
 - observe internal `thread/archived` / `thread/unarchived` notifications for reconciliation and drift diagnosis without exposing them as user commands
 
 If the turn completes successfully but no final assistant message is available, send:
@@ -194,6 +198,32 @@ Important fields:
 - `checked_at`
 - `app_server_pid`
 
+Readiness details also capture:
+- Node version and engine-floor support
+- Codex version and minimum supported version
+- service-manager health
+- state/config/install root writability
+- capability-check results for the required V2 app-server request and notification surface
+
+### `final_answer_view`
+
+Persisted long final-answer views for restart-safe Telegram callbacks.
+
+Important fields:
+- `answer_id`
+- `telegram_chat_id`
+- `telegram_message_id`
+- `session_id`
+- `thread_id`
+- `turn_id`
+- `preview_html`
+- `pages_json`
+- `created_at`
+
+Retention note:
+- keep only the most recent 50 persisted final-answer views per Telegram chat
+- do not persist the user's current expanded/collapsed state or page cursor
+
 ## Recovery Model
 
 On bridge startup:
@@ -204,6 +234,13 @@ On bridge startup:
 5. mark any `running` session as `failed` with `failure_reason = bridge_restart`
 6. probe app-server readiness
 7. restore the active session pointer
+
+Readiness / preflight rules:
+- unsupported Node runtime is a hard failure
+- unsupported Codex version or missing required app-server surface is a hard failure
+- missing writable state or config roots is a hard failure
+- missing local service-manager support is a warning only
+- the bridge must not enter the Telegram polling loop unless readiness is `ready` or `awaiting_authorization`
 
 If SQLite open or integrity check fails:
 1. rename the broken DB to `bridge.db.corrupt.<timestamp>`
@@ -247,6 +284,17 @@ System behavior:
 - attempt one child restart
 - degrade readiness if restart fails
 - preserve sessions
+
+## Doctor-Only Archive Drift Diagnostics
+
+`ctb doctor` may run an explicit archive drift scan when readiness is otherwise healthy.
+
+Rules:
+- local `session.archived` remains the Telegram UX source of truth
+- the scan compares local sessions with `threadId` against remote `thread/list` membership for both archived and visible threads
+- drift results are operator diagnostics only
+- the scan does not mutate local state
+- the scan does not auto-repair remote state
 
 ### `project path invalid`
 

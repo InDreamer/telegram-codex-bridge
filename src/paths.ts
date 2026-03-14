@@ -14,6 +14,7 @@ export interface BridgePaths {
   runtimeDir: string;
   cacheDir: string;
   dbPath: string;
+  stateStoreFailurePath: string;
   envPath: string;
   servicePath: string;
   launchAgentPath: string;
@@ -56,6 +57,7 @@ export function getBridgePaths(importMetaUrl: string, homeDir = homedir()): Brid
     runtimeDir,
     cacheDir,
     dbPath: join(stateRoot, "bridge.db"),
+    stateStoreFailurePath: join(stateRoot, "state-store-open-failure.json"),
     envPath: join(configRoot, "bridge.env"),
     servicePath: join(homeDir, ".config", "systemd", "user", "codex-telegram-bridge.service"),
     launchAgentPath: join(homeDir, "Library", "LaunchAgents", "com.codex.telegram-bridge.plist"),

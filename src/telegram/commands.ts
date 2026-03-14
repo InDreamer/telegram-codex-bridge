@@ -15,7 +15,7 @@ export const TELEGRAM_COMMANDS: TelegramCommandDefinition[] = [
   { command: "use", description: "按序号切换会话" },
   { command: "rename", description: "重命名当前会话" },
   { command: "pin", description: "收藏当前项目" },
-  { command: "where", description: "查看当前会话和项目" },
+  { command: "where", description: "查看当前会话、项目和定位 ID" },
   { command: "inspect", description: "查看当前任务详情" },
   { command: "interrupt", description: "停止当前正在执行的操作" },
   { command: "cancel", description: "取消手动输入路径并返回" }
@@ -41,7 +41,7 @@ export function buildHelpText(): string {
     "/use <序号> 切换到指定会话",
     "/rename <名称> 重命名当前会话",
     "/pin 收藏当前项目",
-    "/where 查看当前会话和项目",
+    "/where 查看当前会话、项目和定位 ID",
     "/inspect 查看当前任务详情",
     "/interrupt 停止当前正在执行的操作",
     "/cancel 取消手动输入路径并返回"

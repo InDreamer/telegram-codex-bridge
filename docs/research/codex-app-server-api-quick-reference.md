@@ -1,6 +1,6 @@
 # Codex App-Server API Quick Reference
 
-Last refreshed: 2026-03-12
+Last refreshed: 2026-03-14
 
 Version basis:
 - local host `codex-cli 0.114.0`
@@ -138,7 +138,7 @@ Handshake order:
 - Gotcha:
   - the top-level response shape is `thread`, not `data`
 - Repo status:
-  - not used directly today
+  - used today for `/inspect` history fallback
 
 ### `thread/fork`
 
@@ -159,7 +159,7 @@ Handshake order:
 - Required params:
   - `threadId`
 - Repo status:
-  - not used today
+  - used today to mirror Telegram archive actions to the remote thread
 
 ### `thread/unarchive`
 
@@ -168,7 +168,7 @@ Handshake order:
 - Required params:
   - `threadId`
 - Repo status:
-  - not used today
+  - used today to mirror Telegram unarchive actions to the remote thread
 
 ### `thread/name/set`
 
@@ -372,7 +372,10 @@ Experimental or platform-specific:
   - `threadId`
   - `status`
 - High-value fields:
-  - `activeFlags`
+  - `status.type`
+  - `status.activeFlags` when `status.type = active`
+- Shape note on `codex-cli 0.114.0`:
+  - current runtime notifications send `status` as a structured object such as `{ "type": "active", "activeFlags": [] }` or `{ "type": "idle" }`
 - Repo status:
   - used today
 
@@ -588,6 +591,9 @@ Used today by the bridge:
 - `thread/list`
 - `thread/start`
 - `thread/resume`
+- `thread/read`
+- `thread/archive`
+- `thread/unarchive`
 - `turn/start`
 - `turn/interrupt`
 - selected lifecycle and item notifications
@@ -596,10 +602,14 @@ Used today by the bridge:
 Not used today by the bridge, but present in current schema:
 - approvals and user-input request handling
 - `turn/steer`
-- thread archive and naming APIs
+- thread naming and other advanced thread-control APIs
 - realtime APIs
 - `command/exec`
 - review, skills, plugin, app, and MCP admin surfaces
+
+Important distinction:
+- these adoption notes describe what the current bridge implementation actually uses
+- they do not describe everything the current Codex protocol supports
 
 ## LLM Gotchas
 

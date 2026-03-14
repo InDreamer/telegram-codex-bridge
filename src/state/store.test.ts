@@ -1,19 +1,33 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import type { Logger } from "../logger.js";
 import type { BridgePaths } from "../paths.js";
-import { BridgeStateStore } from "./store.js";
+import { BridgeStateStore, StateStoreOpenError, readStateStoreFailure } from "./store.js";
 
 const testLogger: Logger = {
   info: async () => {},
   warn: async () => {},
   error: async () => {}
 };
+
+function createCapturingLogger() {
+  const errorEntries: Array<{ message: string; meta?: unknown }> = [];
+
+  const logger: Logger = {
+    info: async () => {},
+    warn: async () => {},
+    error: async (message: string, meta?: unknown) => {
+      errorEntries.push({ message, meta });
+    }
+  };
+
+  return { logger, errorEntries };
+}
 
 function createTestPaths(root: string): BridgePaths {
   const logsDir = join(root, "logs");
@@ -31,6 +45,7 @@ function createTestPaths(root: string): BridgePaths {
     runtimeDir,
     cacheDir: join(root, "cache"),
     dbPath: join(root, "state", "bridge.db"),
+    stateStoreFailurePath: join(root, "state", "state-store-open-failure.json"),
     envPath: join(root, "config", "bridge.env"),
     servicePath: join(root, "service", "bridge.service"),
     launchAgentPath: join(root, "LaunchAgents", "bridge.plist"),
@@ -238,6 +253,23 @@ async function seedLegacyStore(): Promise<{ paths: BridgePaths; cleanup: () => P
   };
 }
 
+async function createEmptyPaths(): Promise<{ paths: BridgePaths; cleanup: () => Promise<void> }> {
+  const root = await mkdtemp(join(tmpdir(), "ctb-store-empty-test-"));
+  const paths = createTestPaths(root);
+  await Promise.all([
+    mkdir(paths.stateRoot, { recursive: true }),
+    mkdir(paths.logsDir, { recursive: true }),
+    mkdir(paths.configRoot, { recursive: true })
+  ]);
+
+  return {
+    paths,
+    cleanup: async () => {
+      await rm(root, { recursive: true, force: true });
+    }
+  };
+}
+
 test("confirmPendingAuthorization migrates sessions, active session, and notices to rebound chat", async () => {
   const { store, cleanup } = await openStore();
 
@@ -297,6 +329,157 @@ test("confirmPendingAuthorization migrates sessions, active session, and notices
     assert.equal(notices[0]?.telegramChatId, "chat-new");
     assert.equal(store.listRuntimeNotices("chat-old").length, 0);
     assert.equal(store.countRuntimeNotices(), 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("open fails closed and writes a failure marker for obviously corrupt databases", async () => {
+  const { paths, cleanup } = await createEmptyPaths();
+  const { logger, errorEntries } = createCapturingLogger();
+
+  try {
+    await mkdir(paths.stateRoot, { recursive: true });
+    await writeFile(paths.dbPath, "not a sqlite database", "utf8");
+
+    await assert.rejects(
+      () => BridgeStateStore.open(paths, logger),
+      /state store open failed|file is not a database|sqlite/u
+    );
+
+    const marker = await readStateStoreFailure(paths);
+    assert.ok(marker);
+    assert.equal(marker?.classification, "integrity_failure");
+    assert.equal(marker?.dbPath, paths.dbPath);
+    const dbContent = await readFile(paths.dbPath, "utf8");
+    assert.equal(dbContent, "not a sqlite database");
+    assert.ok(errorEntries.some((entry) => entry.message === "state store open failed"));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("open writes a transient failure marker and does not rotate the database for transient integrity-check errors", async () => {
+  const { paths, cleanup } = await createEmptyPaths();
+  const { logger, errorEntries } = createCapturingLogger();
+  const db = new DatabaseSync(paths.dbPath);
+  db.exec("CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT)");
+  db.close();
+
+  const originalPrepare = DatabaseSync.prototype.prepare;
+  DatabaseSync.prototype.prepare = function patchedPrepare(sql: string) {
+    if (sql === "PRAGMA integrity_check") {
+      const error = new Error("database is locked");
+      (error as NodeJS.ErrnoException).code = "ERR_SQLITE_ERROR";
+      throw error;
+    }
+    return originalPrepare.call(this, sql);
+  };
+
+  try {
+    await assert.rejects(
+      () => BridgeStateStore.open(paths, logger),
+      /database is locked/u
+    );
+
+    const files = await import("node:fs/promises").then(({ readdir }) => readdir(paths.stateRoot));
+    assert.equal(files.some((name) => /^bridge\.db\.corrupt\./u.test(name)), false);
+    const marker = await readStateStoreFailure(paths);
+    assert.ok(marker);
+    assert.equal(marker?.classification, "transient_open_failure");
+    assert.ok(errorEntries.some((entry) => entry.message === "state store open failed"));
+  } finally {
+    DatabaseSync.prototype.prepare = originalPrepare;
+    await cleanup();
+  }
+});
+
+test("open writes a transient failure marker when ENOENT persists after the retry path", async () => {
+  const { paths, cleanup } = await createEmptyPaths();
+  const { logger } = createCapturingLogger();
+  const originalOpenInitializedStore = (BridgeStateStore as any).openInitializedStore;
+  const enoent = new Error("no such file or directory");
+  (enoent as NodeJS.ErrnoException).code = "ENOENT";
+
+  (BridgeStateStore as any).openInitializedStore = () => {
+    throw enoent;
+  };
+
+  try {
+    await assert.rejects(
+      () => BridgeStateStore.open(paths, logger),
+      (error: unknown) => {
+        assert.ok(error instanceof StateStoreOpenError);
+        assert.equal(error.failure.classification, "transient_open_failure");
+        assert.equal(error.failure.stage, "open_db");
+        return true;
+      }
+    );
+
+    const marker = await readStateStoreFailure(paths);
+    assert.ok(marker);
+    assert.equal(marker?.classification, "transient_open_failure");
+    assert.equal(marker?.stage, "open_db");
+  } finally {
+    (BridgeStateStore as any).openInitializedStore = originalOpenInitializedStore;
+    await cleanup();
+  }
+});
+
+test("open classifies malformed schema failures separately from integrity corruption", async () => {
+  const { paths, cleanup } = await createEmptyPaths();
+  const { logger } = createCapturingLogger();
+  const db = new DatabaseSync(paths.dbPath);
+  db.exec("CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT)");
+  db.close();
+
+  const originalPrepare = DatabaseSync.prototype.prepare;
+  DatabaseSync.prototype.prepare = function patchedPrepare(sql: string) {
+    if (sql === "PRAGMA integrity_check") {
+      throw new Error("malformed database schema (session)");
+    }
+    return originalPrepare.call(this, sql);
+  };
+
+  try {
+    await assert.rejects(
+      () => BridgeStateStore.open(paths, logger),
+      (error: unknown) => {
+        assert.ok(error instanceof StateStoreOpenError);
+        assert.equal(error.failure.classification, "schema_failure");
+        assert.equal(error.failure.stage, "verify_integrity");
+        return true;
+      }
+    );
+
+    const marker = await readStateStoreFailure(paths);
+    assert.ok(marker);
+    assert.equal(marker?.classification, "schema_failure");
+  } finally {
+    DatabaseSync.prototype.prepare = originalPrepare;
+    await cleanup();
+  }
+});
+
+test("open clears a stale state-store failure marker after a successful open", async () => {
+  const { paths, cleanup } = await createEmptyPaths();
+
+  try {
+    await writeFile(paths.stateStoreFailurePath, JSON.stringify({
+      detectedAt: "2026-03-14T08:00:00.000Z",
+      dbPath: paths.dbPath,
+      stage: "verify_integrity",
+      classification: "transient_open_failure",
+      error: "database is locked",
+      recommendedAction: "retry"
+    }, null, 2));
+
+    const store = await BridgeStateStore.open(paths, testLogger);
+    try {
+      assert.equal(await readStateStoreFailure(paths), null);
+    } finally {
+      store.close();
+    }
   } finally {
     await cleanup();
   }
@@ -530,6 +713,143 @@ test("getSessionByThreadId returns archived and visible sessions for diagnostics
     assert.equal(store.getSessionByThreadId("thread-visible")?.sessionId, visibleSession.sessionId);
     assert.equal(store.getSessionByThreadId("thread-archived")?.sessionId, archivedSession.sessionId);
     assert.equal(store.getSessionByThreadId("thread-missing"), null);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("saveFinalAnswerView keeps only the 50 most recent answers per chat", async () => {
+  const { store, cleanup } = await openStore();
+
+  try {
+    store.upsertPendingAuthorization({
+      telegramUserId: "user-final-answer-limit",
+      telegramChatId: "chat-final-answer-limit",
+      telegramUsername: "viewer",
+      displayName: "Viewer"
+    });
+    const [candidate] = store.listPendingAuthorizations();
+    assert.ok(candidate);
+    store.confirmPendingAuthorization(candidate);
+
+    const session = store.createSession({
+      telegramChatId: "chat-final-answer-limit",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    store.updateSessionThreadId(session.sessionId, "thread-final-answer-limit");
+
+    for (let index = 0; index < 55; index += 1) {
+      store.saveFinalAnswerView({
+        answerId: `answer-${index}`,
+        telegramChatId: "chat-final-answer-limit",
+        telegramMessageId: 1000 + index,
+        sessionId: session.sessionId,
+        threadId: "thread-final-answer-limit",
+        turnId: `turn-${index}`,
+        previewHtml: `<b>Preview ${index}</b>`,
+        pages: [`Page ${index}`]
+      });
+    }
+
+    const views = store.listFinalAnswerViews("chat-final-answer-limit");
+    assert.equal(views.length, 50);
+    assert.equal(views.at(0)?.answerId, "answer-54");
+    assert.equal(views.at(-1)?.answerId, "answer-5");
+    assert.equal(store.getFinalAnswerView("answer-0", "chat-final-answer-limit"), null);
+    assert.equal(store.getFinalAnswerView("answer-54", "chat-final-answer-limit")?.telegramMessageId, 1054);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("confirmPendingAuthorization migrates persisted final answers to the rebound chat", async () => {
+  const { store, cleanup } = await openStore();
+
+  try {
+    store.upsertPendingAuthorization({
+      telegramUserId: "user-final-answer-rebind",
+      telegramChatId: "chat-old-final-answer",
+      telegramUsername: "viewer_old",
+      displayName: "Viewer Old"
+    });
+    const [initialCandidate] = store.listPendingAuthorizations();
+    assert.ok(initialCandidate);
+    store.confirmPendingAuthorization(initialCandidate);
+
+    const session = store.createSession({
+      telegramChatId: "chat-old-final-answer",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    store.updateSessionThreadId(session.sessionId, "thread-final-answer-rebind");
+
+    store.saveFinalAnswerView({
+      answerId: "answer-rebind",
+      telegramChatId: "chat-old-final-answer",
+      telegramMessageId: 77,
+      sessionId: session.sessionId,
+      threadId: "thread-final-answer-rebind",
+      turnId: "turn-final-answer-rebind",
+      previewHtml: "<b>Preview</b>",
+      pages: ["Page 1", "Page 2"]
+    });
+
+    store.upsertPendingAuthorization({
+      telegramUserId: "user-final-answer-rebind",
+      telegramChatId: "chat-new-final-answer",
+      telegramUsername: "viewer_new",
+      displayName: "Viewer New"
+    });
+    const [rebindCandidate] = store.listPendingAuthorizations();
+    assert.ok(rebindCandidate);
+    store.confirmPendingAuthorization(rebindCandidate);
+
+    assert.equal(store.getFinalAnswerView("answer-rebind", "chat-old-final-answer"), null);
+    const migrated = store.getFinalAnswerView("answer-rebind", "chat-new-final-answer");
+    assert.ok(migrated);
+    assert.equal(migrated?.telegramChatId, "chat-new-final-answer");
+    assert.equal(migrated?.telegramMessageId, 77);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("clearAuthorization removes persisted final answers", async () => {
+  const { store, cleanup } = await openStore();
+
+  try {
+    store.upsertPendingAuthorization({
+      telegramUserId: "user-final-answer-clear",
+      telegramChatId: "chat-final-answer-clear",
+      telegramUsername: "viewer",
+      displayName: "Viewer"
+    });
+    const [candidate] = store.listPendingAuthorizations();
+    assert.ok(candidate);
+    store.confirmPendingAuthorization(candidate);
+
+    const session = store.createSession({
+      telegramChatId: "chat-final-answer-clear",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    store.updateSessionThreadId(session.sessionId, "thread-final-answer-clear");
+    store.saveFinalAnswerView({
+      answerId: "answer-clear",
+      telegramChatId: "chat-final-answer-clear",
+      telegramMessageId: 88,
+      sessionId: session.sessionId,
+      threadId: "thread-final-answer-clear",
+      turnId: "turn-final-answer-clear",
+      previewHtml: "<b>Preview</b>",
+      pages: ["Page 1"]
+    });
+
+    store.clearAuthorization();
+
+    assert.equal(store.listFinalAnswerViews("chat-final-answer-clear").length, 0);
+    assert.equal(store.getFinalAnswerView("answer-clear", "chat-final-answer-clear"), null);
   } finally {
     await cleanup();
   }

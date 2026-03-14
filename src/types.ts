@@ -23,11 +23,21 @@ export interface ReadinessDetails {
   telegramTokenValid: boolean;
   authorizedUserBound: boolean;
   issues: string[];
+  nodeVersion?: string;
+  nodeVersionSupported?: boolean;
   codexVersion?: string;
+  codexVersionSupported?: boolean;
   codexLoginStatus?: string;
   telegramBotUsername?: string;
   telegramBotId?: string;
   systemdAvailable?: boolean;
+  serviceManager?: "systemd" | "launchd" | "none";
+  serviceManagerHealth?: "ok" | "warning" | "error";
+  stateRootWritable?: boolean;
+  configRootWritable?: boolean;
+  installRootWritable?: boolean;
+  capabilityCheckPassed?: boolean;
+  capabilityCheckSource?: "cache" | "generated_schema" | "unknown";
 }
 
 export interface ReadinessSnapshot {
@@ -74,6 +84,18 @@ export interface RuntimeNotice {
   telegramChatId: string;
   type: "bridge_restart_recovery";
   message: string;
+  createdAt: string;
+}
+
+export interface FinalAnswerViewRow {
+  answerId: string;
+  telegramChatId: string;
+  telegramMessageId: number | null;
+  sessionId: string;
+  threadId: string;
+  turnId: string;
+  previewHtml: string;
+  pages: string[];
   createdAt: string;
 }
 

@@ -2,11 +2,18 @@ import { cp, chmod, readFile, rm, stat, unlink, writeFile } from "node:fs/promis
 import { join } from "node:path";
 
 import { loadConfig, withInstallOverrides, writeConfig, type BridgeConfig } from "./config.js";
+import { collectArchiveDriftDiagnostics } from "./archive-drift.js";
+import { CodexAppServerClient } from "./codex/app-server.js";
 import type { Logger } from "./logger.js";
 import { ensureBridgeDirectories, type BridgePaths } from "./paths.js";
 import { commandExists, runCommand, type CommandResult } from "./process.js";
 import { probeReadiness } from "./readiness.js";
-import { BridgeStateStore } from "./state/store.js";
+import {
+  BridgeStateStore,
+  StateStoreOpenError,
+  readStateStoreFailure,
+  type StateStoreFailureRecord
+} from "./state/store.js";
 import { TelegramApi } from "./telegram/api.js";
 import { syncTelegramCommands } from "./telegram/commands.js";
 import type { InstallManifest, PendingAuthorizationRow, ReadinessSnapshot } from "./types.js";
@@ -18,6 +25,26 @@ type CommandRunner = (
 ) => Promise<CommandResult>;
 
 type ServiceManager = "systemd" | "launchd" | "none";
+
+interface InstallDependencies {
+  detectServiceManager?: () => Promise<ServiceManager>;
+  runCommand?: typeof runCommand;
+  probeReadiness?: typeof probeReadiness;
+  createTelegramApi?: (token: string, baseUrl: string) => Pick<TelegramApi, "getMe" | "setMyCommands">;
+  syncTelegramCommands?: typeof syncTelegramCommands;
+  scanArchiveDrift?: (options: {
+    store: BridgeStateStore;
+    listThreads: Pick<CodexAppServerClient, "listThreads">["listThreads"];
+  }) => Promise<{
+    issues: Array<{
+      kind: string;
+      sessionId: string;
+      threadId: string;
+      projectName: string;
+      displayName: string;
+    }>;
+  }>;
+}
 
 const SERVICE_LABEL = "com.codex.telegram-bridge";
 
@@ -41,15 +68,47 @@ function formatSnapshot(snapshot: ReadinessSnapshot | null): string {
 
   const issueText =
     snapshot.details.issues.length === 0 ? "issues=none" : `issues=${snapshot.details.issues.join("; ")}`;
+  const formatOptionalBoolean = (value: boolean | undefined): string => {
+    if (value === undefined) {
+      return "unknown";
+    }
+
+    return value ? "true" : "false";
+  };
+  const formatOptionalValue = (value: string | undefined): string => value ?? "unknown";
   return [
     `readiness=${snapshot.state}`,
     `checked_at=${snapshot.checkedAt}`,
+    `node_version=${formatOptionalValue(snapshot.details.nodeVersion)}`,
+    `node_version_supported=${formatOptionalBoolean(snapshot.details.nodeVersionSupported)}`,
     `codex_installed=${snapshot.details.codexInstalled}`,
+    `codex_version=${formatOptionalValue(snapshot.details.codexVersion)}`,
+    `codex_version_supported=${formatOptionalBoolean(snapshot.details.codexVersionSupported)}`,
     `codex_authenticated=${snapshot.details.codexAuthenticated}`,
     `telegram_token_valid=${snapshot.details.telegramTokenValid}`,
     `app_server_available=${snapshot.details.appServerAvailable}`,
     `authorized_user_bound=${snapshot.details.authorizedUserBound}`,
+    `service_manager_health=${formatOptionalValue(snapshot.details.serviceManagerHealth)}`,
+    `state_root_writable=${formatOptionalBoolean(snapshot.details.stateRootWritable)}`,
+    `config_root_writable=${formatOptionalBoolean(snapshot.details.configRootWritable)}`,
+    `install_root_writable=${formatOptionalBoolean(snapshot.details.installRootWritable)}`,
+    `capability_check_passed=${formatOptionalBoolean(snapshot.details.capabilityCheckPassed)}`,
+    `capability_check_source=${formatOptionalValue(snapshot.details.capabilityCheckSource)}`,
     issueText
+  ].join("\n");
+}
+
+function formatStateStoreFailure(failure: StateStoreFailureRecord | null): string {
+  if (!failure) {
+    return "state_store_open=failed";
+  }
+
+  return [
+    "state_store_open=failed",
+    `state_store_failure_class=${failure.classification}`,
+    `state_store_failure_stage=${failure.stage}`,
+    `state_store_failure_at=${failure.detectedAt}`,
+    `state_store_failure_action=${failure.recommendedAction}`
   ].join("\n");
 }
 
@@ -332,8 +391,13 @@ export async function installBridge(
   overrides: {
     telegramBotToken?: string;
     codexBin?: string;
-  }
+  },
+  deps: InstallDependencies = {}
 ): Promise<void> {
+  const detectManager = deps.detectServiceManager ?? detectServiceManager;
+  const readinessProbe = deps.probeReadiness ?? probeReadiness;
+  const createTelegramApi = deps.createTelegramApi ?? ((token: string, baseUrl: string) => new TelegramApi(token, baseUrl));
+  const syncCommands = deps.syncTelegramCommands ?? syncTelegramCommands;
   await ensureBridgeDirectories(paths);
   const overrideConfig: Partial<BridgeConfig> = {};
   if (overrides.telegramBotToken) {
@@ -354,7 +418,7 @@ export async function installBridge(
   await writeConfig(paths, config);
   await writeInstallManifest(paths);
   await writeWrapperScript(paths);
-  const serviceManager = await detectServiceManager();
+  const serviceManager = await detectManager();
 
   if (serviceManager === "systemd") {
     await writeSystemdUnit(paths);
@@ -364,7 +428,7 @@ export async function installBridge(
 
   const store = await BridgeStateStore.open(paths, logger);
   try {
-    const { snapshot } = await probeReadiness({
+    const { snapshot } = await readinessProbe({
       config,
       store,
       paths,
@@ -376,8 +440,8 @@ export async function installBridge(
       throw new Error(formatSnapshot(snapshot));
     }
 
-    const telegramApi = new TelegramApi(config.telegramBotToken, config.telegramApiBaseUrl);
-    await syncTelegramCommands(telegramApi);
+    const telegramApi = createTelegramApi(config.telegramBotToken, config.telegramApiBaseUrl);
+    await syncCommands(telegramApi);
   } finally {
     store.close();
   }
@@ -392,10 +456,12 @@ export async function installBridge(
   }
 }
 
-export async function getStatus(paths: BridgePaths): Promise<string> {
+export async function getStatus(paths: BridgePaths, deps: InstallDependencies = {}): Promise<string> {
+  const detectManager = deps.detectServiceManager ?? detectServiceManager;
+  const run = deps.runCommand ?? runCommand;
   const manifest = await readInstallManifest(paths);
   const configExists = await pathExists(paths.envPath);
-  const serviceManager = await detectServiceManager();
+  const serviceManager = await detectManager();
   const serviceDefinitionPath = serviceManager === "launchd" ? paths.launchAgentPath : paths.servicePath;
   const serviceExists = await pathExists(serviceDefinitionPath);
   const systemdServiceExists = await pathExists(paths.servicePath);
@@ -408,7 +474,7 @@ export async function getStatus(paths: BridgePaths): Promise<string> {
 
   let serviceState = "unavailable";
   if (serviceManager === "systemd") {
-    const result = await runCommand("systemctl", [
+    const result = await run("systemctl", [
       "--user",
       "is-active",
       "codex-telegram-bridge.service"
@@ -421,23 +487,32 @@ export async function getStatus(paths: BridgePaths): Promise<string> {
   let snapshot: ReadinessSnapshot | null = null;
   let activeSessionSummary = "none";
   let pendingNotices = 0;
+  let stateStoreFailure: StateStoreFailureRecord | null = null;
+  let stateStoreOpen = await pathExists(paths.dbPath) ? "ok" : "missing";
   if (await pathExists(paths.dbPath)) {
-    const store = await BridgeStateStore.open(paths, {
-      info: async () => {},
-      warn: async () => {},
-      error: async () => {}
-    });
-    snapshot = store.getReadinessSnapshot();
-    pendingNotices = countPendingRuntimeNotices(store);
-    const binding = store.listChatBindings()[0];
-    const activeSession = binding?.activeSessionId ? store.getSessionById(binding.activeSessionId) : null;
-    if (activeSession) {
-      activeSessionSummary = `${activeSession.projectName}/${activeSession.displayName}/${activeSession.status}`;
+    try {
+      const store = await BridgeStateStore.open(paths, {
+        info: async () => {},
+        warn: async () => {},
+        error: async () => {}
+      });
+      snapshot = store.getReadinessSnapshot();
+      pendingNotices = countPendingRuntimeNotices(store);
+      const binding = store.listChatBindings()[0];
+      const activeSession = binding?.activeSessionId ? store.getSessionById(binding.activeSessionId) : null;
+      if (activeSession) {
+        activeSessionSummary = `${activeSession.projectName}/${activeSession.displayName}/${activeSession.status}`;
+      }
+      store.close();
+    } catch (error) {
+      stateStoreOpen = "failed";
+      stateStoreFailure = error instanceof StateStoreOpenError
+        ? error.failure
+        : await readStateStoreFailure(paths);
     }
-    store.close();
   }
 
-  return [
+  const lines = [
     `installed=${installExists}`,
     `install_root=${paths.installRoot}`,
     `state_root=${paths.stateRoot}`,
@@ -450,32 +525,76 @@ export async function getStatus(paths: BridgePaths): Promise<string> {
     `version=${manifest?.version ?? "unknown"}`,
     `installed_at=${manifest?.installedAt ?? "unknown"}`,
     `state_dir_present=${stateExists}`,
+    `state_store_open=${stateStoreOpen}`,
     `active_session=${activeSessionSummary}`,
     `pending_runtime_notices=${pendingNotices}`,
     formatSnapshot(snapshot)
-  ].join("\n");
+  ];
+
+  if (stateStoreOpen === "failed") {
+    lines.push(formatStateStoreFailure(stateStoreFailure).replace(/^state_store_open=failed\n?/u, ""));
+  }
+
+  return lines.filter((line) => line.length > 0).join("\n");
 }
 
-export async function runDoctor(paths: BridgePaths, logger: Logger): Promise<string> {
+export async function runDoctor(paths: BridgePaths, logger: Logger, deps: InstallDependencies = {}): Promise<string> {
+  const readinessProbe = deps.probeReadiness ?? probeReadiness;
+  const createTelegramApi = deps.createTelegramApi ?? ((token: string, baseUrl: string) => new TelegramApi(token, baseUrl));
+  const syncCommands = deps.syncTelegramCommands ?? syncTelegramCommands;
+  const scanArchiveDrift = deps.scanArchiveDrift ?? collectArchiveDriftDiagnostics;
   await ensureBridgeDirectories(paths);
-  const store = await BridgeStateStore.open(paths, logger);
+  let store: BridgeStateStore | null = null;
+  let appServer: CodexAppServerClient | null = null;
+  try {
+    store = await BridgeStateStore.open(paths, logger);
+  } catch (error) {
+    const failure = error instanceof StateStoreOpenError
+      ? error.failure
+      : await readStateStoreFailure(paths);
+    return formatStateStoreFailure(failure);
+  }
+
   try {
     const config = await loadConfig(paths);
-    const { snapshot } = await probeReadiness({
+    const result = await readinessProbe({
       config,
       store,
       paths,
       logger,
+      keepAppServer: true,
       persist: true
     });
+    const { snapshot } = result;
+    appServer = result.appServer;
     const pendingNoticeCount = countPendingRuntimeNotices(store);
     if (snapshot.details.telegramTokenValid) {
-      const telegramApi = new TelegramApi(config.telegramBotToken, config.telegramApiBaseUrl);
-      await syncTelegramCommands(telegramApi);
+      const telegramApi = createTelegramApi(config.telegramBotToken, config.telegramApiBaseUrl);
+      await syncCommands(telegramApi);
     }
-    return [formatSnapshot(snapshot), `pending_runtime_notices=${pendingNoticeCount}`].join("\n");
+    const lines = ["state_store_open=ok", formatSnapshot(snapshot), `pending_runtime_notices=${pendingNoticeCount}`];
+    if ((snapshot.state === "ready" || snapshot.state === "awaiting_authorization") && appServer) {
+      try {
+        const driftSummary = await scanArchiveDrift({
+          store,
+          listThreads: appServer.listThreads.bind(appServer)
+        });
+        lines.push(`archive_drift_count=${driftSummary.issues.length}`);
+        driftSummary.issues.forEach((issue, index) => {
+          lines.push(
+            `archive_drift_${index + 1}=${issue.kind} | session=${issue.sessionId} | thread=${issue.threadId} | project=${issue.projectName} | display=${issue.displayName}`
+          );
+        });
+      } catch (error) {
+        lines.push(`archive_drift_error=${error}`);
+      }
+    }
+    return lines.join("\n");
   } finally {
-    store.close();
+    if (appServer) {
+      await appServer.stop().catch(() => {});
+    }
+    store?.close();
   }
 }
 

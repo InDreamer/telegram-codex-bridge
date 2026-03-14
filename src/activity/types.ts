@@ -44,6 +44,7 @@ export type ActiveItemType =
   | "other";
 
 export type ThreadBlockedReason = "waitingOnApproval" | "waitingOnUserInput" | null;
+export type ThreadRuntimeState = "notLoaded" | "idle" | "active" | "systemError" | null;
 
 export type HighValueEventType = "ran_cmd" | "found" | "changed" | "blocked" | "done";
 
@@ -56,6 +57,7 @@ export type ActivityErrorState =
 
 export interface ActivityStatus {
   turnStatus: TurnStatus;
+  threadRuntimeState: ThreadRuntimeState;
   activeItemType: ActiveItemType | null;
   activeItemId: string | null;
   activeItemLabel: string | null;
@@ -137,7 +139,7 @@ export interface TurnCompletedNotification extends ClassifiedNotificationBase {
 
 export interface ThreadStatusChangedNotification extends ClassifiedNotificationBase {
   kind: "thread_status_changed";
-  status: string | null;
+  status: ThreadRuntimeState;
   activeFlags: string[];
 }
 

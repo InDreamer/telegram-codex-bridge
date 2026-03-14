@@ -622,6 +622,10 @@ The following topics are explicitly deferred to V3 or later unless product re-op
 4. richer UI surfaces beyond current Telegram-oriented interaction model
 5. any major expansion beyond structured activity visibility, session-management enhancement, and platform/stability completion
 
+Current V3 follow-up document:
+
+- `docs/future/v3-prd.md`
+
 ---
 
 ## 15. Final Product Summary

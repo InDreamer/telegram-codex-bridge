@@ -24,6 +24,7 @@ interface ActivityTrackerOptions {
 
 interface ActivityTrackerState {
   turnStatus: TurnStatus;
+  threadRuntimeState: ActivityStatus["threadRuntimeState"];
   activeItemType: ActiveItemType | null;
   activeItemId: string | null;
   activeItemLabel: string | null;
@@ -62,6 +63,7 @@ export class ActivityTracker {
     this.timelineLimit = options.timelineLimit ?? DEFAULT_TIMELINE_LIMIT;
     this.state = {
       turnStatus: "starting",
+      threadRuntimeState: null,
       activeItemType: null,
       activeItemId: null,
       activeItemLabel: null,
@@ -130,10 +132,11 @@ export class ActivityTracker {
 
       case "thread_status_changed": {
         const blockedReason = deriveBlockedReason(notification.activeFlags);
+        this.state.threadRuntimeState = notification.status;
         this.state.threadBlockedReason = blockedReason;
         this.state.lastActivityAt = receivedAt;
 
-        if (blockedReason || notification.status === "blocked") {
+        if (blockedReason) {
           this.state.turnStatus = "blocked";
           this.setHighValueEvent("blocked", `Blocked: ${blockedReason ?? "thread blocked"}`);
           this.pushStatusUpdate(
@@ -149,9 +152,9 @@ export class ActivityTracker {
               ? "Blocked: waiting for approval"
               : blockedReason === "waitingOnUserInput"
                 ? "Blocked: waiting for user input"
-                : "Blocked: thread blocked"
+              : "Blocked: thread blocked"
           });
-        } else if (!isTerminalStatus(this.state.turnStatus)) {
+        } else if (notification.status === "active" && !isTerminalStatus(this.state.turnStatus)) {
           this.state.turnStatus = "running";
         }
 
@@ -390,6 +393,7 @@ export class ActivityTracker {
   getStatus(now = new Date().toISOString()): ActivityStatus {
     return {
       turnStatus: this.state.turnStatus,
+      threadRuntimeState: this.state.threadRuntimeState,
       activeItemType: this.state.activeItemType,
       activeItemId: this.state.activeItemId,
       activeItemLabel: this.state.activeItemLabel,

@@ -3,10 +3,14 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
-import { buildLaunchAgentPlist, prepareRelease } from "./install.js";
+import { buildLaunchAgentPlist, getStatus, prepareRelease, runDoctor } from "./install.js";
+import type { Logger } from "./logger.js";
+import { BridgeStateStore } from "./state/store.js";
 import type { BridgePaths } from "./paths.js";
 import type { CommandResult } from "./process.js";
+import type { ReadinessSnapshot } from "./types.js";
 
 function createTestPaths(root: string): BridgePaths {
   const logsDir = join(root, "logs");
@@ -24,6 +28,7 @@ function createTestPaths(root: string): BridgePaths {
     runtimeDir,
     cacheDir: join(root, "cache"),
     dbPath: join(root, "state", "bridge.db"),
+    stateStoreFailurePath: join(root, "state", "state-store-open-failure.json"),
     envPath: join(root, "config", "bridge.env"),
     servicePath: join(root, "service", "bridge.service"),
     launchAgentPath: join(root, "LaunchAgents", "bridge.plist"),
@@ -79,6 +84,45 @@ function withEnvironment<T>(overrides: Record<string, string | undefined>, run: 
       }
     }
   });
+}
+
+const testLogger: Logger = {
+  info: async () => {},
+  warn: async () => {},
+  error: async () => {}
+};
+
+function createReadinessSnapshot(
+  overrides: Omit<Partial<ReadinessSnapshot>, "details"> & {
+    details?: Partial<ReadinessSnapshot["details"]>;
+  } = {}
+): ReadinessSnapshot {
+  const detailOverrides = (overrides.details ?? {}) as Partial<ReadinessSnapshot["details"]>;
+  return {
+    state: overrides.state ?? "ready",
+    checkedAt: overrides.checkedAt ?? "2026-03-14T10:00:00.000Z",
+    details: {
+      codexInstalled: true,
+      codexAuthenticated: true,
+      appServerAvailable: true,
+      telegramTokenValid: true,
+      authorizedUserBound: true,
+      issues: [],
+      nodeVersion: "v25.8.1",
+      nodeVersionSupported: true,
+      codexVersion: "codex-cli 0.114.0",
+      codexVersionSupported: true,
+      serviceManager: "none",
+      serviceManagerHealth: "warning",
+      stateRootWritable: true,
+      configRootWritable: true,
+      installRootWritable: true,
+      capabilityCheckPassed: true,
+      capabilityCheckSource: "cache",
+      ...detailOverrides
+    },
+    appServerPid: overrides.appServerPid ?? null
+  };
 }
 
 test("prepareRelease builds before copying dist into the install root", async () => {
@@ -196,6 +240,214 @@ test("buildLaunchAgentPlist keeps launchd passthrough env only and does not pin 
         assert.doesNotMatch(plist, /TELEGRAM_POLL_INTERVAL_MS/u);
       }
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("getStatus returns state-store failure diagnostics when the database cannot be opened", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctb-install-test-"));
+  const paths = createTestPaths(root);
+
+  try {
+    await Promise.all([
+      mkdir(paths.stateRoot, { recursive: true }),
+      mkdir(paths.logsDir, { recursive: true }),
+      mkdir(paths.configRoot, { recursive: true })
+    ]);
+    await writeFile(paths.dbPath, "not a sqlite database", "utf8");
+
+    const status = await getStatus(paths);
+
+    assert.match(status, /state_store_open=failed/u);
+    assert.match(status, /state_store_failure_class=integrity_failure/u);
+    assert.match(status, /state_store_failure_stage=/u);
+    assert.match(status, /state_store_failure_action=/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor returns state-store failure diagnostics instead of throwing when the database cannot be opened", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctb-install-test-"));
+  const paths = createTestPaths(root);
+
+  try {
+    await Promise.all([
+      mkdir(paths.stateRoot, { recursive: true }),
+      mkdir(paths.logsDir, { recursive: true }),
+      mkdir(paths.configRoot, { recursive: true })
+    ]);
+
+    const db = new DatabaseSync(paths.dbPath);
+    db.exec("CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT)");
+    db.close();
+
+    const originalPrepare = DatabaseSync.prototype.prepare;
+    DatabaseSync.prototype.prepare = function patchedPrepare(sql: string) {
+      if (sql === "PRAGMA integrity_check") {
+        const error = new Error("database is locked");
+        (error as NodeJS.ErrnoException).code = "ERR_SQLITE_ERROR";
+        throw error;
+      }
+      return originalPrepare.call(this, sql);
+    };
+
+    try {
+      const doctor = await runDoctor(paths, testLogger);
+      assert.match(doctor, /state_store_open=failed/u);
+      assert.match(doctor, /state_store_failure_class=transient_open_failure/u);
+      assert.match(doctor, /state_store_failure_action=/u);
+    } finally {
+      DatabaseSync.prototype.prepare = originalPrepare;
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("getStatus renders the expanded readiness summary fields", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctb-install-test-"));
+  const paths = createTestPaths(root);
+
+  try {
+    await Promise.all([
+      mkdir(paths.installRoot, { recursive: true }),
+      mkdir(paths.stateRoot, { recursive: true }),
+      mkdir(paths.logsDir, { recursive: true }),
+      mkdir(paths.configRoot, { recursive: true }),
+      mkdir(join(paths.servicePath, ".."), { recursive: true })
+    ]);
+    await writeFile(paths.manifestPath, JSON.stringify({
+      version: "0.1.0",
+      sourceRoot: null,
+      installedAt: "2026-03-14T09:00:00.000Z"
+    }, null, 2));
+    await writeFile(join(paths.installRoot, "dist", "cli.js"), "console.log('ok');\n", "utf8").catch(async () => {
+      await mkdir(join(paths.installRoot, "dist"), { recursive: true });
+      await writeFile(join(paths.installRoot, "dist", "cli.js"), "console.log('ok');\n", "utf8");
+    });
+    await mkdir(join(paths.binPath, ".."), { recursive: true });
+    await writeFile(paths.binPath, "#!/usr/bin/env bash\n", "utf8");
+    await writeFile(paths.envPath, "TELEGRAM_BOT_TOKEN=test-token\n", "utf8");
+
+    const store = await BridgeStateStore.open(paths, testLogger);
+    try {
+      store.writeReadinessSnapshot(createReadinessSnapshot({
+        details: {
+          issues: ["service manager warning: no supported service manager found"]
+        }
+      }));
+    } finally {
+      store.close();
+    }
+
+    const output = await getStatus(paths, {
+      detectServiceManager: async () => "none",
+      runCommand: async () => ({
+        exitCode: 1,
+        stdout: "",
+        stderr: ""
+      })
+    } as any);
+
+    assert.match(output, /node_version=v25\.8\.1/u);
+    assert.match(output, /node_version_supported=true/u);
+    assert.match(output, /codex_version=codex-cli 0\.114\.0/u);
+    assert.match(output, /codex_version_supported=true/u);
+    assert.match(output, /service_manager_health=warning/u);
+    assert.match(output, /capability_check_passed=true/u);
+    assert.match(output, /capability_check_source=cache/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor prints the expanded readiness matrix without syncing Telegram when the token is invalid", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctb-install-test-"));
+  const paths = createTestPaths(root);
+
+  try {
+    await Promise.all([
+      mkdir(paths.installRoot, { recursive: true }),
+      mkdir(paths.stateRoot, { recursive: true }),
+      mkdir(paths.logsDir, { recursive: true }),
+      mkdir(paths.configRoot, { recursive: true }),
+      mkdir(paths.cacheDir, { recursive: true })
+    ]);
+    await writeFile(paths.envPath, "TELEGRAM_BOT_TOKEN=test-token\n", "utf8");
+
+    const output = await runDoctor(paths, testLogger, {
+      probeReadiness: async () => ({
+        snapshot: createReadinessSnapshot({
+          state: "telegram_token_invalid",
+          details: {
+            telegramTokenValid: false,
+            issues: ["telegram rejected the configured token"]
+          }
+        }),
+        appServer: null
+      })
+    } as any);
+
+    assert.match(output, /readiness=telegram_token_invalid/u);
+    assert.match(output, /node_version=v25\.8\.1/u);
+    assert.match(output, /capability_check_passed=true/u);
+    assert.match(output, /issues=telegram rejected the configured token/u);
+    assert.match(output, /pending_runtime_notices=0/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runDoctor prints archive drift diagnostics when readiness is otherwise healthy", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctb-install-test-"));
+  const paths = createTestPaths(root);
+
+  try {
+    await Promise.all([
+      mkdir(paths.installRoot, { recursive: true }),
+      mkdir(paths.stateRoot, { recursive: true }),
+      mkdir(paths.logsDir, { recursive: true }),
+      mkdir(paths.configRoot, { recursive: true }),
+      mkdir(paths.cacheDir, { recursive: true })
+    ]);
+    await writeFile(paths.envPath, "TELEGRAM_BOT_TOKEN=test-token\n", "utf8");
+
+    const output = await runDoctor(paths, testLogger, {
+      probeReadiness: async () => ({
+        snapshot: createReadinessSnapshot(),
+        appServer: {
+          listThreads: async () => ({
+            data: [],
+            nextCursor: null
+          }),
+          stop: async () => {}
+        } as any
+      }),
+      createTelegramApi: () => ({
+        getMe: async () => ({
+          id: 1,
+          is_bot: true,
+          first_name: "Bridge",
+          username: "bridge_bot"
+        }),
+        setMyCommands: async () => {}
+      }),
+      syncTelegramCommands: async () => {},
+      scanArchiveDrift: async () => ({
+        issues: [{
+          kind: "remote_archived_local_visible",
+          sessionId: "session-1",
+          threadId: "thread-1",
+          projectName: "Project One",
+          displayName: "Session One"
+        }]
+      })
+    } as any);
+
+    assert.match(output, /archive_drift_count=1/u);
+    assert.match(output, /archive_drift_1=remote_archived_local_visible \| session=session-1 \| thread=thread-1/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

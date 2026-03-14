@@ -16,6 +16,9 @@ export interface RuntimeCommandEntryView {
   commandText: string;
   state: string;
   latestSummary?: string | null;
+  cwd?: string | null;
+  exitCode?: number | null;
+  durationMs?: number | null;
 }
 
 export type ParsedCallbackData =
@@ -25,7 +28,10 @@ export type ParsedCallbackData =
   | { kind: "path_back" }
   | { kind: "path_confirm"; projectKey: string }
   | { kind: "plan_expand"; sessionId: string }
-  | { kind: "plan_collapse"; sessionId: string };
+  | { kind: "plan_collapse"; sessionId: string }
+  | { kind: "final_open"; answerId: string }
+  | { kind: "final_close"; answerId: string }
+  | { kind: "final_page"; answerId: string; page: number };
 
 export function parseCommand(text: string): { name: string; args: string } | null {
   const trimmed = text.trim();
@@ -77,6 +83,18 @@ export function encodePlanCollapseCallback(sessionId: string): string {
   return `v1:plan:collapse:${sessionId}`;
 }
 
+export function encodeFinalAnswerOpenCallback(answerId: string): string {
+  return `v1:final:open:${answerId}`;
+}
+
+export function encodeFinalAnswerCloseCallback(answerId: string): string {
+  return `v1:final:close:${answerId}`;
+}
+
+export function encodeFinalAnswerPageCallback(answerId: string, page: number): string {
+  return `v1:final:page:${answerId}:${page}`;
+}
+
 export function parseCallbackData(data: string): ParsedCallbackData | null {
   const parts = data.split(":");
   if (parts[0] !== "v1") {
@@ -109,6 +127,21 @@ export function parseCallbackData(data: string): ParsedCallbackData | null {
 
   if (parts[1] === "plan" && parts[2] === "collapse" && parts[3]) {
     return { kind: "plan_collapse", sessionId: parts[3] };
+  }
+
+  if (parts[1] === "final" && parts[2] === "open" && parts[3]) {
+    return { kind: "final_open", answerId: parts[3] };
+  }
+
+  if (parts[1] === "final" && parts[2] === "close" && parts[3]) {
+    return { kind: "final_close", answerId: parts[3] };
+  }
+
+  if (parts[1] === "final" && parts[2] === "page" && parts[3] && parts[4]) {
+    const page = Number.parseInt(parts[4], 10);
+    if (Number.isFinite(page) && page >= 1) {
+      return { kind: "final_page", answerId: parts[3], page };
+    }
   }
 
   return null;
@@ -179,7 +212,11 @@ export function buildManualPathConfirmMessage(candidate: ProjectCandidate): {
   replyMarkup: TelegramInlineKeyboardMarkup;
 } {
   return {
-    text: `在这个项目中开始会话？\n项目：${candidate.projectName}\n路径：${candidate.projectPath}`,
+    text: [
+      "在这个项目中开始会话？",
+      formatHtmlField("项目：", candidate.projectName),
+      formatHtmlField("路径：", candidate.projectPath)
+    ].join("\n"),
     replyMarkup: {
       inline_keyboard: [
         [{ text: "确认进入项目", callback_data: encodePathConfirmCallback(candidate.projectKey) }],
@@ -221,13 +258,16 @@ export function buildStatusText(
     : "无";
 
   return [
-    "服务状态",
-    `桥接状态：${snapshot.state}`,
-    `Telegram 连通：${snapshot.details.telegramTokenValid ? "正常" : "异常"}`,
-    `Codex 可用：${snapshot.details.codexAuthenticated && snapshot.details.appServerAvailable ? "正常" : "异常"}`,
-    `当前会话：${activeSessionText}`,
-    `最近检查：${snapshot.checkedAt}`,
-    `问题：${issueText}`
+    formatHtmlHeading("服务状态"),
+    formatHtmlField("桥接状态：", snapshot.state),
+    formatHtmlField("Telegram 连通：", snapshot.details.telegramTokenValid ? "正常" : "异常"),
+    formatHtmlField(
+      "Codex 可用：",
+      snapshot.details.codexAuthenticated && snapshot.details.appServerAvailable ? "正常" : "异常"
+    ),
+    formatHtmlField("当前会话：", activeSessionText),
+    formatHtmlField("最近检查：", snapshot.checkedAt),
+    formatHtmlField("问题：", issueText)
   ].join("\n");
 }
 
@@ -237,16 +277,20 @@ export function buildWhereText(session: SessionRow | null): string {
   }
 
   const lines = [
-    "当前会话",
-    `会话名：${session.displayName}`,
-    `项目：${session.projectName}`,
-    `路径：${session.projectPath}`,
-    `状态：${formatSessionState(session)}`
+    formatHtmlHeading("当前会话"),
+    formatHtmlField("会话名：", session.displayName),
+    formatHtmlField("项目：", session.projectName),
+    formatHtmlField("路径：", session.projectPath),
+    formatHtmlField("状态：", formatSessionState(session))
   ];
+
+  lines.push(formatHtmlField("Bridge 会话 ID：", session.sessionId));
+  lines.push(formatHtmlField("Codex 线程 ID：", session.threadId ?? "尚未创建（首次发送任务后生成）"));
+  lines.push(formatHtmlField("最近 Turn ID：", session.lastTurnId ?? "暂无"));
 
   const lastTurnSummary = formatLastTurnSummary(session);
   if (lastTurnSummary) {
-    lines.push(`上次结果：${lastTurnSummary}`);
+    lines.push(formatHtmlField("上次结果：", lastTurnSummary));
   }
 
   return lines.join("\n");
@@ -280,7 +324,41 @@ export function buildSessionsText(options: {
 }
 
 export function buildProjectSelectedText(projectName: string): string {
-  return `当前项目：${projectName}`;
+  return formatHtmlField("当前项目：", projectName);
+}
+
+export function buildSessionSwitchedText(projectName: string): string {
+  return formatHtmlField("已切换到项目：", projectName);
+}
+
+export function buildArchiveSuccessText(
+  projectName: string,
+  nextActiveSession?: {
+    displayName: string;
+    projectName: string;
+  } | null
+): string {
+  const lines = [formatHtmlField("已归档当前会话：", projectName)];
+  if (nextActiveSession) {
+    lines.push(formatHtmlField("当前会话：", nextActiveSession.displayName));
+    lines.push(formatHtmlField("当前项目：", nextActiveSession.projectName));
+  } else {
+    lines.push("当前没有活动会话，请发送 /new 选择项目。");
+  }
+
+  return lines.join("\n");
+}
+
+export function buildUnarchiveSuccessText(projectName: string): string {
+  return formatHtmlField("已恢复会话：", projectName);
+}
+
+export function buildSessionRenamedText(name: string): string {
+  return formatHtmlField("当前会话已重命名为：", name);
+}
+
+export function buildProjectPinnedText(projectName: string): string {
+  return formatHtmlField("已收藏项目：", projectName);
 }
 
 export function buildUnsupportedCommandText(): string {
@@ -368,12 +446,12 @@ export function buildRuntimeErrorCard(
     detail?: string | null;
   }
 ): string {
-  const lines: string[] = ["Error"];
-  pushRuntimeCardContext(lines, options);
-  lines.push(`Title: ${truncateRuntimeCardText(options.title, 200)}`);
+  const lines: string[] = [formatHtmlHeading("Error")];
+  pushHtmlRuntimeCardContext(lines, options);
+  lines.push(formatHtmlField("Title:", truncateRuntimeCardText(options.title, 200)));
 
   if (options.detail) {
-    lines.push(`Detail: ${truncateRuntimeCardText(options.detail, 240)}`);
+    lines.push(formatHtmlField("Detail:", truncateRuntimeCardText(options.detail, 240)));
   }
 
   return lines.join("\n");
@@ -432,86 +510,82 @@ export function buildInspectText(
     sessionName?: string | null;
     projectName?: string | null;
     commands?: RuntimeCommandEntryView[];
+    note?: string | null;
   }
 ): string {
-  const lines = ["Task details"];
+  const lines = [formatHtmlHeading("当前任务详情")];
 
   if (options?.sessionName) {
-    lines.push(`Session: ${options.sessionName}`);
+    lines.push(formatHtmlField("会话：", options.sessionName));
   }
 
-  if (options?.projectName) {
-    lines.push(`Project: ${options.projectName}`);
+  if (options?.projectName && options.projectName !== options.sessionName) {
+    lines.push(formatHtmlField("项目：", options.projectName));
   }
 
-  lines.push(`Status: ${formatTurnStatus(snapshot.turnStatus)}`);
+  lines.push(formatHtmlField("状态：", formatInspectTurnStatus(snapshot.turnStatus)));
 
-  const blockedOn = formatBlockedReason(snapshot.threadBlockedReason);
+  const blockedOn = formatInspectBlockedReason(snapshot.threadBlockedReason);
   if (blockedOn) {
-    lines.push(`Blocked on: ${blockedOn}`);
+    lines.push(formatHtmlField("阻塞原因：", blockedOn));
   }
 
-  lines.push(`Current step: ${describeCurrentStep(snapshot)}`);
+  lines.push(formatHtmlField("当前动作：", describeInspectCurrentStep(snapshot)));
 
   if (snapshot.currentItemDurationSec !== null) {
-    lines.push(`Step elapsed: ${formatDuration(snapshot.currentItemDurationSec)}`);
+    lines.push(formatHtmlField("已耗时：", formatDuration(snapshot.currentItemDurationSec)));
   }
 
-  if (snapshot.recentStatusUpdates.length > 0) {
-    lines.push("Recent updates:");
-    lines.push(...snapshot.recentStatusUpdates.slice(-3).map((update) => `- ${update}`));
-  } else if (snapshot.latestProgress) {
-    lines.push(`Latest progress: ${snapshot.latestProgress}`);
-  }
-
-  const milestone = shouldShowMilestone(snapshot, snapshot.recentStatusUpdates.length > 0)
-    ? formatLatestMilestone(snapshot)
-    : null;
-  if (milestone) {
-    lines.push(`Latest milestone: ${milestone}`);
+  const conclusion = selectInspectConclusion(snapshot);
+  if (conclusion) {
+    lines.push(formatHtmlField("最近结论：", conclusion));
   }
 
   if (snapshot.finalMessageAvailable) {
-    lines.push("Final answer: ready");
+    lines.push(formatHtmlField("最终答复：", "已就绪"));
   }
 
-  lines.push("", "Recent activity");
-  if (snapshot.recentTransitions.length === 0) {
-    lines.push("- None");
-  } else {
-    snapshot.recentTransitions.slice(-5).forEach((transition, index) => {
-      lines.push(`${index + 1}. ${transition.summary}`);
-    });
+  if (options?.note) {
+    lines.push(formatHtmlField("说明：", options.note));
   }
 
-  lines.push("", "Commands");
-  lines.push(...formatInspectCommandSection(options?.commands ?? []));
-
-  lines.push("", "Recent file changes");
-  lines.push(...formatInspectSection(snapshot.recentFileChangeSummaries));
-
-  lines.push("", "Recent MCP activity");
-  lines.push(...formatInspectSection(snapshot.recentMcpSummaries));
-
-  lines.push("", "Recent web searches");
-  lines.push(...formatInspectSection(snapshot.recentWebSearches));
-
-  lines.push("", "Plan snapshot");
-  lines.push(...formatInspectSection(snapshot.planSnapshot));
-
-  if (snapshot.completedCommentary.length > 0) {
-    lines.push("", "Completed commentary");
-    lines.push(...formatInspectSection(snapshot.completedCommentary));
+  const timelineLines = formatInspectTimelineSection(snapshot.recentTransitions);
+  if (timelineLines.length > 0) {
+    lines.push("", formatHtmlHeading("最近动作"));
+    lines.push(...timelineLines);
   }
 
-  const notes: string[] = [];
-  if (options?.debugFilePath) {
-    notes.push(`Debug file: ${options.debugFilePath}`);
+  const commandLines = formatInspectCommandSection(options?.commands ?? [], snapshot.recentCommandSummaries);
+  if (commandLines.length > 0) {
+    lines.push("", formatHtmlHeading("最近命令"));
+    lines.push(...commandLines);
   }
 
-  if (notes.length > 0) {
-    lines.push("", "Notes");
-    lines.push(...formatInspectSection(notes));
+  const fileChangeLines = formatInspectSummarySection(snapshot.recentFileChangeSummaries);
+  if (fileChangeLines.length > 0) {
+    lines.push("", formatHtmlHeading("最近文件变更"));
+    lines.push(...fileChangeLines);
+  }
+
+  const toolLines = formatInspectSummarySection([
+    ...snapshot.recentMcpSummaries,
+    ...snapshot.recentWebSearches
+  ]);
+  if (toolLines.length > 0) {
+    lines.push("", formatHtmlHeading("最近工具与搜索"));
+    lines.push(...toolLines);
+  }
+
+  const planLines = formatInspectSummarySection(snapshot.planSnapshot);
+  if (planLines.length > 0) {
+    lines.push("", formatHtmlHeading("当前计划"));
+    lines.push(...planLines);
+  }
+
+  const commentaryLines = formatInspectSummarySection(snapshot.completedCommentary);
+  if (commentaryLines.length > 0) {
+    lines.push("", formatHtmlHeading("补充说明"));
+    lines.push(...commentaryLines);
   }
 
   return lines.join("\n");
@@ -591,20 +665,32 @@ function buildDetailedRuntimeCommandLines(
   index: number | null
 ): string[] {
   const prefix = index === null ? "" : `${index}. `;
-  const detailPrefix = index === null ? "" : "   ";
-  const lines = [`${prefix}Command: ${formatRuntimeCommandText(command.commandText)}`];
-  lines.push(`${detailPrefix}State: ${command.state}`);
+  const detailPrefix = index === null ? "" : "- ";
+  const lines = [`${prefix}${formatHtmlField("命令：", formatRuntimeCommandText(command.commandText))}`];
+  lines.push(`${detailPrefix}${formatHtmlField("状态：", formatInspectCommandState(command.state))}`);
 
   if (command.latestSummary) {
-    lines.push(`${detailPrefix}Output: ${truncateRuntimeCardText(command.latestSummary, 220)}`);
+    lines.push(`${detailPrefix}${formatHtmlField("结果：", truncateRuntimeCardText(command.latestSummary, 220))}`);
+  }
+
+  if (command.cwd) {
+    lines.push(`${detailPrefix}${formatHtmlField("目录：", truncateRuntimeCardText(command.cwd, 220))}`);
+  }
+
+  if (typeof command.exitCode === "number") {
+    lines.push(`${detailPrefix}${formatHtmlField("退出码：", `${command.exitCode}`)}`);
+  }
+
+  if (typeof command.durationMs === "number") {
+    lines.push(`${detailPrefix}${formatHtmlField("耗时：", formatCommandDuration(command.durationMs))}`);
   }
 
   return lines;
 }
 
-function formatInspectCommandSection(commands: RuntimeCommandEntryView[]): string[] {
+function formatInspectCommandSection(commands: RuntimeCommandEntryView[], fallbackSummaries: string[]): string[] {
   if (commands.length === 0) {
-    return ["- None"];
+    return formatInspectSummarySection(fallbackSummaries);
   }
 
   return commands.flatMap((command, index) => buildDetailedRuntimeCommandLines(command, index + 1));
@@ -666,12 +752,157 @@ function formatLastTurnSummary(session: SessionRow): string | null {
   }
 }
 
-function formatInspectSection(values: string[]): string[] {
-  if (values.length === 0) {
-    return ["- None"];
+function formatInspectSummarySection(values: string[]): string[] {
+  return values
+    .filter((value) => value.trim().length > 0)
+    .map((value) => formatHtmlListItem(value));
+}
+
+function formatInspectTimelineSection(transitions: InspectSnapshot["recentTransitions"]): string[] {
+  return transitions
+    .slice(-5)
+    .reverse()
+    .map((transition, index) => `${index + 1}. ${escapeHtml(`${formatRelativeTime(transition.at)}：${translateInspectSummary(transition.summary)}`)}`);
+}
+
+function formatHtmlHeading(text: string): string {
+  return `<b>${escapeHtml(text)}</b>`;
+}
+
+function formatHtmlFieldLabel(label: string): string {
+  return `<b>${escapeHtml(label)}</b>`;
+}
+
+function formatHtmlField(label: string, value: string): string {
+  return `${formatHtmlFieldLabel(label)} ${escapeHtml(value)}`;
+}
+
+function formatHtmlListItem(value: string): string {
+  return `- ${escapeHtml(value)}`;
+}
+
+function formatInspectTurnStatus(status: ActivityStatus["turnStatus"]): string {
+  switch (status) {
+    case "idle":
+      return "空闲";
+    case "starting":
+      return "准备中";
+    case "running":
+      return "执行中";
+    case "blocked":
+      return "等待中";
+    case "interrupted":
+      return "已中断";
+    case "completed":
+      return "已完成";
+    case "failed":
+      return "失败";
+    default:
+      return "未知";
+  }
+}
+
+function formatInspectCommandState(state: string): string {
+  switch (state.toLowerCase()) {
+    case "running":
+      return "进行中";
+    case "completed":
+      return "已完成";
+    case "failed":
+      return "失败";
+    case "interrupted":
+      return "已中断";
+    default:
+      return "未知";
+  }
+}
+
+function formatInspectBlockedReason(reason: ActivityStatus["threadBlockedReason"]): string | null {
+  switch (reason) {
+    case "waitingOnApproval":
+      return "等待批准";
+    case "waitingOnUserInput":
+      return "等待输入";
+    default:
+      return null;
+  }
+}
+
+function describeInspectCurrentStep(status: ActivityStatus): string {
+  if (status.threadBlockedReason === "waitingOnApproval") {
+    return "等待批准";
   }
 
-  return values.map((value) => `- ${value}`);
+  if (status.threadBlockedReason === "waitingOnUserInput") {
+    return "等待输入";
+  }
+
+  switch (status.activeItemType) {
+    case "planning":
+      return "正在更新计划";
+    case "commandExecution":
+      return appendSpecificLabel("正在运行命令", status.activeItemLabel, ["command"], "：");
+    case "fileChange":
+      return appendSpecificLabel("正在修改文件", status.activeItemLabel, ["file changes"], "：");
+    case "mcpToolCall":
+      return appendSpecificLabel("正在调用 MCP 工具", status.activeItemLabel, ["MCP tool call"], "：");
+    case "webSearch":
+      return appendSpecificLabel("正在进行网页搜索", status.activeItemLabel, ["web search"], "：");
+    case "agentMessage":
+      return appendSpecificLabel("正在整理回复", status.activeItemLabel, ["assistant response"], "：");
+    case "reasoning":
+      return "正在思考";
+    case "other":
+      return appendSpecificLabel("正在处理任务", status.activeItemLabel, ["work item", "other"], "：");
+    default:
+      return defaultInspectStepForStatus(status.turnStatus);
+  }
+}
+
+function selectInspectConclusion(status: ActivityStatus): string | null {
+  const latestUpdate = getLatestStatusUpdate(status);
+  if (latestUpdate) {
+    return latestUpdate;
+  }
+
+  if (status.latestProgress) {
+    return status.latestProgress;
+  }
+
+  return formatInspectMilestone(status);
+}
+
+function translateInspectSummary(summary: string): string {
+  if (summary === "turn started") {
+    return "开始执行";
+  }
+
+  const completedMatch = summary.match(/^turn completed \((.+)\)$/u);
+  if (completedMatch) {
+    return `执行结束（${formatInspectTurnStatus(mapCompletionWord(completedMatch[1] ?? "unknown"))}）`;
+  }
+
+  const blockedMatch = summary.match(/^thread blocked \((.+)\)$/u);
+  if (blockedMatch) {
+    return `线程阻塞（${translateBlockedToken(blockedMatch[1] ?? "")}）`;
+  }
+
+  const statusMatch = summary.match(/^thread status (.+)$/u);
+  if (statusMatch) {
+    return `线程状态：${translateThreadStatusToken(statusMatch[1] ?? "")}`;
+  }
+
+  const startedMatch = summary.match(/^(.+) started$/u);
+  if (startedMatch) {
+    return `开始：${startedMatch[1] ?? ""}`;
+  }
+
+  const itemCompletedMatch = summary.match(/^(.+) completed$/u);
+  if (itemCompletedMatch) {
+    return `完成：${itemCompletedMatch[1] ?? ""}`;
+  }
+
+  return summary;
 }
 
 function formatTurnStatus(status: ActivityStatus["turnStatus"]): string {
@@ -737,12 +968,12 @@ function describeCurrentStep(status: ActivityStatus): string {
   }
 }
 
-function appendSpecificLabel(base: string, label: string | null, genericLabels: string[]): string {
+function appendSpecificLabel(base: string, label: string | null, genericLabels: string[], separator = ": "): string {
   if (!label || genericLabels.includes(label)) {
     return base;
   }
 
-  return `${base}: ${label}`;
+  return `${base}${separator}${label}`;
 }
 
 function defaultStepForStatus(status: ActivityStatus["turnStatus"]): string {
@@ -766,6 +997,27 @@ function defaultStepForStatus(status: ActivityStatus["turnStatus"]): string {
   }
 }
 
+function defaultInspectStepForStatus(status: ActivityStatus["turnStatus"]): string {
+  switch (status) {
+    case "starting":
+      return "等待第一条活动";
+    case "running":
+      return "正在处理中";
+    case "blocked":
+      return "等待继续";
+    case "completed":
+      return "当前没有进行中的步骤";
+    case "interrupted":
+      return "已中断，没有进行中的步骤";
+    case "failed":
+      return "执行失败，没有进行中的步骤";
+    case "idle":
+      return "当前没有进行中的步骤";
+    default:
+      return "等待活动";
+  }
+}
+
 function formatLatestMilestone(status: ActivityStatus): string | null {
   if (!status.lastHighValueEventType || !status.lastHighValueTitle) {
     return null;
@@ -785,6 +1037,32 @@ function formatLatestMilestone(status: ActivityStatus): string | null {
   }
 
   return status.latestProgress === value ? null : value;
+}
+
+function formatInspectMilestone(status: ActivityStatus): string | null {
+  const title = status.lastHighValueTitle;
+  if (!title) {
+    return null;
+  }
+
+  switch (status.lastHighValueEventType) {
+    case "ran_cmd": {
+      const command = stripPrefix(title, "Ran cmd: ");
+      return status.lastHighValueDetail
+        ? `命令结果：${command} -> ${status.lastHighValueDetail}`
+        : `开始运行命令：${command}`;
+    }
+    case "changed":
+      return `文件变更：${status.lastHighValueDetail ?? stripPrefix(title, "Changed: ")}`;
+    case "found":
+      return `发现：${status.lastHighValueDetail ?? stripPrefix(title, "Found: ")}`;
+    case "blocked":
+      return `阻塞：${status.lastHighValueDetail ?? stripPrefix(title, "Blocked: ")}`;
+    case "done":
+      return status.lastHighValueDetail ? "最终答复已生成" : `执行结束：${stripPrefix(title, "Done: ")}`;
+    default:
+      return null;
+  }
 }
 
 function shouldShowMilestone(status: ActivityStatus, hasRecentUpdates: boolean): boolean {
@@ -845,6 +1123,55 @@ function formatDuration(seconds: number): string {
   return `${minutes}m ${remainder}s`;
 }
 
+function formatCommandDuration(durationMs: number): string {
+  if (durationMs < 1000) {
+    return `${durationMs}ms`;
+  }
+
+  const seconds = Math.round((durationMs / 1000) * 10) / 10;
+  return `${seconds}s`;
+}
+
+function mapCompletionWord(status: string): ActivityStatus["turnStatus"] {
+  switch (status) {
+    case "completed":
+      return "completed";
+    case "interrupted":
+      return "interrupted";
+    case "failed":
+    case "error":
+      return "failed";
+    default:
+      return "unknown";
+  }
+}
+
+function translateBlockedToken(token: string): string {
+  switch (token) {
+    case "waitingOnApproval":
+      return "等待批准";
+    case "waitingOnUserInput":
+      return "等待输入";
+    default:
+      return token;
+  }
+}
+
+function translateThreadStatusToken(token: string): string {
+  switch (token) {
+    case "notLoaded":
+      return "未加载";
+    case "idle":
+      return "空闲";
+    case "active":
+      return "活跃";
+    case "systemError":
+      return "系统错误";
+    default:
+      return token;
+  }
+}
+
 type FinalAnswerBlock =
   | { kind: "heading"; text: string }
   | { kind: "paragraph"; text: string }
@@ -853,8 +1180,22 @@ type FinalAnswerBlock =
   | { kind: "code"; text: string; language: string | null };
 
 const FINAL_ANSWER_CONTINUATION_PREFIX_BUDGET = 12;
+const FINAL_ANSWER_PREVIEW_MAX_CHARS = 350;
+const FINAL_ANSWER_PREVIEW_MAX_BLOCKS = 3;
 
-export function renderFinalAnswerHtmlChunks(markdown: string, maxChars: number): string[] {
+export interface FinalAnswerViewRender {
+  previewHtml: string;
+  pages: string[];
+  truncated: boolean;
+}
+
+export function renderFinalAnswerHtmlChunks(
+  markdown: string,
+  maxChars: number,
+  options?: {
+    prefixContinuations?: boolean;
+  }
+): string[] {
   const safeLimit = Math.max(1, maxChars - FINAL_ANSWER_CONTINUATION_PREFIX_BUDGET);
   // Render block-by-block first so continuation chunks never cut through HTML tags or fenced code blocks.
   const blocks = parseFinalAnswerBlocks(markdown)
@@ -888,6 +1229,10 @@ export function renderFinalAnswerHtmlChunks(markdown: string, maxChars: number):
     chunks.push(currentChunk);
   }
 
+  if (options?.prefixContinuations === false) {
+    return chunks;
+  }
+
   return chunks.map((chunk, index) => {
     if (index === 0) {
       return chunk;
@@ -895,6 +1240,72 @@ export function renderFinalAnswerHtmlChunks(markdown: string, maxChars: number):
 
     return `(${index + 1}/${chunks.length}) ${chunk}`;
   });
+}
+
+export function buildCollapsibleFinalAnswerView(markdown: string): FinalAnswerViewRender {
+  const rawPages = renderFinalAnswerHtmlChunks(markdown, 3000, { prefixContinuations: false });
+  const pages = rawPages.map((page, index) =>
+    rawPages.length > 1 ? `<i>第 ${index + 1}/${rawPages.length} 页</i>\n\n${page}` : page
+  );
+  const preview = renderCollapsedFinalAnswerPreview(markdown);
+
+  if (!preview.truncated) {
+    return {
+      previewHtml: pages[0] ?? escapeHtml(markdown),
+      pages,
+      truncated: false
+    };
+  }
+
+  const note = rawPages.length > 1
+    ? `已折叠，共 ${rawPages.length} 页，点击“展开全文”查看。`
+    : "已折叠，点击“展开全文”查看剩余内容。";
+
+  return {
+    previewHtml: `${preview.html}\n\n<i>${escapeHtml(note)}</i>`,
+    pages,
+    truncated: true
+  };
+}
+
+export function buildFinalAnswerReplyMarkup(options: {
+  answerId: string;
+  totalPages: number;
+  expanded: boolean;
+  currentPage?: number;
+}): TelegramInlineKeyboardMarkup {
+  if (!options.expanded) {
+    return {
+      inline_keyboard: [[{
+        text: "展开全文",
+        callback_data: encodeFinalAnswerOpenCallback(options.answerId)
+      }]]
+    };
+  }
+
+  const buttons: Array<{ text: string; callback_data: string }> = [];
+  if (options.totalPages > 1 && options.currentPage && options.currentPage > 1) {
+    buttons.push({
+      text: "上一页",
+      callback_data: encodeFinalAnswerPageCallback(options.answerId, options.currentPage - 1)
+    });
+  }
+
+  if (options.totalPages > 1 && options.currentPage && options.currentPage < options.totalPages) {
+    buttons.push({
+      text: "下一页",
+      callback_data: encodeFinalAnswerPageCallback(options.answerId, options.currentPage + 1)
+    });
+  }
+
+  buttons.push({
+    text: "收起",
+    callback_data: encodeFinalAnswerCloseCallback(options.answerId)
+  });
+
+  return {
+    inline_keyboard: [buttons]
+  };
 }
 
 const STREAM_CHAR_LIMIT = 4000;
@@ -960,6 +1371,7 @@ function parseFinalAnswerBlocks(markdown: string): FinalAnswerBlock[] {
 
     if (/^[-*+]\s+/u.test(trimmedLine) || /^\d+\.\s+/u.test(trimmedLine)) {
       const ordered = /^\d+\.\s+/u.test(trimmedLine);
+      const orderedStartMatch = ordered ? trimmedLine.match(/^(\d+)\.\s+/u) : null;
       const items: string[] = [];
       while (index < lines.length) {
         const candidateRaw = lines[index] ?? "";
@@ -990,7 +1402,7 @@ function parseFinalAnswerBlocks(markdown: string): FinalAnswerBlock[] {
         kind: "list",
         items,
         ordered,
-        startIndex: 1
+        startIndex: orderedStartMatch ? Number.parseInt(orderedStartMatch[1] ?? "1", 10) : 1
       });
       continue;
     }
@@ -1187,6 +1599,43 @@ function splitLongText(text: string, maxChars: number): string[] {
   }
 
   return parts;
+}
+
+function renderCollapsedFinalAnswerPreview(markdown: string): { html: string; truncated: boolean } {
+  const blocks = parseFinalAnswerBlocks(markdown)
+    .flatMap((block) => splitFinalAnswerBlock(block, FINAL_ANSWER_PREVIEW_MAX_CHARS));
+
+  if (blocks.length === 0) {
+    const fallback = escapeHtml(markdown);
+    return { html: fallback, truncated: false };
+  }
+
+  const selected: FinalAnswerBlock[] = [];
+  let currentLength = 0;
+
+  for (const block of blocks) {
+    const rendered = renderFinalAnswerBlock(block);
+    const nextLength = selected.length === 0 ? rendered.length : currentLength + 2 + rendered.length;
+
+    if (selected.length === 0) {
+      selected.push(block);
+      currentLength = rendered.length;
+      continue;
+    }
+
+    if (selected.length >= FINAL_ANSWER_PREVIEW_MAX_BLOCKS || nextLength > FINAL_ANSWER_PREVIEW_MAX_CHARS) {
+      break;
+    }
+
+    selected.push(block);
+    currentLength = nextLength;
+  }
+
+  const html = selected.map((block) => renderFinalAnswerBlock(block)).join("\n\n");
+  return {
+    html,
+    truncated: selected.length < blocks.length
+  };
 }
 
 function renderFinalAnswerBlock(block: FinalAnswerBlock): string {

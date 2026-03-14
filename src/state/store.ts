@@ -1,6 +1,7 @@
-import { rename } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { dirname } from "node:path";
 
 import type { Logger } from "../logger.js";
 import type { BridgePaths } from "../paths.js";
@@ -8,6 +9,7 @@ import type {
   AuthorizedUserRow,
   ChatBindingRow,
   FailureReason,
+  FinalAnswerViewRow,
   PendingAuthorizationRow,
   ProjectScanCacheRow,
   ReadinessSnapshot,
@@ -20,6 +22,36 @@ import type {
 } from "../types.js";
 
 const PENDING_AUTH_TTL_MS = 24 * 60 * 60 * 1000;
+
+export type StateStoreOpenStage =
+  | "open_db"
+  | "initialize_schema"
+  | "verify_integrity"
+  | "normalize_active_sessions";
+
+export type StateStoreFailureClassification =
+  | "transient_open_failure"
+  | "integrity_failure"
+  | "schema_failure";
+
+export interface StateStoreFailureRecord {
+  detectedAt: string;
+  dbPath: string;
+  stage: StateStoreOpenStage;
+  classification: StateStoreFailureClassification;
+  error: string;
+  recommendedAction: string;
+}
+
+export class StateStoreOpenError extends Error {
+  readonly failure: StateStoreFailureRecord;
+
+  constructor(failure: StateStoreFailureRecord) {
+    super(`state store open failed (${failure.classification} at ${failure.stage}): ${failure.error}`);
+    this.name = "StateStoreOpenError";
+    this.failure = failure;
+  }
+}
 
 interface PendingAuthorizationRecord {
   telegram_user_id: string;
@@ -102,6 +134,18 @@ interface RuntimeNoticeRecord {
   telegram_chat_id: string;
   type: "bridge_restart_recovery";
   message: string;
+  created_at: string;
+}
+
+interface FinalAnswerViewRecord {
+  answer_id: string;
+  telegram_chat_id: string;
+  telegram_message_id: number | null;
+  session_id: string;
+  thread_id: string;
+  turn_id: string;
+  preview_html: string;
+  pages_json: string;
   created_at: string;
 }
 
@@ -207,6 +251,20 @@ function mapRuntimeNotice(record: RuntimeNoticeRecord): RuntimeNotice {
   };
 }
 
+function mapFinalAnswerView(record: FinalAnswerViewRecord): FinalAnswerViewRow {
+  return {
+    answerId: record.answer_id,
+    telegramChatId: record.telegram_chat_id,
+    telegramMessageId: record.telegram_message_id,
+    sessionId: record.session_id,
+    threadId: record.thread_id,
+    turnId: record.turn_id,
+    previewHtml: record.preview_html,
+    pages: JSON.parse(record.pages_json) as string[],
+    createdAt: record.created_at
+  };
+}
+
 function choosePreferredActiveSessionId(bindings: ChatBindingRecord[]): string | null {
   const preferred = bindings
     .filter((binding) => binding.active_session_id !== null)
@@ -300,15 +358,30 @@ function initialSchema(): string {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS final_answer_view (
+      answer_id TEXT PRIMARY KEY,
+      telegram_chat_id TEXT NOT NULL,
+      telegram_message_id INTEGER NULL,
+      session_id TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      preview_html TEXT NOT NULL,
+      pages_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_pending_authorization_last_seen
       ON pending_authorization(last_seen_at DESC);
 
     CREATE INDEX IF NOT EXISTS idx_session_chat_id
       ON session(telegram_chat_id);
+
+    CREATE INDEX IF NOT EXISTS idx_final_answer_view_chat_created_at
+      ON final_answer_view(telegram_chat_id, created_at DESC);
   `;
 }
 
-const CURRENT_SCHEMA_VERSION = 2;
+const CURRENT_SCHEMA_VERSION = 3;
 
 function listColumns(db: DatabaseSync, tableName: string): string[] {
   const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
@@ -365,6 +438,32 @@ function applyMigrations(db: DatabaseSync): void {
 
     recordMigration(db, 2);
   }
+
+  if (!applied.has(3)) {
+    db.exec(
+      `
+        CREATE TABLE IF NOT EXISTS final_answer_view (
+          answer_id TEXT PRIMARY KEY,
+          telegram_chat_id TEXT NOT NULL,
+          telegram_message_id INTEGER NULL,
+          session_id TEXT NOT NULL,
+          thread_id TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          preview_html TEXT NOT NULL,
+          pages_json TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        )
+      `
+    );
+    db.exec(
+      `
+        CREATE INDEX IF NOT EXISTS idx_final_answer_view_chat_created_at
+          ON final_answer_view(telegram_chat_id, created_at DESC)
+      `
+    );
+
+    recordMigration(db, 3);
+  }
 }
 
 function resolveSessionListOptions(limitOrOptions?: number | { archived?: boolean; limit?: number }): {
@@ -392,60 +491,55 @@ export class BridgeStateStore {
   ) {}
 
   static async open(paths: BridgePaths, logger: Logger): Promise<BridgeStateStore> {
-    let recoveredFromCorruption = false;
-    let dbPath = paths.dbPath;
-
     try {
-      const db = new DatabaseSync(dbPath);
-      initializeDatabase(db);
-      verifyIntegrity(db);
-      const store = new BridgeStateStore(db, logger, recoveredFromCorruption);
-      store.normalizeAllActiveSessions();
+      const store = this.openInitializedStore(paths.dbPath, logger, false);
+      await clearStateStoreFailure(paths);
       return store;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT") {
-        const db = new DatabaseSync(dbPath);
-        initializeDatabase(db);
-        const store = new BridgeStateStore(db, logger, recoveredFromCorruption);
-        store.normalizeAllActiveSessions();
-        return store;
-      }
-
-      recoveredFromCorruption = true;
-      const corruptPath = `${dbPath}.corrupt.${new Date().toISOString().replaceAll(":", "-")}`;
-
-      try {
-        await rename(dbPath, corruptPath);
-      } catch {
-        await logger.error("failed to rotate corrupt database", { dbPath, corruptPath });
-      }
-
-      await logger.error("state store corruption detected; created fresh database", {
-        dbPath,
-        corruptPath,
-        error: `${error}`
-      });
-
-      dbPath = paths.dbPath;
-      const db = new DatabaseSync(dbPath);
-      initializeDatabase(db);
-      const store = new BridgeStateStore(db, logger, recoveredFromCorruption);
-      store.normalizeAllActiveSessions();
-      store.writeReadinessSnapshot({
-        state: "bridge_unhealthy",
-        checkedAt: nowIso(),
-        appServerPid: null,
-        details: {
-          codexInstalled: false,
-          codexAuthenticated: false,
-          appServerAvailable: false,
-          telegramTokenValid: false,
-          authorizedUserBound: false,
-          issues: ["state store corruption recovered"]
+        try {
+          // First-run installs may be missing the state directory even though creating a new DB is safe.
+          await mkdir(dirname(paths.dbPath), { recursive: true });
+          const store = this.openInitializedStore(paths.dbPath, logger, false);
+          await clearStateStoreFailure(paths);
+          return store;
+        } catch (retryError) {
+          const failure = buildStateStoreFailure(paths.dbPath, getFailureStage(retryError), retryError);
+          await writeStateStoreFailure(paths, failure);
+          await logger.error("state store open failed", { ...failure });
+          throw new StateStoreOpenError(failure);
         }
-      });
+      }
+
+      // Any non-ENOENT failure must preserve the existing database and stop the service cold.
+      const failure = buildStateStoreFailure(paths.dbPath, getFailureStage(error), error);
+      await writeStateStoreFailure(paths, failure);
+      await logger.error("state store open failed", { ...failure });
+      throw new StateStoreOpenError(failure);
+    }
+  }
+
+  private static openInitializedStore(
+    dbPath: string,
+    logger: Logger,
+    recoveredFromCorruption: boolean
+  ): BridgeStateStore {
+    const db = withFailureStage("open_db", () => new DatabaseSync(dbPath));
+
+    try {
+      withFailureStage("initialize_schema", () => initializeDatabase(db));
+      withFailureStage("verify_integrity", () => verifyIntegrity(db));
+      const store = new BridgeStateStore(db, logger, recoveredFromCorruption);
+      withFailureStage("normalize_active_sessions", () => store.normalizeAllActiveSessions());
       return store;
+    } catch (error) {
+      try {
+        db.close();
+      } catch {
+        // Ignore close failures while surfacing the original open error.
+      }
+      throw error;
     }
   }
 
@@ -603,6 +697,16 @@ export class BridgeStateStore {
         this.db
           .prepare(
             `
+              UPDATE final_answer_view
+              SET telegram_chat_id = ?
+              WHERE telegram_chat_id IN (${placeholders})
+            `
+          )
+          .run(candidate.telegramChatId, ...previousChatIds);
+
+        this.db
+          .prepare(
+            `
               DELETE FROM chat_binding
               WHERE telegram_user_id = ?
             `
@@ -671,6 +775,7 @@ export class BridgeStateStore {
       this.db.prepare("DELETE FROM authorized_user").run();
       this.db.prepare("DELETE FROM chat_binding").run();
       this.db.prepare("DELETE FROM pending_authorization").run();
+      this.db.prepare("DELETE FROM final_answer_view").run();
 
       if (previousSnapshot) {
         this.writeReadinessSnapshot({
@@ -797,6 +902,21 @@ export class BridgeStateStore {
       .get(threadId) as SessionRecord | undefined;
 
     return row ? mapSession(row) : null;
+  }
+
+  listSessionsWithThreads(): SessionRow[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM session
+          WHERE thread_id IS NOT NULL
+          ORDER BY last_used_at DESC, created_at DESC
+        `
+      )
+      .all() as unknown as SessionRecord[];
+
+    return rows.map(mapSession);
   }
 
   getActiveSession(telegramChatId: string): SessionRow | null {
@@ -1367,6 +1487,125 @@ export class BridgeStateStore {
     return rows.map((row) => row.telegram_chat_id);
   }
 
+  saveFinalAnswerView(options: {
+    answerId?: string;
+    telegramChatId: string;
+    telegramMessageId?: number | null;
+    sessionId: string;
+    threadId: string;
+    turnId: string;
+    previewHtml: string;
+    pages: string[];
+  }): FinalAnswerViewRow {
+    const answerId = options.answerId ?? randomUUID();
+    const createdAt = nowIso();
+
+    this.db.exec("BEGIN");
+
+    try {
+      this.db
+        .prepare(
+          `
+            INSERT OR REPLACE INTO final_answer_view (
+              answer_id,
+              telegram_chat_id,
+              telegram_message_id,
+              session_id,
+              thread_id,
+              turn_id,
+              preview_html,
+              pages_json,
+              created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `
+        )
+        .run(
+          answerId,
+          options.telegramChatId,
+          options.telegramMessageId ?? null,
+          options.sessionId,
+          options.threadId,
+          options.turnId,
+          options.previewHtml,
+          JSON.stringify(options.pages),
+          createdAt
+        );
+
+      this.db
+        .prepare(
+          `
+            DELETE FROM final_answer_view
+            WHERE answer_id IN (
+              SELECT answer_id
+              FROM final_answer_view
+              WHERE telegram_chat_id = ?
+              ORDER BY created_at DESC, answer_id DESC
+              LIMIT -1 OFFSET 50
+            )
+          `
+        )
+        .run(options.telegramChatId);
+
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+
+    const saved = this.getFinalAnswerView(answerId, options.telegramChatId);
+    if (!saved) {
+      throw new Error(`persisted final answer view missing after save: ${answerId}`);
+    }
+
+    return saved;
+  }
+
+  getFinalAnswerView(answerId: string, telegramChatId: string): FinalAnswerViewRow | null {
+    const row = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM final_answer_view
+          WHERE answer_id = ? AND telegram_chat_id = ?
+        `
+      )
+      .get(answerId, telegramChatId) as FinalAnswerViewRecord | undefined;
+
+    return row ? mapFinalAnswerView(row) : null;
+  }
+
+  listFinalAnswerViews(telegramChatId: string): FinalAnswerViewRow[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM final_answer_view
+          WHERE telegram_chat_id = ?
+          ORDER BY created_at DESC, answer_id DESC
+        `
+      )
+      .all(telegramChatId) as unknown as FinalAnswerViewRecord[];
+
+    return rows.map(mapFinalAnswerView);
+  }
+
+  setFinalAnswerMessageId(answerId: string, telegramMessageId: number): void {
+    this.db
+      .prepare(
+        `
+          UPDATE final_answer_view
+          SET telegram_message_id = ?
+          WHERE answer_id = ?
+        `
+      )
+      .run(telegramMessageId, answerId);
+  }
+
+  deleteFinalAnswerView(answerId: string): void {
+    this.db.prepare("DELETE FROM final_answer_view WHERE answer_id = ?").run(answerId);
+  }
+
   writeReadinessSnapshot(snapshot: ReadinessSnapshot): void {
     this.db
       .prepare(
@@ -1429,5 +1668,102 @@ function verifyIntegrity(db: DatabaseSync): void {
   const result = db.prepare("PRAGMA integrity_check").get() as { integrity_check: string };
   if (result.integrity_check !== "ok") {
     throw new Error(`sqlite integrity check failed: ${result.integrity_check}`);
+  }
+}
+
+function isCorruptionLikeError(error: unknown): boolean {
+  const message = `${error}`.toLowerCase();
+  return message.includes("sqlite integrity check failed")
+    || message.includes("database disk image is malformed")
+    || message.includes("file is not a database");
+}
+
+function isSchemaLikeError(error: unknown): boolean {
+  const message = `${error}`.toLowerCase();
+  return message.includes("schema migrations incomplete")
+    || message.includes("malformed database schema")
+    || message.includes("no such table")
+    || message.includes("no such column")
+    || message.includes("table ") && message.includes("already exists");
+}
+
+function recommendedActionForClassification(classification: StateStoreFailureClassification): string {
+  switch (classification) {
+    case "integrity_failure":
+      return "Do not replace the database. Copy bridge.db for offline inspection, run integrity_check manually, and restore from a known-good backup if needed.";
+    case "schema_failure":
+      return "Do not replace the database. Inspect migration/state-store logs, verify the running binary version, and fix the schema issue before restarting.";
+    case "transient_open_failure":
+    default:
+      return "Retry service start after checking for transient filesystem or locking issues. Do not rotate or delete the database.";
+  }
+}
+
+function classifyStateStoreFailure(error: unknown): StateStoreFailureClassification {
+  if (isSchemaLikeError(error)) {
+    return "schema_failure";
+  }
+
+  if (isCorruptionLikeError(error)) {
+    return "integrity_failure";
+  }
+
+  return "transient_open_failure";
+}
+
+function getFailureStage(error: unknown): StateStoreOpenStage {
+  const stage = (error as { stateStoreOpenStage?: StateStoreOpenStage }).stateStoreOpenStage;
+  return stage ?? "open_db";
+}
+
+function withFailureStage<T>(stage: StateStoreOpenStage, operation: () => T): T {
+  try {
+    return operation();
+  } catch (error) {
+    (error as { stateStoreOpenStage?: StateStoreOpenStage }).stateStoreOpenStage = stage;
+    throw error;
+  }
+}
+
+function buildStateStoreFailure(
+  dbPath: string,
+  stage: StateStoreOpenStage,
+  error: unknown
+): StateStoreFailureRecord {
+  const classification = classifyStateStoreFailure(error);
+  return {
+    detectedAt: nowIso(),
+    dbPath,
+    stage,
+    classification,
+    error: `${error}`,
+    recommendedAction: recommendedActionForClassification(classification)
+  };
+}
+
+async function writeStateStoreFailure(paths: BridgePaths, failure: StateStoreFailureRecord): Promise<void> {
+  await writeFile(paths.stateStoreFailurePath, `${JSON.stringify(failure, null, 2)}\n`, "utf8");
+}
+
+async function clearStateStoreFailure(paths: BridgePaths): Promise<void> {
+  try {
+    await unlink(paths.stateStoreFailurePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
+export async function readStateStoreFailure(paths: BridgePaths): Promise<StateStoreFailureRecord | null> {
+  try {
+    const content = await readFile(paths.stateStoreFailurePath, "utf8");
+    return JSON.parse(content) as StateStoreFailureRecord;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+
+    throw error;
   }
 }
