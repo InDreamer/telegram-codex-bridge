@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO_OWNER="InDreamer"
 REPO_NAME="telegram-codex-bridge"
-REF="main"
+REF="master"
 REF_TYPE="branch"
 TELEGRAM_TOKEN=""
 CODEX_BIN=""

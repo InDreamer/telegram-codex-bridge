@@ -117,7 +117,7 @@ Platform note:
 Recommended public entry:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/main/scripts/install-skill-from-github.sh | bash
+curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/master/scripts/install-skill-from-github.sh | bash
 ```
 
 Then in Codex:
@@ -134,19 +134,19 @@ Reason:
 Bridge install from GitHub:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/main/scripts/install-from-github.sh | bash -s -- --telegram-token "<BOT_TOKEN>"
+curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/master/scripts/install-from-github.sh | bash -s -- --telegram-token "<BOT_TOKEN>"
 ```
 
 Bundled Codex skill install from GitHub:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/main/scripts/install-skill-from-github.sh | bash
+curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/master/scripts/install-skill-from-github.sh | bash
 ```
 
 Notes:
 - the bridge install shortcut downloads a repository archive, runs `npm install`, runs `npm run build`, and then runs `node dist/cli.js install`
 - the skill install shortcut copies `skills/telegram-codex-linker` into `${CODEX_HOME:-~/.codex}/skills/`
-- both scripts accept `--ref <name>` plus `--ref-type branch|tag`; default is `main`
+- both scripts accept `--ref <name>` plus `--ref-type branch|tag`; default is `master`
 - after skill install, restart Codex so the new skill is discovered
 
 Authorization intent:

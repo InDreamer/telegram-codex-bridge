@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_OWNER="InDreamer"
 REPO_NAME="telegram-codex-bridge"
 SKILL_NAME="telegram-codex-linker"
-REF="main"
+REF="master"
 REF_TYPE="branch"
 WORKDIR=""
 
