@@ -506,16 +506,16 @@ export class BridgeStateStore {
           return store;
         } catch (retryError) {
           const failure = buildStateStoreFailure(paths.dbPath, getFailureStage(retryError), retryError);
-          await writeStateStoreFailure(paths, failure);
-          await logger.error("state store open failed", { ...failure });
+          await persistStateStoreFailure(paths, failure, logger);
+          await logStateStoreOpenFailure(logger, failure);
           throw new StateStoreOpenError(failure);
         }
       }
 
       // Any non-ENOENT failure must preserve the existing database and stop the service cold.
       const failure = buildStateStoreFailure(paths.dbPath, getFailureStage(error), error);
-      await writeStateStoreFailure(paths, failure);
-      await logger.error("state store open failed", { ...failure });
+      await persistStateStoreFailure(paths, failure, logger);
+      await logStateStoreOpenFailure(logger, failure);
       throw new StateStoreOpenError(failure);
     }
   }
@@ -1742,7 +1742,28 @@ function buildStateStoreFailure(
 }
 
 async function writeStateStoreFailure(paths: BridgePaths, failure: StateStoreFailureRecord): Promise<void> {
+  await mkdir(dirname(paths.stateStoreFailurePath), { recursive: true });
   await writeFile(paths.stateStoreFailurePath, `${JSON.stringify(failure, null, 2)}\n`, "utf8");
+}
+
+async function persistStateStoreFailure(
+  paths: BridgePaths,
+  failure: StateStoreFailureRecord,
+  logger: Logger
+): Promise<void> {
+  try {
+    await writeStateStoreFailure(paths, failure);
+  } catch (markerError) {
+    await logger.warn("state store failure marker write failed", {
+      dbPath: failure.dbPath,
+      markerPath: paths.stateStoreFailurePath,
+      error: `${markerError}`
+    }).catch(() => {});
+  }
+}
+
+async function logStateStoreOpenFailure(logger: Logger, failure: StateStoreFailureRecord): Promise<void> {
+  await logger.error("state store open failed", { ...failure }).catch(() => {});
 }
 
 async function clearStateStoreFailure(paths: BridgePaths): Promise<void> {

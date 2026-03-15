@@ -16,17 +16,20 @@ const testLogger: Logger = {
 };
 
 function createCapturingLogger() {
+  const warnEntries: Array<{ message: string; meta?: unknown }> = [];
   const errorEntries: Array<{ message: string; meta?: unknown }> = [];
 
   const logger: Logger = {
     info: async () => {},
-    warn: async () => {},
+    warn: async (message: string, meta?: unknown) => {
+      warnEntries.push({ message, meta });
+    },
     error: async (message: string, meta?: unknown) => {
       errorEntries.push({ message, meta });
     }
   };
 
-  return { logger, errorEntries };
+  return { logger, warnEntries, errorEntries };
 }
 
 function createTestPaths(root: string): BridgePaths {
@@ -420,6 +423,40 @@ test("open writes a transient failure marker when ENOENT persists after the retr
     assert.ok(marker);
     assert.equal(marker?.classification, "transient_open_failure");
     assert.equal(marker?.stage, "open_db");
+  } finally {
+    (BridgeStateStore as any).openInitializedStore = originalOpenInitializedStore;
+    await cleanup();
+  }
+});
+
+test("open preserves the classified state-store error when writing the failure marker also fails", async () => {
+  const { paths, cleanup } = await createEmptyPaths();
+  const { logger, warnEntries } = createCapturingLogger();
+  const originalOpenInitializedStore = (BridgeStateStore as any).openInitializedStore;
+  const blockerPath = join(paths.stateRoot, "marker-parent-file");
+  const enoent = new Error("no such file or directory");
+  (enoent as NodeJS.ErrnoException).code = "ENOENT";
+
+  (BridgeStateStore as any).openInitializedStore = () => {
+    throw enoent;
+  };
+
+  try {
+    await writeFile(blockerPath, "not a directory", "utf8");
+    paths.stateStoreFailurePath = join(blockerPath, "failure.json");
+
+    await assert.rejects(
+      () => BridgeStateStore.open(paths, logger),
+      (error: unknown) => {
+        assert.ok(error instanceof StateStoreOpenError);
+        assert.equal(error.failure.classification, "transient_open_failure");
+        assert.equal(error.failure.stage, "open_db");
+        assert.match(error.failure.error, /no such file or directory/u);
+        return true;
+      }
+    );
+
+    assert.ok(warnEntries.some((entry) => entry.message === "state store failure marker write failed"));
   } finally {
     (BridgeStateStore as any).openInitializedStore = originalOpenInitializedStore;
     await cleanup();
