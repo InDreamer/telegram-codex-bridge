@@ -63,12 +63,12 @@ async function createReleaseFixture(paths: BridgePaths): Promise<void> {
   await writeFile(paths.repoRoot + "/package.json", '{ "name": "telegram-codex-bridge" }\n', "utf8");
 }
 
-async function createSkillFixture(root: string): Promise<void> {
+async function createSkillFixture(root: string, description = "test skill"): Promise<void> {
   const skillDir = join(root, "skills", "telegram-codex-linker");
   await mkdir(join(skillDir, "agents"), { recursive: true });
   await mkdir(join(skillDir, "references"), { recursive: true });
   await mkdir(join(skillDir, "scripts"), { recursive: true });
-  await writeFile(join(skillDir, "SKILL.md"), "---\nname: telegram-codex-linker\ndescription: test skill\n---\n", "utf8");
+  await writeFile(join(skillDir, "SKILL.md"), `---\nname: telegram-codex-linker\ndescription: ${description}\n---\n`, "utf8");
   await writeFile(
     join(skillDir, "agents", "openai.yaml"),
     'interface:\n  display_name: "Telegram Codex Linker"\n',
@@ -272,6 +272,33 @@ test("installCodexSkill copies the bundled skill into CODEX_HOME", async () => {
             "utf8"
           ),
           "#!/usr/bin/env bash\n"
+        );
+      }
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("installCodexSkill prefers the current checkout bundle over an older installed copy", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctb-install-test-"));
+  const paths = createTestPaths(root);
+
+  try {
+    await createReleaseFixture(paths);
+    await createSkillFixture(paths.repoRoot, "repo skill");
+    await createSkillFixture(paths.installRoot, "installed skill");
+
+    await withEnvironment(
+      {
+        CODEX_HOME: join(root, "codex-home")
+      },
+      async () => {
+        await installCodexSkill(paths);
+
+        assert.equal(
+          await readFile(join(root, "codex-home", "skills", "telegram-codex-linker", "SKILL.md"), "utf8"),
+          "---\nname: telegram-codex-linker\ndescription: repo skill\n---\n"
         );
       }
     );

@@ -401,8 +401,8 @@ export async function prepareRelease(paths: BridgePaths, run: CommandRunner = ru
 
 async function resolveBundledSkillPath(paths: BridgePaths): Promise<string> {
   const candidates = [
-    join(paths.installRoot, "skills", CODEX_SKILL_NAME),
-    join(paths.repoRoot, "skills", CODEX_SKILL_NAME)
+    join(paths.repoRoot, "skills", CODEX_SKILL_NAME),
+    join(paths.installRoot, "skills", CODEX_SKILL_NAME)
   ];
 
   for (const candidate of candidates) {
