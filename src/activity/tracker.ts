@@ -1,9 +1,11 @@
 import type {
-  ActiveItemType,
-  HighValueEventType,
   ActivityRecord,
   ActivityStatus,
+  ActiveItemType,
   ClassifiedNotification,
+  CollabAgentStateSnapshot,
+  CollabAgentStatus,
+  HighValueEventType,
   InspectSnapshot,
   StreamBlock,
   StreamSnapshot,
@@ -42,6 +44,15 @@ interface ActivityTrackerState {
   errorState: ActivityStatus["errorState"];
 }
 
+interface TrackedSubagent {
+  threadId: string;
+  label: string;
+  status: CollabAgentStatus;
+  progress: string | null;
+  activeItemLabel: string | null;
+  lastActivityAt: string | null;
+}
+
 export class ActivityTracker {
   private readonly timelineLimit: number;
   private readonly recentTransitions: ActivityRecord[] = [];
@@ -50,6 +61,7 @@ export class ActivityTracker {
   private readonly recentMcpSummaries: string[] = [];
   private readonly recentWebSearches: string[] = [];
   private readonly planSnapshot: string[] = [];
+  private readonly subagents = new Map<string, TrackedSubagent>();
   private readonly completedCommentary: string[] = [];
   private readonly commandOutputBuffers = new Map<string, string>();
   private readonly state: ActivityTrackerState;
@@ -84,6 +96,11 @@ export class ActivityTracker {
 
   apply(notification: ClassifiedNotification, receivedAt = new Date().toISOString()): void {
     if (!this.isRelevant(notification)) {
+      return;
+    }
+
+    if (!this.isRootNotification(notification)) {
+      this.applySubagentNotification(notification, receivedAt);
       return;
     }
 
@@ -172,6 +189,7 @@ export class ActivityTracker {
 
       case "item_started": {
         const activeItemType = mapActiveItemType(notification.itemType);
+        this.syncCollabAgentStates(notification.collabAgentStates);
         this.state.activeItemType = activeItemType;
         this.state.activeItemId = notification.itemId;
         this.state.activeItemLabel = notification.label ?? buildItemLabel(activeItemType, notification.itemType);
@@ -180,7 +198,7 @@ export class ActivityTracker {
         this.state.inspectAvailable = true;
         this.state.lastActivityAt = receivedAt;
         if (activeItemType === "commandExecution" && notification.itemId) {
-          this.commandOutputBuffers.set(notification.itemId, "");
+          this.commandOutputBuffers.set(buildCommandBufferKey(this.options.threadId, notification.itemId), "");
         }
 
         if (!this.state.threadBlockedReason && !isTerminalStatus(this.state.turnStatus)) {
@@ -202,6 +220,7 @@ export class ActivityTracker {
       case "item_completed": {
         const completedItemType = mapActiveItemType(notification.itemType);
         const completedLabel = buildItemLabel(completedItemType, notification.itemType);
+        this.syncCollabAgentStates(notification.collabAgentStates);
         if (!notification.itemId || notification.itemId === this.state.activeItemId) {
           this.state.activeItemType = null;
           this.state.activeItemId = null;
@@ -225,7 +244,7 @@ export class ActivityTracker {
           }
         }
         if (notification.itemId) {
-          this.commandOutputBuffers.delete(notification.itemId);
+          this.commandOutputBuffers.delete(buildCommandBufferKey(this.options.threadId, notification.itemId));
         }
         if (completedItemType === "webSearch") {
           this.pushUniqueSummary(this.recentWebSearches, summary);
@@ -309,7 +328,7 @@ export class ActivityTracker {
       case "command_output":
         if (notification.text) {
           const combinedText = notification.itemId
-            ? this.appendCommandOutput(notification.itemId, notification.text)
+            ? this.appendCommandOutput(buildCommandBufferKey(this.options.threadId, notification.itemId), notification.text)
             : notification.text;
           const summary = summarizeCommandOutput(combinedText);
           const commandLabel = selectConcreteCommandLabel(
@@ -422,6 +441,7 @@ export class ActivityTracker {
       recentMcpSummaries: [...this.recentMcpSummaries],
       recentWebSearches: [...this.recentWebSearches],
       planSnapshot: [...this.planSnapshot],
+      agentSnapshot: this.getRunningAgentSnapshot(),
       completedCommentary: [...this.completedCommentary]
     };
   }
@@ -474,12 +494,205 @@ export class ActivityTracker {
     return null;
   }
 
-  private isRelevant(notification: ClassifiedNotification): boolean {
-    if (notification.threadId && notification.threadId !== this.options.threadId) {
-      return false;
+  private applySubagentNotification(notification: ClassifiedNotification, receivedAt: string): void {
+    const threadId = notification.threadId;
+    if (!threadId) {
+      return;
     }
 
-    if (notification.turnId && notification.turnId !== this.options.turnId) {
+    const subagent = this.subagents.get(threadId);
+    if (!subagent) {
+      return;
+    }
+
+    switch (notification.kind) {
+      case "turn_started":
+        subagent.status = "running";
+        subagent.lastActivityAt = receivedAt;
+        return;
+
+      case "turn_completed":
+        subagent.status = mapCompletionStatusToAgentStatus(notification.status);
+        subagent.lastActivityAt = receivedAt;
+        return;
+
+      case "thread_status_changed": {
+        const blockedReason = deriveBlockedReason(notification.activeFlags);
+        if (notification.status === "systemError") {
+          subagent.status = "errored";
+        } else if (notification.status === "active" || notification.status === "idle") {
+          subagent.status = "running";
+        }
+        if (blockedReason) {
+          subagent.progress = blockedReason === "waitingOnApproval"
+            ? "Waiting for approval"
+            : "Waiting for user input";
+        }
+        subagent.lastActivityAt = receivedAt;
+        return;
+      }
+
+      case "item_started": {
+        this.syncCollabAgentStates(notification.collabAgentStates);
+        const activeItemType = mapActiveItemType(notification.itemType);
+        subagent.status = "running";
+        subagent.activeItemLabel = notification.label ?? buildItemLabel(activeItemType, notification.itemType);
+        subagent.lastActivityAt = receivedAt;
+        if (activeItemType === "commandExecution" && notification.itemId) {
+          this.commandOutputBuffers.set(buildCommandBufferKey(threadId, notification.itemId), "");
+        }
+        return;
+      }
+
+      case "item_completed": {
+        this.syncCollabAgentStates(notification.collabAgentStates);
+        const completedItemType = mapActiveItemType(notification.itemType);
+        if (completedItemType === "agentMessage" && notification.itemPhase === "commentary") {
+          const commentaryText = normalizeCommentaryText(notification.itemText);
+          if (commentaryText) {
+            subagent.progress = commentaryText;
+          }
+        }
+        if (notification.itemId) {
+          this.commandOutputBuffers.delete(buildCommandBufferKey(threadId, notification.itemId));
+        }
+        subagent.activeItemLabel = null;
+        subagent.lastActivityAt = receivedAt;
+        return;
+      }
+
+      case "progress":
+        if (notification.message) {
+          subagent.status = "running";
+          subagent.progress = cleanSummary(notification.message);
+          subagent.lastActivityAt = receivedAt;
+        }
+        return;
+
+      case "plan_updated": {
+        const summary = summarizePlanEntries(
+          notification.entries
+            .map((entry) => cleanSummary(entry))
+            .filter((entry) => entry.length > 0)
+        );
+        if (summary) {
+          subagent.status = "running";
+          subagent.progress = summary;
+          subagent.lastActivityAt = receivedAt;
+        }
+        return;
+      }
+
+      case "plan_delta":
+        if (notification.message) {
+          const summary = cleanSummary(notification.message);
+          if (summary) {
+            subagent.status = "running";
+            subagent.progress = summary;
+            subagent.lastActivityAt = receivedAt;
+          }
+        }
+        return;
+
+      case "command_output":
+        if (notification.text) {
+          const combinedText = notification.itemId
+            ? this.appendCommandOutput(buildCommandBufferKey(threadId, notification.itemId), notification.text)
+            : notification.text;
+          const summary = summarizeCommandOutput(combinedText);
+          const commandLabel = selectConcreteCommandLabel(summary.command, subagent.activeItemLabel);
+          subagent.status = "running";
+          subagent.progress = cleanSummary(summary.detail ? `${commandLabel} -> ${summary.detail}` : commandLabel);
+          subagent.lastActivityAt = receivedAt;
+        }
+        return;
+
+      case "file_change_output":
+        if (notification.text) {
+          subagent.status = "running";
+          subagent.progress = cleanSummary(notification.text);
+          subagent.lastActivityAt = receivedAt;
+        }
+        return;
+
+      case "turn_aborted":
+        subagent.status = "shutdown";
+        subagent.lastActivityAt = receivedAt;
+        return;
+
+      case "error":
+        subagent.status = "errored";
+        subagent.progress = cleanSummary(notification.message ?? "unknown error");
+        subagent.lastActivityAt = receivedAt;
+        return;
+
+      case "final_message_available":
+      case "agent_message_delta":
+      case "thread_archived":
+      case "thread_unarchived":
+      case "other":
+        return;
+    }
+  }
+
+  private syncCollabAgentStates(
+    states: Array<{
+      threadId: string;
+      status: CollabAgentStatus;
+      message: string | null;
+    }>
+  ): void {
+    for (const state of states) {
+      const subagent = this.ensureSubagent(state.threadId);
+      subagent.status = state.status;
+      if (state.message) {
+        subagent.progress = cleanSummary(state.message);
+      }
+    }
+  }
+
+  private ensureSubagent(threadId: string): TrackedSubagent {
+    const existing = this.subagents.get(threadId);
+    if (existing) {
+      return existing;
+    }
+
+    const created: TrackedSubagent = {
+      threadId,
+      label: buildSubagentLabel(threadId),
+      status: "pendingInit",
+      progress: null,
+      activeItemLabel: null,
+      lastActivityAt: null
+    };
+    this.subagents.set(threadId, created);
+    return created;
+  }
+
+  private getRunningAgentSnapshot(): CollabAgentStateSnapshot[] {
+    return [...this.subagents.values()]
+      .filter((agent) => agent.status === "pendingInit" || agent.status === "running")
+      .map((agent) => ({
+        threadId: agent.threadId,
+        label: agent.label,
+        status: agent.status,
+        progress: agent.progress ?? agent.activeItemLabel ?? null
+      }));
+  }
+
+  private isRootNotification(notification: ClassifiedNotification): boolean {
+    return !notification.threadId || notification.threadId === this.options.threadId;
+  }
+
+  private isRelevant(notification: ClassifiedNotification): boolean {
+    if (this.isRootNotification(notification)) {
+      if (notification.turnId && notification.turnId !== this.options.turnId) {
+        return false;
+      }
+      return true;
+    }
+
+    if (!notification.threadId || !this.subagents.has(notification.threadId)) {
       return false;
     }
 
@@ -582,6 +795,8 @@ function mapActiveItemType(itemType: string | null): ActiveItemType | null {
       return "fileChange";
     case "mcpToolCall":
       return "mcpToolCall";
+    case "collabAgentToolCall":
+      return "collabAgentToolCall";
     case "webSearch":
       return "webSearch";
     case "agentMessage":
@@ -610,6 +825,10 @@ function buildItemLabel(itemType: ActiveItemType | null, rawItemType: string | n
 
   if (itemType === "mcpToolCall") {
     return "MCP tool call";
+  }
+
+  if (itemType === "collabAgentToolCall") {
+    return "agent task";
   }
 
   if (itemType === "webSearch") {
@@ -727,4 +946,26 @@ function formatCompletionLabel(status: TurnStatus): string {
     default:
       return `Finished (${status})`;
   }
+}
+
+function mapCompletionStatusToAgentStatus(status: string): CollabAgentStatus {
+  switch (status) {
+    case "completed":
+      return "completed";
+    case "interrupted":
+      return "shutdown";
+    case "failed":
+    case "error":
+      return "errored";
+    default:
+      return "running";
+  }
+}
+
+function buildSubagentLabel(threadId: string): string {
+  return `agent-${threadId.slice(-6)}`;
+}
+
+function buildCommandBufferKey(threadId: string, itemId: string): string {
+  return `${threadId}:${itemId}`;
 }

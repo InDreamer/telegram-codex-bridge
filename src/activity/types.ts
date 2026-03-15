@@ -38,6 +38,7 @@ export type ActiveItemType =
   | "commandExecution"
   | "fileChange"
   | "mcpToolCall"
+  | "collabAgentToolCall"
   | "webSearch"
   | "agentMessage"
   | "reasoning"
@@ -91,10 +92,31 @@ export interface InspectSnapshot extends ActivityStatus {
   recentMcpSummaries: string[];
   recentWebSearches: string[];
   planSnapshot: string[];
+  agentSnapshot: CollabAgentStateSnapshot[];
   completedCommentary: string[];
 }
 
 export type MessagePhase = "commentary" | "final_answer";
+export type CollabAgentStatus =
+  | "pendingInit"
+  | "running"
+  | "completed"
+  | "errored"
+  | "shutdown"
+  | "notFound";
+
+export interface CollabAgentStateSnapshot {
+  threadId: string;
+  label: string;
+  status: CollabAgentStatus;
+  progress: string | null;
+}
+
+export interface CollabAgentStateUpdate {
+  threadId: string;
+  status: CollabAgentStatus;
+  message: string | null;
+}
 
 export interface DebugJournalRecord {
   receivedAt: string;
@@ -156,6 +178,8 @@ export interface ItemStartedNotification extends ClassifiedNotificationBase {
   itemId: string | null;
   itemType: string | null;
   label: string | null;
+  collabTool: string | null;
+  collabAgentStates: CollabAgentStateUpdate[];
 }
 
 export interface ItemCompletedNotification extends ClassifiedNotificationBase {
@@ -164,6 +188,8 @@ export interface ItemCompletedNotification extends ClassifiedNotificationBase {
   itemType: string | null;
   itemText: string | null;
   itemPhase: MessagePhase | null;
+  collabTool: string | null;
+  collabAgentStates: CollabAgentStateUpdate[];
 }
 
 export interface ProgressNotification extends ClassifiedNotificationBase {

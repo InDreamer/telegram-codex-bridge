@@ -108,6 +108,7 @@ function createInspectSnapshot(overrides: Partial<InspectSnapshot> = {}): Inspec
     recentMcpSummaries: overrides.recentMcpSummaries ?? [],
     recentWebSearches: overrides.recentWebSearches ?? [],
     planSnapshot: overrides.planSnapshot ?? [],
+    agentSnapshot: overrides.agentSnapshot ?? [],
     completedCommentary: overrides.completedCommentary ?? []
   };
 }
@@ -323,10 +324,57 @@ test("buildRuntimeStatusReplyMarkup prefers the in-progress step over earlier pe
       "Collect protocol evidence (pending)",
       "Wire inspect renderer (inProgress)"
     ],
-    planExpanded: false
+    planExpanded: false,
+    agentEntries: [],
+    agentsExpanded: false
   });
 
   assert.equal(replyMarkup?.inline_keyboard[0]?.[0]?.text, "当前计划：Wire inspect renderer");
+});
+
+test("buildRuntimeStatusCard renders expanded running agents inline", () => {
+  const text = buildRuntimeStatusCard({
+    state: "Running",
+    progressText: "Delegating work",
+    agentEntries: [
+      {
+        threadId: "thread-agent-1",
+        label: "agent-ent42",
+        status: "running",
+        progress: "Searching docs"
+      },
+      {
+        threadId: "thread-agent-2",
+        label: "agent-x9k2p1",
+        status: "pendingInit",
+        progress: null
+      }
+    ],
+    agentsExpanded: true
+  });
+
+  assert.match(text, /<b>Agents:<\/b>/u);
+  assert.match(text, /1\. agent-ent42 \(running\): Searching docs/u);
+  assert.match(text, /2\. agent-x9k2p1 \(pending\)/u);
+});
+
+test("buildRuntimeStatusReplyMarkup adds an agent button when running subagents exist", () => {
+  const replyMarkup = buildRuntimeStatusReplyMarkup({
+    sessionId: "session-agent",
+    planEntries: [],
+    planExpanded: false,
+    agentEntries: [
+      {
+        threadId: "thread-agent-1",
+        label: "agent-ent42",
+        status: "running",
+        progress: "Searching docs"
+      }
+    ],
+    agentsExpanded: false
+  });
+
+  assert.equal(replyMarkup?.inline_keyboard[0]?.[0]?.text, "Agent：1 个运行中");
 });
 
 test("buildRuntimeErrorCard renders bold field labels and escapes detail text", () => {

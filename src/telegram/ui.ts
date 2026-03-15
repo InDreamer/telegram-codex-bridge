@@ -4,7 +4,7 @@ import type {
   ReadinessSnapshot,
   SessionRow
 } from "../types.js";
-import type { ActivityStatus, InspectSnapshot, StreamBlock, StreamSnapshot } from "../activity/types.js";
+import type { ActivityStatus, CollabAgentStateSnapshot, InspectSnapshot, StreamBlock, StreamSnapshot } from "../activity/types.js";
 import type { TelegramInlineKeyboardMarkup } from "./api.js";
 
 interface RuntimeCardContext {
@@ -29,6 +29,8 @@ export type ParsedCallbackData =
   | { kind: "path_confirm"; projectKey: string }
   | { kind: "plan_expand"; sessionId: string }
   | { kind: "plan_collapse"; sessionId: string }
+  | { kind: "agent_expand"; sessionId: string }
+  | { kind: "agent_collapse"; sessionId: string }
   | { kind: "final_open"; answerId: string }
   | { kind: "final_close"; answerId: string }
   | { kind: "final_page"; answerId: string; page: number };
@@ -83,6 +85,14 @@ export function encodePlanCollapseCallback(sessionId: string): string {
   return `v1:plan:collapse:${sessionId}`;
 }
 
+export function encodeAgentExpandCallback(sessionId: string): string {
+  return `v1:agent:expand:${sessionId}`;
+}
+
+export function encodeAgentCollapseCallback(sessionId: string): string {
+  return `v1:agent:collapse:${sessionId}`;
+}
+
 export function encodeFinalAnswerOpenCallback(answerId: string): string {
   return `v1:final:open:${answerId}`;
 }
@@ -127,6 +137,14 @@ export function parseCallbackData(data: string): ParsedCallbackData | null {
 
   if (parts[1] === "plan" && parts[2] === "collapse" && parts[3]) {
     return { kind: "plan_collapse", sessionId: parts[3] };
+  }
+
+  if (parts[1] === "agent" && parts[2] === "expand" && parts[3]) {
+    return { kind: "agent_expand", sessionId: parts[3] };
+  }
+
+  if (parts[1] === "agent" && parts[2] === "collapse" && parts[3]) {
+    return { kind: "agent_collapse", sessionId: parts[3] };
   }
 
   if (parts[1] === "final" && parts[2] === "open" && parts[3]) {
@@ -372,6 +390,8 @@ export function buildRuntimeStatusCard(
     blockedReason?: string | null;
     planEntries?: string[];
     planExpanded?: boolean;
+    agentEntries?: CollabAgentStateSnapshot[];
+    agentsExpanded?: boolean;
   }
 ): string {
   const lines: string[] = ["<b>Runtime Status</b>"];
@@ -399,6 +419,18 @@ export function buildRuntimeStatusCard(
     }
   }
 
+  if (options.agentsExpanded && options.agentEntries && options.agentEntries.length > 0) {
+    lines.push("", "<b>Agents:</b>");
+
+    for (const [index, entry] of options.agentEntries.slice(0, 10).entries()) {
+      lines.push(renderAgentRuntimeLine(entry, index + 1));
+    }
+
+    if (options.agentEntries.length > 10) {
+      lines.push(`... ${options.agentEntries.length - 10} more agents`);
+    }
+  }
+
   lines.push("Use /inspect for full details");
   return lines.join("\n");
 }
@@ -407,18 +439,35 @@ export function buildRuntimeStatusReplyMarkup(options: {
   sessionId: string;
   planEntries: string[];
   planExpanded: boolean;
+  agentEntries: CollabAgentStateSnapshot[];
+  agentsExpanded: boolean;
 }): TelegramInlineKeyboardMarkup | undefined {
-  if (options.planEntries.length === 0) {
-    return undefined;
-  }
+  const rows: TelegramInlineKeyboardMarkup["inline_keyboard"] = [];
 
-  return {
-    inline_keyboard: [[{
+  if (options.planEntries.length > 0) {
+    rows.push([{
       text: options.planExpanded ? "收起当前计划" : buildCollapsedPlanButtonLabel(options.planEntries),
       callback_data: options.planExpanded
         ? encodePlanCollapseCallback(options.sessionId)
         : encodePlanExpandCallback(options.sessionId)
-    }]]
+    }]);
+  }
+
+  if (options.agentEntries.length > 0) {
+    rows.push([{
+      text: options.agentsExpanded ? "收起 Agent" : buildCollapsedAgentButtonLabel(options.agentEntries),
+      callback_data: options.agentsExpanded
+        ? encodeAgentCollapseCallback(options.sessionId)
+        : encodeAgentExpandCallback(options.sessionId)
+    }]);
+  }
+
+  if (rows.length === 0) {
+    return undefined;
+  }
+
+  return {
+    inline_keyboard: rows
   };
 }
 
@@ -620,6 +669,19 @@ function buildCollapsedPlanButtonLabel(entries: string[]): string {
   return `当前计划：${truncateRuntimeCardText(stripPlanEntryStatus(currentEntry), 40)}`;
 }
 
+function buildCollapsedAgentButtonLabel(entries: CollabAgentStateSnapshot[]): string {
+  return `Agent：${entries.length} 个运行中`;
+}
+
+function renderAgentRuntimeLine(entry: CollabAgentStateSnapshot, index: number): string {
+  const prefix = `${index}. ${escapeHtml(entry.label)} (${escapeHtml(formatAgentStatus(entry.status))})`;
+  if (!entry.progress) {
+    return prefix;
+  }
+
+  return `${prefix}: ${renderInlineMarkdown(truncateRuntimeCardText(entry.progress, 160))}`;
+}
+
 function selectCurrentPlanEntry(entries: string[]): string | null {
   return entries.find((entry) => /\(inProgress\)$/u.test(entry))
     ?? entries.find((entry) => /\((pending|todo)\)$/u.test(entry))
@@ -630,6 +692,25 @@ function selectCurrentPlanEntry(entries: string[]): string | null {
 
 function stripPlanEntryStatus(entry: string): string {
   return entry.replace(/\s+\((inProgress|pending|todo|completed|failed|blocked)\)$/u, "").trim();
+}
+
+function formatAgentStatus(status: CollabAgentStateSnapshot["status"]): string {
+  switch (status) {
+    case "pendingInit":
+      return "pending";
+    case "running":
+      return "running";
+    case "completed":
+      return "completed";
+    case "errored":
+      return "errored";
+    case "shutdown":
+      return "shutdown";
+    case "notFound":
+      return "not found";
+    default:
+      return status;
+  }
 }
 
 function buildDetailedRuntimeCommandLines(

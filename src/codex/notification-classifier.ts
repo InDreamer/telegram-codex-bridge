@@ -2,6 +2,7 @@ import type {
   AgentMessageDeltaNotification,
   CommandOutputNotification,
   ClassifiedNotification,
+  CollabAgentStateUpdate,
   ErrorNotification,
   FileChangeOutputNotification,
   FinalMessageAvailableNotification,
@@ -62,7 +63,9 @@ export function classifyNotification(method: string, params: unknown): Classifie
         ...context,
         itemId: getItemId(params),
         itemType: getItemType(params),
-        label: getItemLabel(params)
+        label: getItemLabel(params),
+        collabTool: getCollabTool(params),
+        collabAgentStates: getCollabAgentStates(params)
       } satisfies ItemStartedNotification;
 
     case "item/completed":
@@ -72,7 +75,9 @@ export function classifyNotification(method: string, params: unknown): Classifie
         itemId: getItemId(params),
         itemType: getItemType(params),
         itemText: getString(getObject(params)?.item, "text"),
-        itemPhase: getMessagePhase(params)
+        itemPhase: getMessagePhase(params),
+        collabTool: getCollabTool(params),
+        collabAgentStates: getCollabAgentStates(params)
       } satisfies ItemCompletedNotification;
 
     case "item/mcpToolCall/progress":
@@ -210,6 +215,10 @@ function getItemLabel(params: unknown): string | null {
     }
     case "plan":
       return getString(item, "text");
+    case "collabAgentToolCall": {
+      const tool = getString(item, "tool");
+      return tool ? `agent ${tool}` : "agent task";
+    }
     default:
       return null;
   }
@@ -265,6 +274,60 @@ function getPlanEntries(params: unknown): string[] {
 
   const text = getString(plan, "text");
   return text ? [text] : [];
+}
+
+function getCollabTool(params: unknown): string | null {
+  const item = getObject(params)?.item;
+  if (getString(item, "type") !== "collabAgentToolCall") {
+    return null;
+  }
+
+  return getString(item, "tool");
+}
+
+function getCollabAgentStates(params: unknown): CollabAgentStateUpdate[] {
+  const item = getObject(params)?.item;
+  if (getString(item, "type") !== "collabAgentToolCall") {
+    return [];
+  }
+
+  const receiverThreadIds = getStringArray(getObject(item)?.receiverThreadIds);
+  const agentsStates = getObject(item)?.agentsStates;
+  const entries: CollabAgentStateUpdate[] = Object.entries(agentsStates ?? {})
+    .flatMap(([threadId, value]) => {
+      const state = getObject(value);
+      const status = getString(state, "status");
+      if (
+        status !== "pendingInit" &&
+        status !== "running" &&
+        status !== "completed" &&
+        status !== "errored" &&
+        status !== "shutdown" &&
+        status !== "notFound"
+      ) {
+        return [];
+      }
+
+      return [{
+        threadId,
+        status,
+        message: getString(state, "message")
+      } satisfies CollabAgentStateUpdate];
+    });
+
+  const knownThreadIds = new Set(entries.map((entry) => entry.threadId));
+  for (const threadId of receiverThreadIds) {
+    if (knownThreadIds.has(threadId)) {
+      continue;
+    }
+    entries.push({
+      threadId,
+      status: "pendingInit",
+      message: null
+    });
+  }
+
+  return entries;
 }
 
 function getThreadStatusType(params: unknown): ThreadStatusChangedNotification["status"] {

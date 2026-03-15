@@ -100,6 +100,7 @@ interface StatusCardState extends RuntimeCardMessageState {
   commandItems: Map<string, RuntimeCommandState>;
   commandOrder: RuntimeCommandState[];
   planExpanded: boolean;
+  agentsExpanded: boolean;
 }
 
 interface ErrorCardState extends RuntimeCardMessageState {
@@ -137,6 +138,7 @@ interface ActiveTurnState {
   statusCard: StatusCardState;
   latestStatusProgressText: string | null;
   latestPlanFingerprint: string;
+  latestAgentFingerprint: string;
   errorCards: ErrorCardState[];
   nextErrorCardId: number;
   surfaceQueue: Promise<void>;
@@ -401,6 +403,16 @@ export class BridgeService {
         return;
       }
 
+      case "agent_expand": {
+        await this.handleAgentToggle(callbackQuery.id, message.message_id, parsed.sessionId, true);
+        return;
+      }
+
+      case "agent_collapse": {
+        await this.handleAgentToggle(callbackQuery.id, message.message_id, parsed.sessionId, false);
+        return;
+      }
+
       case "final_open": {
         await this.handleFinalAnswerOpen(callbackQuery.id, chatId, message.message_id, parsed.answerId);
         return;
@@ -469,6 +481,54 @@ export class BridgeService {
     await this.requestRuntimeCardRender(activeTurn, activeTurn.statusCard, rendered.text, rendered.replyMarkup, {
       force: true,
       reason: expanded ? "plan_expanded" : "plan_collapsed"
+    });
+  }
+
+  private async handleAgentToggle(
+    callbackQueryId: string,
+    messageId: number,
+    sessionId: string,
+    expanded: boolean
+  ): Promise<void> {
+    const activeTurn = this.activeTurn;
+    if (!activeTurn || activeTurn.sessionId !== sessionId || activeTurn.statusCard.messageId !== messageId) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    const inspect = activeTurn.tracker.getInspectSnapshot();
+    if (inspect.agentSnapshot.length === 0) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    if (activeTurn.statusCard.agentsExpanded === expanded) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个操作已处理。");
+      return;
+    }
+
+    activeTurn.statusCard.agentsExpanded = expanded;
+    await this.safeAnswerCallbackQuery(callbackQueryId);
+
+    const rendered = this.buildStatusCardRenderPayload(activeTurn.sessionId, activeTurn.tracker, activeTurn.statusCard);
+    await this.logRuntimeCardEvent(this.getRuntimeCardTraceContext(activeTurn), activeTurn.statusCard, "state_transition", {
+      reason: expanded ? "agents_expanded" : "agents_collapsed",
+      forced: true,
+      triggerKind: "callback",
+      triggerMethod: expanded ? "v1:agent:expand" : "v1:agent:collapse",
+      commandStateChanged: false,
+      statusProgressTextChanged: false,
+      previousStatus: summarizeActivityStatus(inspect),
+      nextStatus: summarizeActivityStatus(inspect),
+      selectedProgressText: selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null),
+      commands: summarizeRuntimeCommands(activeTurn.statusCard.commandOrder),
+      card: summarizeRuntimeCardSurface(activeTurn.statusCard),
+      renderedText: rendered.text,
+      replyMarkup: rendered.replyMarkup ?? null
+    });
+    await this.requestRuntimeCardRender(activeTurn, activeTurn.statusCard, rendered.text, rendered.replyMarkup, {
+      force: true,
+      reason: expanded ? "agents_expanded" : "agents_collapsed"
     });
   }
 
@@ -1288,6 +1348,7 @@ export class BridgeService {
         statusCard: createStatusCardMessageState(),
         latestStatusProgressText: null,
         latestPlanFingerprint: "",
+        latestAgentFingerprint: "",
         errorCards: [],
         nextErrorCardId: 1,
         surfaceQueue: Promise.resolve()
@@ -1372,10 +1433,17 @@ export class BridgeService {
     }
 
     const activeTurn = this.activeTurn;
-    await this.appendDebugJournal(activeTurn, method, params);
+    await this.appendDebugJournal(activeTurn, method, params, {
+      threadId: classified.threadId ?? activeTurn.threadId,
+      turnId: classified.turnId ?? activeTurn.turnId
+    });
     const before = activeTurn.tracker.getStatus();
 
-    if (classified.kind === "final_message_available" && classified.message) {
+    if (
+      classified.kind === "final_message_available" &&
+      classified.message &&
+      (!classified.threadId || classified.threadId === activeTurn.threadId)
+    ) {
       activeTurn.finalMessage = classified.message;
     }
 
@@ -1608,12 +1676,16 @@ export class BridgeService {
       blockedReason: formatRuntimeBlockedReason(inspect.threadBlockedReason),
       progressText: selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null),
       planEntries: inspect.planSnapshot,
-      planExpanded: statusCard.planExpanded
+      planExpanded: statusCard.planExpanded,
+      agentEntries: inspect.agentSnapshot,
+      agentsExpanded: statusCard.agentsExpanded
     });
     const replyMarkup = buildRuntimeStatusReplyMarkup({
       sessionId,
       planEntries: inspect.planSnapshot,
-      planExpanded: statusCard.planExpanded
+      planExpanded: statusCard.planExpanded,
+      agentEntries: inspect.agentSnapshot,
+      agentsExpanded: statusCard.agentsExpanded
     });
 
     return replyMarkup ? { text, replyMarkup } : { text };
@@ -1969,7 +2041,19 @@ export class BridgeService {
     if (planChanged) {
       activeTurn.latestPlanFingerprint = planFingerprint;
     }
-    const commandStateChanged = applyRuntimeCommandDelta(activeTurn.statusCard, classified, nextStatus);
+    const agentFingerprint = inspect.agentSnapshot
+      .map((agent) => `${agent.threadId}|${agent.status}|${agent.progress ?? ""}`)
+      .join("\n");
+    const agentsChanged = agentFingerprint !== activeTurn.latestAgentFingerprint;
+    if (agentsChanged) {
+      activeTurn.latestAgentFingerprint = agentFingerprint;
+    }
+    if (inspect.agentSnapshot.length === 0 && activeTurn.statusCard.agentsExpanded) {
+      activeTurn.statusCard.agentsExpanded = false;
+    }
+    const commandStateChanged = classified && classified.threadId && classified.threadId !== activeTurn.threadId
+      ? false
+      : applyRuntimeCommandDelta(activeTurn.statusCard, classified, nextStatus);
     const nextStatusProgressText = selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null);
     const statusProgressTextChanged = nextStatusProgressText !== activeTurn.latestStatusProgressText;
     if (statusProgressTextChanged) {
@@ -1989,6 +2073,7 @@ export class BridgeService {
       previousStatus.errorState !== nextStatus.errorState ||
       commandStateChanged ||
       planChanged ||
+      agentsChanged ||
       statusProgressTextChanged ||
       options.force;
     if (statusChanged) {
@@ -2644,6 +2729,7 @@ function summarizeRuntimeCardSurface(surface: RuntimeCardMessageState): Record<s
     summary.commandCount = statusSurface.commandOrder.length;
     summary.commands = summarizeRuntimeCommands(statusSurface.commandOrder);
     summary.planExpanded = statusSurface.planExpanded;
+    summary.agentsExpanded = statusSurface.agentsExpanded;
     return summary;
   }
 
@@ -2684,7 +2770,8 @@ function createStatusCardMessageState(): StatusCardState {
     parseMode: "HTML",
     commandItems: new Map(),
     commandOrder: [],
-    planExpanded: false
+    planExpanded: false,
+    agentsExpanded: false
   };
 }
 
@@ -3093,6 +3180,7 @@ function buildInspectPayloadFromThreadHistory(
     recentMcpSummaries,
     recentWebSearches,
     planSnapshot,
+    agentSnapshot: [],
     completedCommentary
   };
 

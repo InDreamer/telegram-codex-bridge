@@ -1824,6 +1824,144 @@ test("status card expands the current plan inline and keeps only the latest plan
   }
 });
 
+test("status card shows running subagents behind an agent button and expands their progress inline", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const callbackAnswers: Array<string | undefined> = [];
+  let nextMessageId = 730;
+
+  try {
+    store.upsertPendingAuthorization({
+      telegramUserId: "1",
+      telegramChatId: "chat-1",
+      telegramUsername: "tester",
+      displayName: "Tester"
+    });
+    const candidate = store.listPendingAuthorizations()[0];
+    if (!candidate) {
+      throw new Error("expected pending authorization candidate");
+    }
+    store.confirmPendingAuthorization(candidate);
+    const session = createSession(store, "chat-1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ messageId, text, parseMode: _options?.parseMode, replyMarkup: _options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) => {
+        edited.push({ messageId, text, parseMode: _options?.parseMode, replyMarkup: _options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      answerCallbackQuery: async (_callbackQueryId: string, text?: string) => {
+        callbackAnswers.push(text);
+      }
+    };
+
+    installRunningAppServer(service, "thread-agent-main", "turn-agent-main");
+
+    await withMockedNow("2026-03-10T11:00:00.000Z", async () => {
+      await (service as any).startRealTurn("chat-1", session, "Do the work");
+    });
+    await withMockedNow("2026-03-10T11:00:01.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/started", {
+        threadId: "thread-agent-main",
+        turnId: "turn-agent-main"
+      });
+    });
+    await withMockedNow("2026-03-10T11:00:02.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/started", {
+        threadId: "thread-agent-main",
+        turnId: "turn-agent-main",
+        item: {
+          id: "collab-1",
+          type: "collabAgentToolCall",
+          tool: "spawnAgent",
+          receiverThreadIds: ["thread-agent-sub-1"],
+          agentsStates: {
+            "thread-agent-sub-1": {
+              status: "pendingInit",
+              message: "Booting"
+            }
+          }
+        }
+      });
+    });
+
+    const collapsed = edited.at(-1) ?? sent.at(-1);
+    assert.equal(collapsed?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "Agent：1 个运行中");
+
+    await withMockedNow("2026-03-10T11:00:03.000Z", async () => {
+      await (service as any).handleCallback({
+        id: "callback-agent-expand",
+        from: { id: 1, is_bot: false, first_name: "Tester" },
+        message: {
+          message_id: 730,
+          chat: { id: 1, type: "private" },
+          date: 0,
+          text: "<b>Runtime Status</b>"
+        },
+        data: `v1:agent:expand:${session.sessionId}`
+      });
+    });
+
+    assert.equal(callbackAnswers.at(-1), undefined);
+    assert.match(edited.at(-1)?.text ?? "", /<b>Agents:<\/b>/u);
+    assert.match(edited.at(-1)?.text ?? "", /Booting/u);
+    assert.equal(edited.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "收起 Agent");
+
+    await withMockedNow("2026-03-10T11:00:04.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/started", {
+        threadId: "thread-agent-sub-1",
+        turnId: "turn-agent-sub-1"
+      });
+    });
+    await withMockedNow("2026-03-10T11:00:06.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/started", {
+        threadId: "thread-agent-sub-1",
+        turnId: "turn-agent-sub-1",
+        item: {
+          id: "cmd-agent-sub-1",
+          type: "commandExecution",
+          title: "rg plan"
+        }
+      });
+    });
+    await withMockedNow("2026-03-10T11:00:08.500Z", async () => {
+      await (service as any).handleAppServerNotification("item/commandExecution/outputDelta", {
+        threadId: "thread-agent-sub-1",
+        turnId: "turn-agent-sub-1",
+        itemId: "cmd-agent-sub-1",
+        delta: "$ rg plan\n2 matches"
+      });
+    });
+
+    assert.match(edited.at(-1)?.text ?? "", /rg plan -&gt; 2 matches/u);
+
+    await withMockedNow("2026-03-10T11:00:12.000Z", async () => {
+      await (service as any).handleCallback({
+        id: "callback-agent-collapse",
+        from: { id: 1, is_bot: false, first_name: "Tester" },
+        message: {
+          message_id: 730,
+          chat: { id: 1, type: "private" },
+          date: 0,
+          text: "<b>Runtime Status</b>"
+        },
+        data: `v1:agent:collapse:${session.sessionId}`
+      });
+    });
+
+    assert.equal(callbackAnswers.at(-1), undefined);
+    assert.doesNotMatch(edited.at(-1)?.text ?? "", /<b>Agents:<\/b>/u);
+    assert.equal(edited.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "Agent：1 个运行中");
+  } finally {
+    await cleanup();
+  }
+});
+
 test("runtime errors create a separate error card without polluting the status card", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ messageId: number; text: string; parseMode?: string }> = [];
@@ -2350,12 +2488,12 @@ test("structured project and session replies use Telegram HTML parse mode", asyn
 
   try {
     authorizeChat(store, "chat-1");
-    const firstSession = createSession(store, "chat-1");
-    const secondSession = store.createSession({
+    const firstSession = await withMockedNow("2026-03-10T09:00:00.000Z", async () => createSession(store, "chat-1"));
+    const secondSession = await withMockedNow("2026-03-10T09:05:00.000Z", async () => store.createSession({
       telegramChatId: "chat-1",
       projectName: "Project <Two>",
       projectPath: "/tmp/project-two"
-    });
+    }));
     store.setActiveSession("chat-1", firstSession.sessionId);
 
     (service as any).api = {

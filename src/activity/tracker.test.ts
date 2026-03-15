@@ -238,6 +238,93 @@ test("accumulates fragmented command output before summarizing command progress"
   assert.equal(inspect.recentCommandSummaries.at(-1), "pnpm test -> 26/26 tests passed");
 });
 
+test("tracks running subagents and their latest progress separately from the main thread", () => {
+  const tracker = new ActivityTracker({
+    threadId: "thread-main",
+    turnId: "turn-main"
+  });
+
+  tracker.apply(
+    classifyNotification("turn/started", {
+      threadId: "thread-main",
+      turnId: "turn-main"
+    }),
+    "2026-03-10T11:00:00.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/started", {
+      threadId: "thread-main",
+      turnId: "turn-main",
+      item: {
+        id: "collab-1",
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        receiverThreadIds: ["thread-sub-1"],
+        agentsStates: {
+          "thread-sub-1": {
+            status: "pendingInit",
+            message: "Booting"
+          }
+        }
+      }
+    }),
+    "2026-03-10T11:00:00.100Z"
+  );
+
+  tracker.apply(
+    classifyNotification("turn/started", {
+      threadId: "thread-sub-1",
+      turnId: "turn-sub-1"
+    }),
+    "2026-03-10T11:00:01.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/started", {
+      threadId: "thread-sub-1",
+      turnId: "turn-sub-1",
+      item: {
+        id: "cmd-sub-1",
+        type: "commandExecution",
+        title: "rg plan"
+      }
+    }),
+    "2026-03-10T11:00:01.200Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/commandExecution/outputDelta", {
+      threadId: "thread-sub-1",
+      turnId: "turn-sub-1",
+      itemId: "cmd-sub-1",
+      delta: "$ rg plan\n2 matches"
+    }),
+    "2026-03-10T11:00:01.500Z"
+  );
+
+  const running = tracker.getInspectSnapshot("2026-03-10T11:00:02.000Z");
+  assert.equal(running.agentSnapshot.length, 1);
+  assert.equal(running.agentSnapshot[0]?.threadId, "thread-sub-1");
+  assert.match(running.agentSnapshot[0]?.label ?? "", /^agent-/u);
+  assert.equal(running.agentSnapshot[0]?.status, "running");
+  assert.equal(running.agentSnapshot[0]?.progress, "rg plan -> 2 matches");
+
+  tracker.apply(
+    classifyNotification("turn/completed", {
+      threadId: "thread-sub-1",
+      turn: {
+        id: "turn-sub-1",
+        status: "completed"
+      }
+    }),
+    "2026-03-10T11:00:03.000Z"
+  );
+
+  const settled = tracker.getInspectSnapshot("2026-03-10T11:00:04.000Z");
+  assert.equal(settled.agentSnapshot.length, 0);
+});
+
 test("plan snapshot reflects the latest plan update instead of append-only history", () => {
   const tracker = new ActivityTracker({
     threadId: "thread-plan-current",
