@@ -36,6 +36,11 @@ const REQUIRED_SERVER_NOTIFICATIONS = [
   "thread/unarchived",
   "error"
 ] as const;
+const CAPABILITY_CACHE_FORMAT_VERSION = 1;
+const CAPABILITY_REQUIREMENTS_FINGERPRINT = JSON.stringify({
+  clientRequests: [...REQUIRED_CLIENT_REQUESTS],
+  serverNotifications: [...REQUIRED_SERVER_NOTIFICATIONS]
+});
 
 type ServiceManagerName = "systemd" | "launchd" | "none";
 type ServiceManagerHealth = "ok" | "warning" | "error";
@@ -51,6 +56,12 @@ interface CapabilityCheckSummary {
   ok: boolean;
   source: CapabilityCheckSource;
   issues: string[];
+}
+
+interface CapabilityCheckCacheEntry {
+  version: number;
+  requirementsFingerprint: string;
+  summary: CapabilityCheckSummary;
 }
 
 interface TelegramValidationResult {
@@ -259,17 +270,27 @@ function extractMethodsFromSchema(schema: unknown): string[] {
 
 async function loadCapabilityCache(cacheFilePath: string): Promise<CapabilityCheckSummary | null> {
   try {
-    const parsed = JSON.parse(await readFile(cacheFilePath, "utf8")) as CapabilityCheckSummary;
+    const parsed = JSON.parse(await readFile(cacheFilePath, "utf8")) as CapabilityCheckCacheEntry;
     if (
-      parsed &&
-      typeof parsed === "object" &&
-      typeof parsed.ok === "boolean" &&
-      Array.isArray(parsed.issues) &&
-      (parsed.source === "cache" || parsed.source === "generated_schema" || parsed.source === "unknown")
+      !parsed
+      || typeof parsed !== "object"
+      || parsed.version !== CAPABILITY_CACHE_FORMAT_VERSION
+      || parsed.requirementsFingerprint !== CAPABILITY_REQUIREMENTS_FINGERPRINT
+    ) {
+      return null;
+    }
+
+    const summary = parsed.summary;
+    if (
+      summary &&
+      typeof summary === "object" &&
+      typeof summary.ok === "boolean" &&
+      Array.isArray(summary.issues) &&
+      (summary.source === "generated_schema" || summary.source === "unknown" || summary.source === "cache")
     ) {
       return {
-        ok: parsed.ok,
-        issues: parsed.issues.map((issue) => normalizeIssue(`${issue}`)),
+        ok: summary.ok,
+        issues: summary.issues.map((issue) => normalizeIssue(`${issue}`)),
         source: "cache"
       };
     }
@@ -281,7 +302,12 @@ async function loadCapabilityCache(cacheFilePath: string): Promise<CapabilityChe
 
 async function writeCapabilityCache(cacheFilePath: string, summary: CapabilityCheckSummary): Promise<void> {
   await mkdir(dirname(cacheFilePath), { recursive: true }).catch(() => {});
-  await writeFile(cacheFilePath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  const entry: CapabilityCheckCacheEntry = {
+    version: CAPABILITY_CACHE_FORMAT_VERSION,
+    requirementsFingerprint: CAPABILITY_REQUIREMENTS_FINGERPRINT,
+    summary
+  };
+  await writeFile(cacheFilePath, `${JSON.stringify(entry, null, 2)}\n`, "utf8");
 }
 
 async function defaultEvaluateCapabilities(options: {
@@ -310,14 +336,11 @@ async function defaultEvaluateCapabilities(options: {
       schemaDir
     ]);
     if (generation.exitCode !== 0) {
-      const summary = {
+      return {
         ok: false,
         source: "generated_schema",
         issues: [generation.stderr || generation.stdout || "failed to generate app-server schema"]
       } satisfies CapabilityCheckSummary;
-      await mkdir(options.paths.cacheDir, { recursive: true });
-      await writeCapabilityCache(cacheFilePath, summary);
-      return summary;
     }
 
     const clientRequestSchema = JSON.parse(await readFile(join(schemaDir, "ClientRequest.json"), "utf8"));
@@ -342,14 +365,11 @@ async function defaultEvaluateCapabilities(options: {
     await writeCapabilityCache(cacheFilePath, summary);
     return summary;
   } catch (error) {
-    const summary = {
+    return {
       ok: false,
       source: "unknown",
       issues: [`capability check failed: ${error}`]
     } satisfies CapabilityCheckSummary;
-    await mkdir(options.paths.cacheDir, { recursive: true }).catch(() => {});
-    await writeCapabilityCache(cacheFilePath, summary).catch(() => {});
-    return summary;
   } finally {
     await rm(schemaDir, { recursive: true, force: true }).catch(() => {});
   }

@@ -23,6 +23,28 @@ const testConfig: BridgeConfig = {
   telegramPollTimeoutSeconds: 20,
   telegramPollIntervalMs: 1500
 };
+const REQUIRED_CLIENT_REQUESTS = [
+  "thread/list",
+  "thread/read",
+  "thread/start",
+  "thread/resume",
+  "thread/archive",
+  "thread/unarchive",
+  "turn/start",
+  "turn/interrupt"
+];
+const REQUIRED_SERVER_NOTIFICATIONS = [
+  "turn/started",
+  "turn/completed",
+  "thread/status/changed",
+  "item/started",
+  "item/completed",
+  "item/mcpToolCall/progress",
+  "turn/plan/updated",
+  "thread/archived",
+  "thread/unarchived",
+  "error"
+];
 
 function createTestPaths(root: string): BridgePaths {
   const logsDir = join(root, "logs");
@@ -86,6 +108,29 @@ async function createReadinessContext(): Promise<{
       await rm(root, { recursive: true, force: true });
     }
   };
+}
+
+function methodsToSchema(methods: string[]): string {
+  return JSON.stringify({
+    oneOf: [{ properties: { method: { enum: methods } } }]
+  });
+}
+
+async function writeCapabilitySchemas(
+  schemaDir: string,
+  options?: {
+    clientRequests?: string[];
+    serverNotifications?: string[];
+  }
+): Promise<void> {
+  await writeFile(
+    join(schemaDir, "ClientRequest.json"),
+    methodsToSchema(options?.clientRequests ?? REQUIRED_CLIENT_REQUESTS)
+  );
+  await writeFile(
+    join(schemaDir, "ServerNotification.json"),
+    methodsToSchema(options?.serverNotifications ?? REQUIRED_SERVER_NOTIFICATIONS)
+  );
 }
 
 test("probeReadiness fails hard when Node does not satisfy the declared engine floor", async () => {
@@ -273,38 +318,7 @@ test("probeReadiness accepts schemas that omit item/webSearch/progress", async (
             assert.notEqual(outIndex, -1);
             const schemaDir = args[outIndex + 1];
             assert.ok(schemaDir);
-            const methodsToSchema = (methods: string[]) => JSON.stringify({
-              oneOf: [{ properties: { method: { enum: methods } } }]
-            });
-
-            await writeFile(
-              join(schemaDir, "ClientRequest.json"),
-              methodsToSchema([
-                "thread/list",
-                "thread/read",
-                "thread/start",
-                "thread/resume",
-                "thread/archive",
-                "thread/unarchive",
-                "turn/start",
-                "turn/interrupt"
-              ])
-            );
-            await writeFile(
-              join(schemaDir, "ServerNotification.json"),
-              methodsToSchema([
-                "turn/started",
-                "turn/completed",
-                "thread/status/changed",
-                "item/started",
-                "item/completed",
-                "item/mcpToolCall/progress",
-                "turn/plan/updated",
-                "thread/archived",
-                "thread/unarchived",
-                "error"
-              ])
-            );
+            await writeCapabilitySchemas(schemaDir);
             return { exitCode: 0, stdout: "", stderr: "" };
           }
           throw new Error(`unexpected command: ${args.join(" ")}`);
@@ -325,6 +339,214 @@ test("probeReadiness accepts schemas that omit item/webSearch/progress", async (
     assert.equal(result.snapshot.state, "awaiting_authorization");
     assert.equal(result.snapshot.details.capabilityCheckPassed, true);
     assert.equal(result.snapshot.details.capabilityCheckSource, "generated_schema");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("probeReadiness retries transient schema generation failures instead of caching them", async () => {
+  const { paths, store, cleanup } = await createReadinessContext();
+  let schemaAttempts = 0;
+
+  try {
+    const deps = {
+      nodeVersion: process.version,
+      detectServiceManager: async () => ({
+        manager: "none" as const,
+        health: "warning" as const,
+        issues: []
+      }),
+      commandExists: async () => true,
+      runCommand: async (_command: string, args: string[]) => {
+        if (args[0] === "--version") {
+          return { exitCode: 0, stdout: "codex-cli 0.114.0", stderr: "" };
+        }
+        if (args[0] === "login") {
+          return { exitCode: 0, stdout: "Logged in", stderr: "" };
+        }
+        if (args[0] === "app-server" && args[1] === "generate-json-schema") {
+          schemaAttempts += 1;
+          if (schemaAttempts === 1) {
+            return { exitCode: 1, stdout: "", stderr: "temporary schema failure" };
+          }
+          const outIndex = args.indexOf("--out");
+          assert.notEqual(outIndex, -1);
+          const schemaDir = args[outIndex + 1];
+          assert.ok(schemaDir);
+          await writeCapabilitySchemas(schemaDir);
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        throw new Error(`unexpected command: ${args.join(" ")}`);
+      },
+      validateTelegramToken: async () => ({
+        ok: true,
+        botId: "1",
+        username: "bridge_bot"
+      }),
+      createAppServer: () => ({
+        pid: 123,
+        initializeAndProbe: async () => {},
+        stop: async () => {}
+      })
+    };
+
+    const first = await probeReadiness({
+      config: testConfig,
+      store,
+      paths,
+      logger: testLogger,
+      persist: false,
+      deps
+    } as any);
+    const second = await probeReadiness({
+      config: testConfig,
+      store,
+      paths,
+      logger: testLogger,
+      persist: false,
+      deps
+    } as any);
+
+    assert.equal(first.snapshot.state, "bridge_unhealthy");
+    assert.match(first.snapshot.details.issues.join("\n"), /temporary schema failure/u);
+    assert.equal(second.snapshot.state, "awaiting_authorization");
+    assert.equal(second.snapshot.details.capabilityCheckPassed, true);
+    assert.equal(schemaAttempts, 2);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("probeReadiness ignores stale capability cache entries from an older bridge requirement set", async () => {
+  const { paths, store, cleanup } = await createReadinessContext();
+  let schemaAttempts = 0;
+
+  try {
+    await writeFile(
+      join(paths.cacheDir, "codex-capabilities-0.114.0.json"),
+      JSON.stringify({
+        ok: false,
+        source: "generated_schema",
+        issues: ["missing notification: item/webSearch/progress"]
+      }, null, 2)
+    );
+
+    const result = await probeReadiness({
+      config: testConfig,
+      store,
+      paths,
+      logger: testLogger,
+      persist: false,
+      deps: {
+        nodeVersion: process.version,
+        detectServiceManager: async () => ({
+          manager: "none",
+          health: "warning",
+          issues: []
+        }),
+        commandExists: async () => true,
+        runCommand: async (_command: string, args: string[]) => {
+          if (args[0] === "--version") {
+            return { exitCode: 0, stdout: "codex-cli 0.114.0", stderr: "" };
+          }
+          if (args[0] === "login") {
+            return { exitCode: 0, stdout: "Logged in", stderr: "" };
+          }
+          if (args[0] === "app-server" && args[1] === "generate-json-schema") {
+            schemaAttempts += 1;
+            const outIndex = args.indexOf("--out");
+            assert.notEqual(outIndex, -1);
+            const schemaDir = args[outIndex + 1];
+            assert.ok(schemaDir);
+            await writeCapabilitySchemas(schemaDir);
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          throw new Error(`unexpected command: ${args.join(" ")}`);
+        },
+        validateTelegramToken: async () => ({
+          ok: true,
+          botId: "1",
+          username: "bridge_bot"
+        }),
+        createAppServer: () => ({
+          pid: 123,
+          initializeAndProbe: async () => {},
+          stop: async () => {}
+        })
+      }
+    } as any);
+
+    assert.equal(result.snapshot.state, "awaiting_authorization");
+    assert.equal(result.snapshot.details.capabilityCheckPassed, true);
+    assert.equal(result.snapshot.details.capabilityCheckSource, "generated_schema");
+    assert.equal(schemaAttempts, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("probeReadiness caches capability mismatches that come from a successful schema comparison", async () => {
+  const { paths, store, cleanup } = await createReadinessContext();
+  let schemaAttempts = 0;
+
+  try {
+    const deps = {
+      nodeVersion: process.version,
+      detectServiceManager: async () => ({
+        manager: "none" as const,
+        health: "warning" as const,
+        issues: []
+      }),
+      commandExists: async () => true,
+      runCommand: async (_command: string, args: string[]) => {
+        if (args[0] === "--version") {
+          return { exitCode: 0, stdout: "codex-cli 0.114.0", stderr: "" };
+        }
+        if (args[0] === "login") {
+          return { exitCode: 0, stdout: "Logged in", stderr: "" };
+        }
+        if (args[0] === "app-server" && args[1] === "generate-json-schema") {
+          schemaAttempts += 1;
+          const outIndex = args.indexOf("--out");
+          assert.notEqual(outIndex, -1);
+          const schemaDir = args[outIndex + 1];
+          assert.ok(schemaDir);
+          await writeCapabilitySchemas(schemaDir, {
+            serverNotifications: REQUIRED_SERVER_NOTIFICATIONS.filter((method) => method !== "thread/archived")
+          });
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        throw new Error(`unexpected command: ${args.join(" ")}`);
+      },
+      validateTelegramToken: async () => ({
+        ok: true,
+        botId: "1",
+        username: "bridge_bot"
+      })
+    };
+
+    const first = await probeReadiness({
+      config: testConfig,
+      store,
+      paths,
+      logger: testLogger,
+      persist: false,
+      deps
+    } as any);
+    const second = await probeReadiness({
+      config: testConfig,
+      store,
+      paths,
+      logger: testLogger,
+      persist: false,
+      deps
+    } as any);
+
+    assert.equal(first.snapshot.state, "bridge_unhealthy");
+    assert.equal(second.snapshot.state, "bridge_unhealthy");
+    assert.equal(second.snapshot.details.capabilityCheckSource, "cache");
+    assert.match(second.snapshot.details.issues.join("\n"), /thread\/archived/u);
+    assert.equal(schemaAttempts, 1);
   } finally {
     await cleanup();
   }
