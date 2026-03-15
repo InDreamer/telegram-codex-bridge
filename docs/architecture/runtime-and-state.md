@@ -60,6 +60,7 @@ It should:
 - resolve expanded subagent labels from protocol thread identity when available, preferring `agentNickname`, then thread title, then a local fallback label, and bound the rendered label length before building the Telegram card
 - keep raw `item/agentMessage/delta` traffic out of the normal Telegram chat flow
 - retain richer structured command detail for `/inspect` and the on-disk debug journal
+- write bridge-owned interaction audit records into the same per-turn debug journal when pending interactions are created or reach a terminal state
 - capture the final assistant message emitted before `turn/completed`
 - send the final assistant message as a separate Telegram message after turn completion
 - render the final assistant message with Telegram HTML derived from a safe Markdown subset rather than sending raw Markdown literals
@@ -227,6 +228,41 @@ Retention note:
 - keep only the most recent 50 persisted final-answer views per Telegram chat
 - do not persist the user's current expanded/collapsed state or page cursor
 
+### `pending_interaction`
+
+Persisted bridge-owned interaction state for app-server server requests.
+
+Important fields:
+- `interaction_id`
+- `telegram_chat_id`
+- `session_id`
+- `thread_id`
+- `turn_id`
+- `request_id`
+- `request_method`
+- `interaction_kind`
+- `state`
+- `prompt_json`
+- `response_json`
+- `telegram_message_id`
+- `created_at`
+- `updated_at`
+- `resolved_at`
+- `error_reason`
+
+Allowed `state` values:
+- `pending`
+- `awaiting_text`
+- `answered`
+- `canceled`
+- `expired`
+- `failed`
+
+Behavior notes:
+- `request_id` is stored as a string so JSON-RPC numeric and string ids can round-trip safely
+- `/inspect` only shows unresolved pending interactions, which means `pending` and `awaiting_text`
+- `canceled` is reserved for explicit user cancellation, not timeout or bridge failure cleanup
+
 ## Recovery Model
 
 On bridge startup:
@@ -235,8 +271,10 @@ On bridge startup:
 3. load authorization state and chat binding
 4. load sessions
 5. mark any `running` session as `failed` with `failure_reason = bridge_restart`
-6. probe app-server readiness
-7. restore the active session pointer
+6. mark unresolved pending interactions from those running sessions as `failed`
+7. append interaction-resolution audit records for that recovery cleanup
+8. probe app-server readiness
+9. restore the active session pointer
 
 Readiness / preflight rules:
 - unsupported Node runtime is a hard failure

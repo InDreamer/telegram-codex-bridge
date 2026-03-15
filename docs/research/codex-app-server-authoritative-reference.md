@@ -1,6 +1,6 @@
 # Codex App-Server Authoritative Reference
 
-Last refreshed: 2026-03-14
+Last refreshed: 2026-03-15
 
 Primary audience:
 - in-repo Codex/LLM agents
@@ -31,7 +31,7 @@ When sources disagree, use this order:
 4. Repository code and current-state docs
 5. Historical verification docs and planning docs
 
-For this host on 2026-03-14:
+For this host on 2026-03-15:
 - `codex --version` returned `codex-cli 0.114.0`
 - `codex app-server --help` confirmed:
   - `--listen stdio://` default transport
@@ -159,7 +159,7 @@ Commentary rule for integrations:
 
 ## Current Host Baseline
 
-Current host runtime facts captured on 2026-03-14:
+Current host runtime facts captured on 2026-03-15:
 
 - CLI version: `codex-cli 0.114.0`
 - app-server help confirms:
@@ -425,20 +425,26 @@ Implemented today:
   - compatibility handling for `codex/event/turn_aborted`
 
 Current implementation note:
-- the bridge still does not handle app-server server requests such as approval or structured user-input flows; those remain protocol-available but bridge-unimplemented
+- the bridge now handles the execution-continuity server-request slice:
+  - `item/commandExecution/requestApproval`
+  - `item/fileChange/requestApproval`
+  - `item/permissions/requestApproval`
+  - `item/tool/requestUserInput`
+  - `mcpServer/elicitation/request`
+  - legacy approval compatibility for `applyPatchApproval`
+  - legacy approval compatibility for `execCommandApproval`
+- the bridge also sends server-request responses and uses `turn/steer` for blocked-turn continuation
 
 Current-host note for `codex-cli 0.114.0`:
 - `thread/status/changed` carries a structured `status` object such as `active` plus nested `activeFlags`, not only a flat status string
 
-Explicitly not relied on by current v1 bridge behavior:
-- approval workflows
-- server-side user-input workflows
-- server-request response handling
-- `turn/steer`
+Still not used today by the bridge:
+- `item/tool/call`
+- `account/chatgptAuthTokens/refresh`
 - realtime thread APIs
 - plugin or skills management APIs
 - MCP OAuth flows
-- command/exec surface
+- broader command/exec control surfaces
 
 LLM warning:
 - do not assume unimplemented surfaces are unsupported by Codex; many are present in the current schema and simply not wired into this bridge yet

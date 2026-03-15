@@ -8,6 +8,27 @@
 
 **Tech Stack:** TypeScript, Node built-in test runner via `tsx`, SQLite via `node:sqlite`, Telegram Bot API, Codex app-server JSON-RPC 2.0
 
+## Implementation Status
+
+Status as of 2026-03-15:
+
+- the main Phase 1 and Phase 2 path is implemented in repository code and covered by automated tests
+- shipped in this slice:
+  - app-server server-request routing
+  - `turn/steer`
+  - normalized interaction model
+  - persisted `pending_interaction` state
+  - persisted `canceled` interaction terminal state
+  - Telegram interaction cards and `v3:ix:*` callbacks
+  - end-to-end handling for command approval, file-change approval, permissions approval, structured question answers, MCP elicitation, and legacy approval compatibility for `applyPatchApproval` / `execCommandApproval`
+  - dedicated debug-journal records for interaction creation and terminal resolution
+  - pending interaction visibility in `/inspect`
+- still pending relative to the original plan:
+  - broader follow-on V3 control-plane and rich-input surfaces that were intentionally deferred
+
+The detailed task sections below are preserved as the original execution plan.
+For handoff and follow-on work, treat the status block above plus repository code and tests as the current truth.
+
 ---
 
 ## Scope For This Plan
@@ -67,7 +88,7 @@ CREATE TABLE pending_interaction (
   session_id TEXT NOT NULL,
   thread_id TEXT NOT NULL,
   turn_id TEXT NOT NULL,
-  request_id INTEGER NOT NULL,
+  request_id TEXT NOT NULL,
   request_method TEXT NOT NULL,
   interaction_kind TEXT NOT NULL,
   state TEXT NOT NULL,
@@ -323,7 +344,7 @@ export interface PendingInteractionRow {
   sessionId: string;
   threadId: string;
   turnId: string;
-  requestId: number;
+  requestId: string;
   requestMethod: string;
   interactionKind: "approval" | "permissions" | "questionnaire" | "elicitation";
   state: "pending" | "awaiting_text" | "answered" | "expired" | "failed";

@@ -4,7 +4,7 @@
 
 **Status**
 
-Draft engineering design input for V3 planning
+Planning document with Phase 1 and Phase 2 baseline partially implemented as of 2026-03-15
 
 **Related docs**
 
@@ -77,13 +77,34 @@ V3 should be the release where the bridge aligns much more closely with the curr
 That means this document is not asking whether the bridge should become a raw terminal clone.
 It is defining how V3 should reduce the bridge's current protocol omissions.
 
+## Implementation Snapshot
+
+The repository now implements the first V3 execution-continuity slice:
+
+- server-request routing in the app-server client
+- a normalized interaction model for first-wave interaction types
+- persisted pending interactions in SQLite
+- Telegram interaction cards and callback routing for V3 interactions
+- end-to-end handling for:
+  - `item/commandExecution/requestApproval`
+  - `item/fileChange/requestApproval`
+  - `item/permissions/requestApproval`
+  - `item/tool/requestUserInput`
+  - `mcpServer/elicitation/request`
+  - `applyPatchApproval`
+  - `execCommandApproval`
+- blocked-turn continuation through `turn/steer`
+- pending interaction visibility in `/inspect`
+
+This reduces the biggest V3 gap, but it does **not** complete the broader parity program below.
+
 ## Current Bridge Snapshot
 
-The current bridge intentionally implements a narrow v1 subset.
+The current bridge still mostly exposes the v1 surface, but it now includes the first V3 execution-continuity slice.
 
 ### Requests used today
 
-The bridge currently uses or directly wraps only:
+The bridge currently uses or directly wraps:
 
 - `initialize`
 - `thread/list`
@@ -93,6 +114,7 @@ The bridge currently uses or directly wraps only:
 - `thread/unarchive`
 - `thread/read`
 - `turn/start`
+- `turn/steer`
 - `turn/interrupt`
 - `initialized` as a client notification
 
@@ -105,6 +127,8 @@ Evidence:
 
 The bridge currently classifies and reduces only a subset of runtime notifications:
 
+- `thread/started`
+- `thread/name/updated`
 - `turn/started`
 - `turn/completed`
 - `thread/status/changed`
@@ -128,31 +152,37 @@ Everything else is effectively treated as non-user-facing `other`.
 
 ### Server requests handled today
 
-None.
+The bridge now handles the first execution-continuity wave:
 
-This is the most important capability gap in the entire bridge.
+- `item/commandExecution/requestApproval`
+- `item/fileChange/requestApproval`
+- `item/permissions/requestApproval`
+- `item/tool/requestUserInput`
+- `mcpServer/elicitation/request`
+- `applyPatchApproval`
+- `execCommandApproval`
 
-The current JSON-RPC frame handler routes:
+Unsupported server requests are still rejected with a bridge-owned JSON-RPC error response.
 
-- method-without-id frames as notifications
-- id-only result/error frames as responses to pending client requests
-
-It does not route method-plus-id server requests into any bridge-owned handler. As a result, protocol features that require a client response are not merely hidden from Telegram; they are currently unimplemented end-to-end.
+The biggest server-request gap is no longer frame routing itself.
+The remaining gap is breadth: dynamic tool-call surfaces and long-tail admin/control requests are still outside the shipped slice.
 
 ### User-facing interaction surface today
 
-Telegram currently exposes only fixed bridge-owned interactions:
+Telegram currently exposes the older fixed bridge-owned interactions plus the new V3 interaction cards:
 
 - project picker
 - manual project path confirmation
 - runtime plan expand/collapse
 - final-answer expand/collapse/page
+- dynamic approval cards
+- dynamic structured question/answer prompts
+- MCP elicitation cards
+- blocked-turn text continuation via normal chat messages when the active turn is blocked
 - fixed slash commands such as `/new`, `/sessions`, `/where`, `/inspect`, `/interrupt`
 
-There is no dynamic Telegram interaction surface for:
+Telegram still does not expose dynamic Telegram control surfaces for:
 
-- approvals
-- structured question/answer prompts
 - model selection
 - review target selection
 - skill selection
@@ -220,65 +250,65 @@ Use this as the master alignment checklist for implementation.
 
 ### 1. Frame Routing And Interaction Foundation
 
-- [ ] Add explicit JSON-RPC frame classification for:
+- [x] Add explicit JSON-RPC frame classification for:
   - responses
   - notifications
   - server requests
-- [ ] Add a bridge-owned server-request dispatcher
-- [ ] Persist pending server requests in SQLite
-- [ ] Add correlation fields for `threadId`, `turnId`, request method, and request id
-- [ ] Add request lifecycle transitions:
+- [x] Add a bridge-owned server-request dispatcher
+- [x] Persist pending server requests in SQLite
+- [x] Add correlation fields for `threadId`, `turnId`, request method, and request id
+- [x] Add request lifecycle transitions:
   - pending
   - answered
   - canceled
   - expired
   - failed
-- [ ] Add restart recovery for unresolved server requests
-- [ ] Add `/inspect` visibility for pending interactions
-- [ ] Add structured debug-journal records for request creation and resolution
+- [x] Add restart recovery for unresolved server requests
+- [x] Add `/inspect` visibility for pending interactions
+- [x] Add structured debug-journal records for request creation and resolution
 
 This is `P0`. Without it, the bridge cannot truthfully claim protocol-level parity.
 
 ### 2. Approval And Question/Answer Flows
 
-- [ ] Implement `item/commandExecution/requestApproval`
-- [ ] Implement `item/fileChange/requestApproval`
-- [ ] Implement `item/permissions/requestApproval`
-- [ ] Implement `item/tool/requestUserInput`
-- [ ] Implement `mcpServer/elicitation/request`
-- [ ] Implement `applyPatchApproval`
-- [ ] Implement `execCommandApproval`
-- [ ] Support decision payloads, not only yes/no answers
-- [ ] Support answer maps keyed by question id
-- [ ] Support option-based, free-text, secret, and "other" answers
-- [ ] Add explicit Telegram UX for:
+- [x] Implement `item/commandExecution/requestApproval`
+- [x] Implement `item/fileChange/requestApproval`
+- [x] Implement `item/permissions/requestApproval`
+- [x] Implement `item/tool/requestUserInput`
+- [x] Implement `mcpServer/elicitation/request`
+- [x] Implement `applyPatchApproval`
+- [x] Implement `execCommandApproval`
+- [x] Support decision payloads, not only yes/no answers
+- [x] Support answer maps keyed by question id
+- [x] Support option-based, free-text, secret, and "other" answers
+- [x] Add explicit Telegram UX for:
   - accept
   - accept for session
   - decline
   - cancel
   - structured permission responses
-- [ ] Add timeout and stale-request behavior
-- [ ] Add idempotent re-click handling
+- [x] Add timeout and stale-request behavior
+- [x] Add idempotent re-click handling
 
 This is `P0`.
 
 ### 3. Blocked Turn Recovery And Turn Steering
 
-- [ ] Implement `turn/steer`
-- [ ] Allow Telegram replies to be routed into an active blocked turn when appropriate
-- [ ] Distinguish:
+- [x] Implement `turn/steer`
+- [x] Allow Telegram replies to be routed into an active blocked turn when appropriate
+- [x] Distinguish:
   - bridge-owned command input
   - answer to a pending request
   - user-initiated steer of the running turn
-- [ ] Track `expectedTurnId`
-- [ ] Prevent accidental steering into the wrong turn after restart or switch
-- [ ] Make blocked state actionable, not display-only
+- [x] Track `expectedTurnId`
+- [x] Prevent accidental steering into the wrong turn after restart or switch
+- [x] Make blocked state actionable, not display-only
 
 This is `P0`.
 
 ### 4. Richer User Input Parity
 
-- [ ] Support `text`
+- [x] Support `text`
 - [ ] Support `image`
 - [ ] Support `localImage`
 - [ ] Support `skill`
@@ -332,8 +362,8 @@ This is `P1`.
 
 ### 8. Runtime Notification Parity
 
-- [ ] Handle `thread/started`
-- [ ] Handle `thread/name/updated`
+- [x] Handle `thread/started`
+- [x] Handle `thread/name/updated`
 - [ ] Handle `thread/tokenUsage/updated`
 - [ ] Handle `thread/closed`
 - [ ] Handle `thread/compacted`
@@ -385,10 +415,10 @@ Telegram can support parts of this, but not as a native-terminal equivalent.
 | Capability Area | Protocol Availability | Current Bridge State | Alignment Class | Priority |
 | --- | --- | --- | --- | --- |
 | Core thread + turn lifecycle | Available | Partially implemented | A | Existing |
-| Server requests | Available | Not implemented | A | P0 |
-| Approval workflows | Available | Not implemented | A | P0 |
-| Structured user input | Available | Not implemented | A | P0 |
-| Blocked turn steering | Available | Not implemented | A | P0 |
+| Server requests | Available | First-wave implemented | A | P0 complete |
+| Approval workflows | Available | Implemented including legacy approval compatibility | A | P0 complete |
+| Structured user input | Available | First-wave implemented | A | P0 complete |
+| Blocked turn steering | Available | Implemented for blocked text continuation | A | P0 complete |
 | Rich input variants | Available | Text only | A/B | P1 |
 | Model + collaboration selection | Available | Not implemented | A | P1 |
 | Review + skills | Available | Not implemented | A | P1 |
@@ -433,27 +463,14 @@ Deliverable:
 
 - no more "display-only blocked state" dead ends
 
-### Phase 3: First-Wave Parity Surfaces
-
-Use the broker to implement:
-
-- approvals
-- `item/tool/requestUserInput`
-- `mcpServer/elicitation/request`
-- image/local-image/mention/skill inputs
-- model selection
-- collaboration mode selection
-
-Deliverable:
-
-- bridge can complete most protocol-defined interactive tasks without falling back to native CLI
-
-### Phase 4: Review, Skills, And Rich Thread Controls
+### Phase 3: Control-Plane Parity
 
 Implement:
 
+- model discovery and selection
 - `review/start`
-- `skills/*`
+- skills discovery and selection
+- collaboration mode selection
 - thread fork / rollback / compact / rename / metadata
 - improved session-thread reconciliation
 
@@ -461,29 +478,52 @@ Deliverable:
 
 - bridge is useful as a serious remote control plane, not only a prompt relay
 
-### Phase 5: Runtime And Long-Tail Parity
+Current status:
 
-Broaden notification and admin coverage:
+- this phase is still pending
+- the already-shipped approval, questionnaire, elicitation, and blocked-turn continuation work belongs to the earlier interaction phases, not to this phase
+
+### Phase 4: Rich Input Parity
+
+Implement:
+
+- `image`
+- `localImage`
+- `skill`
+- `mention`
+- Telegram-side attachment and follow-up UX needed to support those inputs without pretending Telegram is a raw terminal
+
+Deliverable:
+
+- richer non-text and structured inputs work with adapted Telegram UX
+
+### Phase 5: Runtime Parity
+
+Broaden runtime coverage:
 
 - `serverRequest/resolved`
 - `model/rerouted`
-- token usage, diffs, hooks, terminal interaction
-- MCP/admin/plugin/app/account surfaces
+- token usage
+- diffs
+- hooks
+- terminal interaction
+- warnings and notices
 
 Deliverable:
 
 - parity on high-value operational visibility
 
-### Phase 6: Realtime And Transport-Specific Extensions
+### Phase 6: Long-Tail And Dynamic Surfaces
 
-Only after the above:
+Only after the above runtime slice:
 
-- realtime text/audio evaluation
-- any Telegram-specific adaptations for streaming/realtime control
+- `item/tool/call`
+- `account/chatgptAuthTokens/refresh`
+- plugin, MCP admin, app, and similar long-tail protocol surfaces
 
 Deliverable:
 
-- optional transport expansion, not a prerequisite for parity on core task execution
+- close the remaining dynamic and admin protocol gaps after the higher-value parity slices are done
 
 ## Non-Negotiable Design Rules For Future Implementation
 
@@ -507,6 +547,13 @@ After this design document, the next implementation documents should be:
 Current first implementation plan:
 
 - `docs/plans/2026-03-14-v3-interaction-broker-phase-1-2-implementation-plan.md`
+
+Current main pending follow-up after the first implementation slice:
+
+1. implement control-plane parity surfaces
+2. implement rich input parity
+3. broaden runtime notification coverage
+4. evaluate dynamic tool/admin/auth surfaces
 
 ## Verification Notes
 

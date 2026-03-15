@@ -1,8 +1,8 @@
 # Telegram Codex Bridge V3 PRD
 
-Status: Draft for engineering design and implementation planning
+Status: Active direction; Phase 1 and Phase 2 baseline partially implemented
 Owner: Product
-Last updated: 2026-03-14
+Last updated: 2026-03-15
 Related docs:
 - `docs/future/v2-prd.md`
 - `docs/plans/2026-03-14-codex-cli-capability-alignment-design.md`
@@ -17,6 +17,27 @@ This document defines the **product direction for Telegram Codex Bridge V3**.
 Its purpose is to establish that the next major version is no longer primarily about visibility polish or session ergonomics. V3 is the release where the bridge should close the largest remaining capability gap with the current Codex app-server protocol.
 
 This is a product document, not a protocol schema and not an implementation plan.
+
+### Current implementation snapshot
+
+As of 2026-03-15, the repository now includes the first real V3 slice:
+
+- JSON-RPC server-request routing in the app-server client
+- persisted pending interactions in SQLite
+- Telegram interaction cards under the `v3:ix:*` callback namespace
+- Telegram-mediated handling for:
+  - command approval
+  - file-change approval
+  - permissions approval
+  - structured `requestUserInput`
+  - MCP elicitation
+  - legacy approval compatibility for `applyPatchApproval` and `execCommandApproval`
+- blocked-turn continuation via `turn/steer`
+- `/inspect` visibility for pending interactions
+
+This means V3 is no longer purely a design target.
+However, V3 is **not complete** yet.
+The remaining work is concentrated in control-plane parity, rich input parity, broader runtime visibility, and long-tail protocol surfaces.
 
 ---
 
@@ -231,6 +252,21 @@ Product-level success indicators:
 3. users can deliberately choose models or review targets when those are protocol-supported
 4. the bridge behaves more like a remote Codex control plane than a final-answer adapter
 5. remaining non-parity areas are mostly transport-native, not implementation omissions
+
+### Current pending areas
+
+The current bridge still does **not** implement these V3 areas:
+
+1. control-plane parity such as model selection, review start, skills selection, collaboration mode selection, and richer thread controls
+2. rich input parity for `image`, `localImage`, `skill`, and `mention`
+3. broader runtime notification parity such as token usage, diffs, hooks, terminal interaction, deprecation/config warnings, and `serverRequest/resolved`
+4. dynamic or specialized server requests such as `item/tool/call` and `account/chatgptAuthTokens/refresh`
+5. realtime/audio and transport-specific extensions
+
+There are also two important implementation-boundary notes for the first V3 slice:
+
+- the persisted interaction lifecycle currently uses `pending`, `awaiting_text`, `answered`, `expired`, and `failed`; there is no separate persisted `canceled` terminal state yet
+- interaction creation and resolution still do not emit dedicated debug-journal records beyond the existing turn journal machinery
 
 ---
 

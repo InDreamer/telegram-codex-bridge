@@ -1,6 +1,6 @@
 # Codex App-Server API Quick Reference
 
-Last refreshed: 2026-03-14
+Last refreshed: 2026-03-15
 
 Version basis:
 - local host `codex-cli 0.114.0`
@@ -595,17 +595,26 @@ Used today by the bridge:
 - `thread/archive`
 - `thread/unarchive`
 - `turn/start`
+- `turn/steer`
 - `turn/interrupt`
+- approval and user-input request handling for:
+  - `item/commandExecution/requestApproval`
+  - `item/fileChange/requestApproval`
+  - `item/permissions/requestApproval`
+  - `item/tool/requestUserInput`
+  - `mcpServer/elicitation/request`
+  - `applyPatchApproval`
+  - `execCommandApproval`
 - selected lifecycle and item notifications
 - legacy compatibility events such as `codex/event/task_complete`
 
 Not used today by the bridge, but present in current schema:
-- approvals and user-input request handling
-- `turn/steer`
 - thread naming and other advanced thread-control APIs
 - realtime APIs
 - `command/exec`
 - review, skills, plugin, app, and MCP admin surfaces
+- `item/tool/call`
+- `account/chatgptAuthTokens/refresh`
 
 Important distinction:
 - these adoption notes describe what the current bridge implementation actually uses
