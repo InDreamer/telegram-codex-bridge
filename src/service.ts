@@ -1601,9 +1601,17 @@ export class BridgeService {
     try {
       const result = await appServer.readThread(activeSession.threadId, true) as { thread?: { turns?: unknown[] } };
       const turns = Array.isArray(result.thread?.turns) ? result.thread.turns : [];
-      const targetTurn = turns.find((turn) => getString(turn, "id") === activeSession.lastTurnId)
-        ?? turns.at(-1);
+      const targetTurn = turns.find((turn) => getString(turn, "id") === activeSession.lastTurnId);
       if (!targetTurn) {
+        await this.logger.warn("inspect history turn missing", {
+          sessionId: activeSession.sessionId,
+          threadId: activeSession.threadId,
+          turnId: activeSession.lastTurnId,
+          availableTurnIds: turns
+            .map((turn) => getString(turn, "id"))
+            .filter((turnId): turnId is string => Boolean(turnId))
+            .slice(-10)
+        });
         return null;
       }
 

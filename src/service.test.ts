@@ -1962,6 +1962,126 @@ test("status card shows running subagents behind an agent button and expands the
   }
 });
 
+test("status card clears stale subagent blocker text after the subagent resumes", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const callbackAnswers: Array<string | undefined> = [];
+  let nextMessageId = 740;
+
+  try {
+    store.upsertPendingAuthorization({
+      telegramUserId: "1",
+      telegramChatId: "chat-1",
+      telegramUsername: "tester",
+      displayName: "Tester"
+    });
+    const candidate = store.listPendingAuthorizations()[0];
+    if (!candidate) {
+      throw new Error("expected pending authorization candidate");
+    }
+    store.confirmPendingAuthorization(candidate);
+    const session = createSession(store, "chat-1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ messageId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      answerCallbackQuery: async (_callbackQueryId: string, text?: string) => {
+        callbackAnswers.push(text);
+      }
+    };
+
+    installRunningAppServer(service, "thread-agent-main-2", "turn-agent-main-2");
+
+    await withMockedNow("2026-03-10T11:20:00.000Z", async () => {
+      await (service as any).startRealTurn("chat-1", session, "Do the work");
+    });
+    await withMockedNow("2026-03-10T11:20:01.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/started", {
+        threadId: "thread-agent-main-2",
+        turnId: "turn-agent-main-2"
+      });
+    });
+    await withMockedNow("2026-03-10T11:20:02.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/started", {
+        threadId: "thread-agent-main-2",
+        turnId: "turn-agent-main-2",
+        item: {
+          id: "collab-2",
+          type: "collabAgentToolCall",
+          tool: "spawnAgent",
+          receiverThreadIds: ["thread-agent-sub-resume"],
+          agentsStates: {
+            "thread-agent-sub-resume": {
+              status: "pendingInit",
+              message: "Booting"
+            }
+          }
+        }
+      });
+    });
+
+    await withMockedNow("2026-03-10T11:20:03.000Z", async () => {
+      await (service as any).handleCallback({
+        id: "callback-agent-expand-2",
+        from: { id: 1, is_bot: false, first_name: "Tester" },
+        message: {
+          message_id: 740,
+          chat: { id: 1, type: "private" },
+          date: 0,
+          text: "<b>Runtime Status</b>"
+        },
+        data: `v1:agent:expand:${session.sessionId}`
+      });
+    });
+
+    await withMockedNow("2026-03-10T11:20:05.000Z", async () => {
+      await (service as any).handleAppServerNotification("thread/status/changed", {
+        threadId: "thread-agent-sub-resume",
+        status: {
+          type: "active",
+          activeFlags: ["waitingOnApproval"]
+        }
+      });
+    });
+    assert.match(edited.at(-1)?.text ?? "", /Waiting for approval/u);
+
+    await withMockedNow("2026-03-10T11:20:08.000Z", async () => {
+      await (service as any).handleAppServerNotification("thread/status/changed", {
+        threadId: "thread-agent-sub-resume",
+        status: {
+          type: "active",
+          activeFlags: []
+        }
+      });
+    });
+    await withMockedNow("2026-03-10T11:20:10.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/started", {
+        threadId: "thread-agent-sub-resume",
+        turnId: "turn-agent-sub-resume",
+        item: {
+          id: "cmd-agent-sub-resume",
+          type: "commandExecution",
+          title: "rg resume"
+        }
+      });
+    });
+
+    assert.equal(callbackAnswers.at(-1), undefined);
+    assert.match(edited.at(-1)?.text ?? "", /rg resume/u);
+    assert.doesNotMatch(edited.at(-1)?.text ?? "", /Waiting for approval/u);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("runtime errors create a separate error card without polluting the status card", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ messageId: number; text: string; parseMode?: string }> = [];
@@ -2314,6 +2434,134 @@ test("inspect prefers thread history when cached completed activity is too thin"
     assert.equal(sent[0]?.parseMode, "HTML");
     assert.match(sent[0]?.text ?? "", /最近一次执行的历史记录/u);
     assert.match(sent[0]?.text ?? "", /26\/26 tests passed/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("inspect refuses to show a different turn when thread history is missing the requested turn", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+  const { logger, warn } = createCapturingLogger();
+
+  try {
+    const session = authorizeChatWithSession(store, "chat-1");
+    store.updateSessionThreadId(session.sessionId, "thread-missing-history-turn");
+    store.updateSessionStatus(session.sessionId, "idle", {
+      lastTurnId: "turn-missing-history-turn",
+      lastTurnStatus: "completed"
+    });
+    (service as any).logger = logger;
+    (service as any).appServer = {
+      isRunning: true,
+      readThread: async () => ({
+        thread: {
+          id: "thread-missing-history-turn",
+          turns: [
+            {
+              id: "turn-someone-else",
+              status: "completed",
+              items: [
+                {
+                  id: "cmd-1",
+                  type: "commandExecution",
+                  command: "rm -rf nope",
+                  status: "completed"
+                }
+              ]
+            }
+          ]
+        }
+      })
+    };
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string) => {
+        sent.push(text);
+        return createFakeTelegramMessage(405, text);
+      }
+    };
+
+    await (service as any).routeCommand("chat-1", "inspect", "");
+
+    assert.equal(sent.length, 1);
+    assert.match(sent[0] ?? "", /没有可用的活动详情/u);
+    assert.doesNotMatch(sent[0] ?? "", /rm -rf nope/u);
+    assert.ok(warn.some((entry) => entry.message === "inspect history turn missing"));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("inspect falls back to the thin live snapshot when history misses the requested turn", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ text: string; parseMode?: string }> = [];
+  const { logger, warn } = createCapturingLogger();
+
+  try {
+    const session = authorizeChatWithSession(store, "chat-1");
+    store.updateSessionThreadId(session.sessionId, "thread-thin-missing-history");
+    store.updateSessionStatus(session.sessionId, "idle", {
+      lastTurnId: "turn-thin-missing-history",
+      lastTurnStatus: "completed"
+    });
+    const tracker = new ActivityTracker({
+      threadId: "thread-thin-missing-history",
+      turnId: "turn-thin-missing-history"
+    });
+    tracker.apply(classifyNotification("turn/started", {
+      threadId: "thread-thin-missing-history",
+      turnId: "turn-thin-missing-history"
+    }), "2026-03-10T10:00:00.000Z");
+    tracker.apply(classifyNotification("turn/completed", {
+      threadId: "thread-thin-missing-history",
+      turn: {
+        id: "turn-thin-missing-history",
+        status: "completed"
+      }
+    }), "2026-03-10T10:00:03.000Z");
+    (service as any).setRecentActivity(session.sessionId, {
+      tracker,
+      debugFilePath: null,
+      statusCard: null
+    });
+    (service as any).logger = logger;
+    (service as any).appServer = {
+      isRunning: true,
+      readThread: async () => ({
+        thread: {
+          id: "thread-thin-missing-history",
+          turns: [
+            {
+              id: "turn-someone-else",
+              status: "completed",
+              items: [
+                {
+                  id: "cmd-1",
+                  type: "commandExecution",
+                  command: "wrong turn output",
+                  status: "completed"
+                }
+              ]
+            }
+          ]
+        }
+      })
+    };
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        sent.push({ text, parseMode: options?.parseMode });
+        return createFakeTelegramMessage(406, text);
+      }
+    };
+
+    await (service as any).routeCommand("chat-1", "inspect", "");
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]?.parseMode, "HTML");
+    assert.match(sent[0]?.text ?? "", /^<b>当前任务详情<\/b>/u);
+    assert.doesNotMatch(sent[0]?.text ?? "", /最近一次执行的历史记录/u);
+    assert.doesNotMatch(sent[0]?.text ?? "", /wrong turn output/u);
+    assert.ok(warn.some((entry) => entry.message === "inspect history turn missing"));
   } finally {
     await cleanup();
   }

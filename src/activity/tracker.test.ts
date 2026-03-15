@@ -325,6 +325,85 @@ test("tracks running subagents and their latest progress separately from the mai
   assert.equal(settled.agentSnapshot.length, 0);
 });
 
+test("clears stale subagent blocker text when the agent resumes work", () => {
+  const tracker = new ActivityTracker({
+    threadId: "thread-main",
+    turnId: "turn-main"
+  });
+
+  tracker.apply(
+    classifyNotification("turn/started", {
+      threadId: "thread-main",
+      turnId: "turn-main"
+    }),
+    "2026-03-10T11:10:00.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/started", {
+      threadId: "thread-main",
+      turnId: "turn-main",
+      item: {
+        id: "collab-1",
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        receiverThreadIds: ["thread-sub-resume"],
+        agentsStates: {
+          "thread-sub-resume": {
+            status: "pendingInit",
+            message: "Booting"
+          }
+        }
+      }
+    }),
+    "2026-03-10T11:10:00.100Z"
+  );
+
+  tracker.apply(
+    classifyNotification("thread/status/changed", {
+      threadId: "thread-sub-resume",
+      status: {
+        type: "active",
+        activeFlags: ["waitingOnApproval"]
+      }
+    }),
+    "2026-03-10T11:10:01.000Z"
+  );
+
+  let inspect = tracker.getInspectSnapshot("2026-03-10T11:10:01.100Z");
+  assert.equal(inspect.agentSnapshot[0]?.progress, "Waiting for approval");
+
+  tracker.apply(
+    classifyNotification("thread/status/changed", {
+      threadId: "thread-sub-resume",
+      status: {
+        type: "active",
+        activeFlags: []
+      }
+    }),
+    "2026-03-10T11:10:02.000Z"
+  );
+
+  inspect = tracker.getInspectSnapshot("2026-03-10T11:10:02.100Z");
+  assert.equal(inspect.agentSnapshot[0]?.progress, null);
+
+  tracker.apply(
+    classifyNotification("item/started", {
+      threadId: "thread-sub-resume",
+      turnId: "turn-sub-resume",
+      item: {
+        id: "cmd-sub-resume",
+        type: "commandExecution",
+        title: "rg resume"
+      }
+    }),
+    "2026-03-10T11:10:03.000Z"
+  );
+
+  inspect = tracker.getInspectSnapshot("2026-03-10T11:10:03.100Z");
+  assert.equal(inspect.agentSnapshot[0]?.progress, "rg resume");
+});
+
 test("plan snapshot reflects the latest plan update instead of append-only history", () => {
   const tracker = new ActivityTracker({
     threadId: "thread-plan-current",

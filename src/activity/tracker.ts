@@ -508,6 +508,8 @@ export class ActivityTracker {
     switch (notification.kind) {
       case "turn_started":
         subagent.status = "running";
+        subagent.progress = null;
+        subagent.activeItemLabel = null;
         subagent.lastActivityAt = receivedAt;
         return;
 
@@ -522,6 +524,9 @@ export class ActivityTracker {
           subagent.status = "errored";
         } else if (notification.status === "active" || notification.status === "idle") {
           subagent.status = "running";
+          if (isBlockedProgress(subagent.progress) && !blockedReason) {
+            subagent.progress = null;
+          }
         }
         if (blockedReason) {
           subagent.progress = blockedReason === "waitingOnApproval"
@@ -536,6 +541,7 @@ export class ActivityTracker {
         this.syncCollabAgentStates(notification.collabAgentStates);
         const activeItemType = mapActiveItemType(notification.itemType);
         subagent.status = "running";
+        subagent.progress = null;
         subagent.activeItemLabel = notification.label ?? buildItemLabel(activeItemType, notification.itemType);
         subagent.lastActivityAt = receivedAt;
         if (activeItemType === "commandExecution" && notification.itemId) {
@@ -783,6 +789,10 @@ function mapCompletionStatus(status: string): TurnStatus {
     default:
       return "unknown";
   }
+}
+
+function isBlockedProgress(progress: string | null): boolean {
+  return progress === "Waiting for approval" || progress === "Waiting for user input";
 }
 
 function mapActiveItemType(itemType: string | null): ActiveItemType | null {
