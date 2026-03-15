@@ -11,8 +11,8 @@ import { TelegramApi, TelegramApiError,
   type TelegramUpdate
 } from "./telegram/api.js";
 import { TelegramPoller } from "./telegram/poller.js";
-import { ActivityTracker } from "./activity/tracker.js";
-import type { ActivityStatus, DebugJournalRecord, InspectSnapshot } from "./activity/types.js";
+import { ActivityTracker, type SubagentIdentityEvent } from "./activity/tracker.js";
+import type { ActivityStatus, CollabAgentStateSnapshot, DebugJournalRecord, InspectSnapshot } from "./activity/types.js";
 import { classifyNotification } from "./codex/notification-classifier.js";
 import {
   buildArchiveSuccessText,
@@ -139,6 +139,7 @@ interface ActiveTurnState {
   latestStatusProgressText: string | null;
   latestPlanFingerprint: string;
   latestAgentFingerprint: string;
+  subagentIdentityBackfillStates: Map<string, "pending" | "resolved" | "exhausted">;
   errorCards: ErrorCardState[];
   nextErrorCardId: number;
   surfaceQueue: Promise<void>;
@@ -1349,6 +1350,7 @@ export class BridgeService {
         latestStatusProgressText: null,
         latestPlanFingerprint: "",
         latestAgentFingerprint: "",
+        subagentIdentityBackfillStates: new Map(),
         errorCards: [],
         nextErrorCardId: 1,
         surfaceQueue: Promise.resolve()
@@ -1448,6 +1450,7 @@ export class BridgeService {
     }
 
     activeTurn.tracker.apply(classified);
+    await this.logSubagentIdentityEvents(activeTurn, activeTurn.tracker.drainSubagentIdentityEvents());
     const after = activeTurn.tracker.getStatus();
     const forceSurfaceSync = classified.kind === "turn_completed";
     await this.logger.info("turn event processed", {
@@ -1666,6 +1669,123 @@ export class BridgeService {
         // Ignore trace-log failures entirely so Telegram rendering keeps running.
       }
     }
+  }
+
+  private async logSubagentIdentityEvents(
+    activeTurn: ActiveTurnState,
+    events: SubagentIdentityEvent[]
+  ): Promise<void> {
+    for (const event of events) {
+      await this.logger.info(
+        event.kind === "cached" ? "subagent identity cached" : "subagent identity applied",
+        {
+          sessionId: activeTurn.sessionId,
+          chatId: activeTurn.chatId,
+          threadId: activeTurn.threadId,
+          turnId: activeTurn.turnId,
+          subagentThreadId: event.threadId,
+          label: event.label,
+          labelSource: event.labelSource,
+          origin: event.origin
+        }
+      );
+    }
+  }
+
+  private async backfillSubagentIdentities(
+    activeTurn: ActiveTurnState,
+    agentEntries: CollabAgentStateSnapshot[]
+  ): Promise<boolean> {
+    const appServer = this.appServer as { readThread?: (threadId: string, includeTurns?: boolean) => Promise<unknown> } | null;
+    if (!appServer?.readThread) {
+      return false;
+    }
+
+    let changed = false;
+    for (const agent of agentEntries) {
+      if (agent.labelSource === "nickname") {
+        continue;
+      }
+
+      const backfillState = activeTurn.subagentIdentityBackfillStates.get(agent.threadId);
+      if (backfillState === "pending" || backfillState === "resolved" || backfillState === "exhausted") {
+        continue;
+      }
+
+      activeTurn.subagentIdentityBackfillStates.set(agent.threadId, "pending");
+      await this.logger.info("subagent identity backfill requested", {
+        sessionId: activeTurn.sessionId,
+        chatId: activeTurn.chatId,
+        threadId: activeTurn.threadId,
+        turnId: activeTurn.turnId,
+        subagentThreadId: agent.threadId
+      });
+
+      try {
+        const result = await appServer.readThread(agent.threadId, false) as {
+          thread?: {
+            agentNickname?: string | null;
+            agentRole?: string | null;
+            name?: string | null;
+          };
+        };
+        const thread = result.thread;
+        const applied = thread
+          ? activeTurn.tracker.applyResolvedSubagentIdentity(agent.threadId, {
+            agentNickname: getString(thread, "agentNickname"),
+            agentRole: getString(thread, "agentRole"),
+            threadName: getString(thread, "name")
+          })
+          : false;
+        await this.logSubagentIdentityEvents(activeTurn, activeTurn.tracker.drainSubagentIdentityEvents());
+
+        const resolvedLabel = activeTurn.tracker.getInspectSnapshot().agentSnapshot
+          .find((entry) => entry.threadId === agent.threadId);
+
+        if (applied && resolvedLabel && resolvedLabel.labelSource !== "fallback") {
+          changed = true;
+          activeTurn.subagentIdentityBackfillStates.set(agent.threadId, "resolved");
+          await this.logger.info("subagent identity backfill resolved", {
+            sessionId: activeTurn.sessionId,
+            chatId: activeTurn.chatId,
+            threadId: activeTurn.threadId,
+            turnId: activeTurn.turnId,
+            subagentThreadId: agent.threadId,
+            label: resolvedLabel.label,
+            labelSource: resolvedLabel.labelSource
+          });
+          continue;
+        }
+
+        activeTurn.subagentIdentityBackfillStates.set(agent.threadId, "exhausted");
+        await this.logger.info("subagent identity backfill exhausted", {
+          sessionId: activeTurn.sessionId,
+          chatId: activeTurn.chatId,
+          threadId: activeTurn.threadId,
+          turnId: activeTurn.turnId,
+          subagentThreadId: agent.threadId
+        });
+      } catch (error) {
+        activeTurn.subagentIdentityBackfillStates.set(agent.threadId, "exhausted");
+        await this.logger.warn("subagent identity backfill failed", {
+          sessionId: activeTurn.sessionId,
+          chatId: activeTurn.chatId,
+          threadId: activeTurn.threadId,
+          turnId: activeTurn.turnId,
+          subagentThreadId: agent.threadId,
+          error: `${error}`
+        });
+        await this.logger.info("subagent identity backfill exhausted", {
+          sessionId: activeTurn.sessionId,
+          chatId: activeTurn.chatId,
+          threadId: activeTurn.threadId,
+          turnId: activeTurn.turnId,
+          subagentThreadId: agent.threadId
+        });
+      }
+    }
+
+    return changed;
   }
 
   private buildStatusCardRenderPayload(
@@ -2042,7 +2162,13 @@ export class BridgeService {
       reason: string;
     }
   ): Promise<void> {
-    const inspect = activeTurn.tracker.getInspectSnapshot();
+    let inspect = activeTurn.tracker.getInspectSnapshot();
+    if (inspect.agentSnapshot.length > 0) {
+      const identityChanged = await this.backfillSubagentIdentities(activeTurn, inspect.agentSnapshot);
+      if (identityChanged) {
+        inspect = activeTurn.tracker.getInspectSnapshot();
+      }
+    }
     const context = this.getRuntimeCardContext(activeTurn.sessionId);
     const planFingerprint = inspect.planSnapshot.join("\n");
     const planChanged = planFingerprint !== activeTurn.latestPlanFingerprint;
@@ -2050,7 +2176,7 @@ export class BridgeService {
       activeTurn.latestPlanFingerprint = planFingerprint;
     }
     const agentFingerprint = inspect.agentSnapshot
-      .map((agent) => `${agent.threadId}|${agent.status}|${agent.progress ?? ""}`)
+      .map((agent) => `${agent.threadId}|${agent.label}|${agent.status}|${agent.progress ?? ""}`)
       .join("\n");
     const agentsChanged = agentFingerprint !== activeTurn.latestAgentFingerprint;
     if (agentsChanged) {

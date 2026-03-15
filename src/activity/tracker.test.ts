@@ -273,6 +273,18 @@ test("tracks running subagents and their latest progress separately from the mai
   );
 
   tracker.apply(
+    classifyNotification("thread/started", {
+      thread: {
+        id: "thread-sub-1",
+        agentNickname: "Pauli",
+        agentRole: "explorer",
+        name: "Telegram Flow"
+      }
+    }),
+    "2026-03-10T11:00:00.500Z"
+  );
+
+  tracker.apply(
     classifyNotification("turn/started", {
       threadId: "thread-sub-1",
       turnId: "turn-sub-1"
@@ -306,7 +318,8 @@ test("tracks running subagents and their latest progress separately from the mai
   const running = tracker.getInspectSnapshot("2026-03-10T11:00:02.000Z");
   assert.equal(running.agentSnapshot.length, 1);
   assert.equal(running.agentSnapshot[0]?.threadId, "thread-sub-1");
-  assert.match(running.agentSnapshot[0]?.label ?? "", /^agent-/u);
+  assert.equal(running.agentSnapshot[0]?.label, "Pauli");
+  assert.equal(running.agentSnapshot[0]?.labelSource, "nickname");
   assert.equal(running.agentSnapshot[0]?.status, "running");
   assert.equal(running.agentSnapshot[0]?.progress, "rg plan -> 2 matches");
 
@@ -325,7 +338,392 @@ test("tracks running subagents and their latest progress separately from the mai
   assert.equal(settled.agentSnapshot.length, 0);
 });
 
-test("clears stale subagent blocker text when the agent resumes work", () => {
+test("prefers subagent nickname over thread title when both are present", () => {
+  const tracker = new ActivityTracker({
+    threadId: "thread-main",
+    turnId: "turn-main"
+  });
+
+  tracker.apply(
+    classifyNotification("item/started", {
+      threadId: "thread-main",
+      turnId: "turn-main",
+      item: {
+        id: "collab-priority",
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        receiverThreadIds: ["thread-sub-priority"],
+        agentsStates: {
+          "thread-sub-priority": {
+            status: "pendingInit",
+            message: "Booting"
+          }
+        }
+      }
+    }),
+    "2026-03-10T11:05:00.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("thread/started", {
+      thread: {
+        id: "thread-sub-priority",
+        agentNickname: "Fermat",
+        agentRole: "explorer",
+        name: "Runtime and State"
+      }
+    }),
+    "2026-03-10T11:05:00.200Z"
+  );
+
+  tracker.apply(
+    classifyNotification("thread/name/updated", {
+      threadId: "thread-sub-priority",
+      threadName: "Should Not Replace Nickname"
+    }),
+    "2026-03-10T11:05:00.300Z"
+  );
+
+  const inspect = tracker.getInspectSnapshot("2026-03-10T11:05:01.000Z");
+  assert.equal(inspect.agentSnapshot[0]?.label, "Fermat");
+  assert.equal(inspect.agentSnapshot[0]?.labelSource, "nickname");
+  assert.equal(inspect.agentSnapshot[0]?.progress, "Booting");
+});
+
+test("replays cached subagent identity when the thread identity arrives before collab state", () => {
+  const tracker = new ActivityTracker({
+    threadId: "thread-main",
+    turnId: "turn-main"
+  });
+
+  tracker.apply(
+    classifyNotification("thread/started", {
+      thread: {
+        id: "thread-sub-early",
+        agentNickname: "Gauss",
+        agentRole: "explorer",
+        name: "Protocol Audit"
+      }
+    }),
+    "2026-03-10T11:06:00.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/started", {
+      threadId: "thread-main",
+      turnId: "turn-main",
+      item: {
+        id: "collab-early",
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        receiverThreadIds: ["thread-sub-early"],
+        agentsStates: {
+          "thread-sub-early": {
+            status: "pendingInit",
+            message: "Booting"
+          }
+        }
+      }
+    }),
+    "2026-03-10T11:06:00.100Z"
+  );
+
+  const inspect = tracker.getInspectSnapshot("2026-03-10T11:06:01.000Z");
+  assert.equal(inspect.agentSnapshot[0]?.label, "Gauss");
+  assert.equal(inspect.agentSnapshot[0]?.labelSource, "nickname");
+  assert.equal(inspect.agentSnapshot[0]?.progress, "Booting");
+});
+
+test("replays cached thread titles when the title update arrives before collab state", () => {
+  const tracker = new ActivityTracker({
+    threadId: "thread-main",
+    turnId: "turn-main"
+  });
+
+  tracker.apply(
+    classifyNotification("thread/name/updated", {
+      threadId: "thread-sub-title-early",
+      threadName: "Delayed Title"
+    }),
+    "2026-03-10T11:06:30.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/started", {
+      threadId: "thread-main",
+      turnId: "turn-main",
+      item: {
+        id: "collab-title-early",
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        receiverThreadIds: ["thread-sub-title-early"],
+        agentsStates: {
+          "thread-sub-title-early": {
+            status: "pendingInit",
+            message: "Booting"
+          }
+        }
+      }
+    }),
+    "2026-03-10T11:06:30.100Z"
+  );
+
+  const inspect = tracker.getInspectSnapshot("2026-03-10T11:06:31.000Z");
+  assert.equal(inspect.agentSnapshot[0]?.label, "Delayed Title");
+  assert.equal(inspect.agentSnapshot[0]?.labelSource, "threadName");
+  assert.equal(inspect.agentSnapshot[0]?.progress, "Booting");
+});
+
+test("backfill only fills missing subagent identity fields", () => {
+  const tracker = new ActivityTracker({
+    threadId: "thread-main",
+    turnId: "turn-main"
+  });
+
+  tracker.apply(
+    classifyNotification("item/started", {
+      threadId: "thread-main",
+      turnId: "turn-main",
+      item: {
+        id: "collab-backfill-merge",
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        receiverThreadIds: ["thread-sub-backfill-merge"],
+        agentsStates: {
+          "thread-sub-backfill-merge": {
+            status: "pendingInit",
+            message: "Booting"
+          }
+        }
+      }
+    }),
+    "2026-03-10T11:06:45.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("thread/name/updated", {
+      threadId: "thread-sub-backfill-merge",
+      threadName: "Current Title"
+    }),
+    "2026-03-10T11:06:45.100Z"
+  );
+
+  const firstBackfill = tracker.applyResolvedSubagentIdentity(
+    "thread-sub-backfill-merge",
+    {
+      agentNickname: "Gauss",
+      agentRole: "explorer",
+      threadName: "Stale Title"
+    },
+    "2026-03-10T11:06:45.200Z"
+  );
+  assert.equal(firstBackfill, true);
+
+  const subagent = (tracker as any).subagents.get("thread-sub-backfill-merge");
+  assert.equal(subagent?.agentNickname, "Gauss");
+  assert.equal(subagent?.agentRole, "explorer");
+  assert.equal(subagent?.threadName, "Current Title");
+
+  const staleBackfill = tracker.applyResolvedSubagentIdentity(
+    "thread-sub-backfill-merge",
+    {
+      agentNickname: null,
+      agentRole: null,
+      threadName: "Older Title"
+    },
+    "2026-03-10T11:06:45.300Z"
+  );
+  assert.equal(staleBackfill, false);
+  assert.equal(subagent?.agentNickname, "Gauss");
+  assert.equal(subagent?.agentRole, "explorer");
+  assert.equal(subagent?.threadName, "Current Title");
+
+  const inspect = tracker.getInspectSnapshot("2026-03-10T11:06:46.000Z");
+  assert.equal(inspect.agentSnapshot[0]?.label, "Gauss");
+  assert.equal(inspect.agentSnapshot[0]?.labelSource, "nickname");
+  assert.equal(inspect.agentSnapshot[0]?.progress, "Booting");
+});
+
+test("truncates protocol-backed subagent labels before exposing snapshots", () => {
+  const tracker = new ActivityTracker({
+    threadId: "thread-main",
+    turnId: "turn-main"
+  });
+  const longNickname = "Protocol backed agent nickname repeated beyond limit";
+  const longThreadTitle = "Thread title from protocol that keeps going past the card budget";
+
+  tracker.apply(
+    classifyNotification("item/started", {
+      threadId: "thread-main",
+      turnId: "turn-main",
+      item: {
+        id: "collab-truncate",
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        receiverThreadIds: ["thread-sub-nickname", "thread-sub-title"],
+        agentsStates: {
+          "thread-sub-nickname": {
+            status: "pendingInit",
+            message: "Booting"
+          },
+          "thread-sub-title": {
+            status: "pendingInit",
+            message: "Booting"
+          }
+        }
+      }
+    }),
+    "2026-03-10T11:07:00.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("thread/started", {
+      thread: {
+        id: "thread-sub-nickname",
+        agentNickname: longNickname,
+        agentRole: "explorer",
+        name: "Short title"
+      }
+    }),
+    "2026-03-10T11:07:00.200Z"
+  );
+
+  tracker.apply(
+    classifyNotification("thread/started", {
+      thread: {
+        id: "thread-sub-title",
+        agentNickname: null,
+        agentRole: "explorer",
+        name: longThreadTitle
+      }
+    }),
+    "2026-03-10T11:07:00.300Z"
+  );
+
+  const inspect = tracker.getInspectSnapshot("2026-03-10T11:07:01.000Z");
+  assert.equal(inspect.agentSnapshot[0]?.label, `${longNickname.slice(0, 48)}…`);
+  assert.equal(inspect.agentSnapshot[0]?.labelSource, "nickname");
+  assert.equal(inspect.agentSnapshot[1]?.label, `${longThreadTitle.slice(0, 48)}…`);
+  assert.equal(inspect.agentSnapshot[1]?.labelSource, "threadName");
+});
+
+test("keeps subagent commentary visible until the next subagent turn starts", () => {
+  const tracker = new ActivityTracker({
+    threadId: "thread-main",
+    turnId: "turn-main"
+  });
+
+  tracker.apply(
+    classifyNotification("item/started", {
+      threadId: "thread-main",
+      turnId: "turn-main",
+      item: {
+        id: "collab-commentary",
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        receiverThreadIds: ["thread-sub-commentary"],
+        agentsStates: {
+          "thread-sub-commentary": {
+            status: "pendingInit",
+            message: "Booting"
+          }
+        }
+      }
+    }),
+    "2026-03-10T11:15:00.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("thread/started", {
+      thread: {
+        id: "thread-sub-commentary",
+        agentNickname: "Rawls",
+        agentRole: "explorer",
+        name: "Install and Ops"
+      }
+    }),
+    "2026-03-10T11:15:00.100Z"
+  );
+
+  tracker.apply(
+    classifyNotification("turn/started", {
+      threadId: "thread-sub-commentary",
+      turnId: "turn-sub-commentary-1"
+    }),
+    "2026-03-10T11:15:00.200Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/completed", {
+      threadId: "thread-sub-commentary",
+      turnId: "turn-sub-commentary-1",
+      item: {
+        id: "commentary-1",
+        type: "agentMessage",
+        phase: "commentary",
+        text: "Comparing bridge behavior against runtime docs."
+      }
+    }),
+    "2026-03-10T11:15:01.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/started", {
+      threadId: "thread-sub-commentary",
+      turnId: "turn-sub-commentary-1",
+      item: {
+        id: "cmd-sub-commentary",
+        type: "commandExecution",
+        title: "rg runtime"
+      }
+    }),
+    "2026-03-10T11:15:02.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/commandExecution/outputDelta", {
+      threadId: "thread-sub-commentary",
+      turnId: "turn-sub-commentary-1",
+      itemId: "cmd-sub-commentary",
+      delta: "$ rg runtime\n2 matches"
+    }),
+    "2026-03-10T11:15:03.000Z"
+  );
+
+  let inspect = tracker.getInspectSnapshot("2026-03-10T11:15:03.100Z");
+  assert.equal(inspect.agentSnapshot[0]?.label, "Rawls");
+  assert.equal(inspect.agentSnapshot[0]?.labelSource, "nickname");
+  assert.equal(inspect.agentSnapshot[0]?.progress, "Comparing bridge behavior against runtime docs.");
+
+  tracker.apply(
+    classifyNotification("turn/started", {
+      threadId: "thread-sub-commentary",
+      turnId: "turn-sub-commentary-2"
+    }),
+    "2026-03-10T11:15:04.000Z"
+  );
+
+  inspect = tracker.getInspectSnapshot("2026-03-10T11:15:04.100Z");
+  assert.equal(inspect.agentSnapshot[0]?.progress, null);
+
+  tracker.apply(
+    classifyNotification("item/started", {
+      threadId: "thread-sub-commentary",
+      turnId: "turn-sub-commentary-2",
+      item: {
+        id: "cmd-sub-commentary-2",
+        type: "commandExecution",
+        title: "rg resume"
+      }
+    }),
+    "2026-03-10T11:15:05.000Z"
+  );
+
+  inspect = tracker.getInspectSnapshot("2026-03-10T11:15:05.100Z");
+  assert.equal(inspect.agentSnapshot[0]?.progress, "rg resume");
+});
+
+test("shows subagent blockers ahead of stale commentary and restores commentary after unblock", () => {
   const tracker = new ActivityTracker({
     threadId: "thread-main",
     turnId: "turn-main"
@@ -360,6 +758,31 @@ test("clears stale subagent blocker text when the agent resumes work", () => {
   );
 
   tracker.apply(
+    classifyNotification("turn/started", {
+      threadId: "thread-sub-resume",
+      turnId: "turn-sub-resume"
+    }),
+    "2026-03-10T11:10:00.200Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/completed", {
+      threadId: "thread-sub-resume",
+      turnId: "turn-sub-resume",
+      item: {
+        id: "commentary-resume",
+        type: "agentMessage",
+        phase: "commentary",
+        text: "Comparing resume behavior against blocked states."
+      }
+    }),
+    "2026-03-10T11:10:00.800Z"
+  );
+
+  let inspect = tracker.getInspectSnapshot("2026-03-10T11:10:00.900Z");
+  assert.equal(inspect.agentSnapshot[0]?.progress, "Comparing resume behavior against blocked states.");
+
+  tracker.apply(
     classifyNotification("thread/status/changed", {
       threadId: "thread-sub-resume",
       status: {
@@ -370,7 +793,7 @@ test("clears stale subagent blocker text when the agent resumes work", () => {
     "2026-03-10T11:10:01.000Z"
   );
 
-  let inspect = tracker.getInspectSnapshot("2026-03-10T11:10:01.100Z");
+  inspect = tracker.getInspectSnapshot("2026-03-10T11:10:01.100Z");
   assert.equal(inspect.agentSnapshot[0]?.progress, "Waiting for approval");
 
   tracker.apply(
@@ -385,22 +808,33 @@ test("clears stale subagent blocker text when the agent resumes work", () => {
   );
 
   inspect = tracker.getInspectSnapshot("2026-03-10T11:10:02.100Z");
+  assert.equal(inspect.agentSnapshot[0]?.progress, "Comparing resume behavior against blocked states.");
+
+  tracker.apply(
+    classifyNotification("turn/started", {
+      threadId: "thread-sub-resume",
+      turnId: "turn-sub-resume-2"
+    }),
+    "2026-03-10T11:10:03.000Z"
+  );
+
+  inspect = tracker.getInspectSnapshot("2026-03-10T11:10:03.100Z");
   assert.equal(inspect.agentSnapshot[0]?.progress, null);
 
   tracker.apply(
     classifyNotification("item/started", {
       threadId: "thread-sub-resume",
-      turnId: "turn-sub-resume",
+      turnId: "turn-sub-resume-2",
       item: {
         id: "cmd-sub-resume",
         type: "commandExecution",
         title: "rg resume"
       }
     }),
-    "2026-03-10T11:10:03.000Z"
+    "2026-03-10T11:10:04.000Z"
   );
 
-  inspect = tracker.getInspectSnapshot("2026-03-10T11:10:03.100Z");
+  inspect = tracker.getInspectSnapshot("2026-03-10T11:10:04.100Z");
   assert.equal(inspect.agentSnapshot[0]?.progress, "rg resume");
 });
 

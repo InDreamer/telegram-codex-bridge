@@ -218,6 +218,7 @@ Primary operator diagnostics:
 Readiness / preflight behavior:
 - the bridge reads the Node requirement from `package.json` and treats an unsupported runtime as `bridge_unhealthy`
 - the bridge requires `codex-cli >= 0.114.0` and checks the current schema surface against the V2 request/notification floor
+- the required notification floor includes `thread/started` and `thread/name/updated`; if those subagent naming notifications are missing, startup fails instead of silently degrading to fake agent labels
 - current capability-check results are cached under `~/.local/state/codex-telegram-bridge/cache/`
 - missing `systemctl` or `launchctl` is reported as a warning, not a hard blocker, because `ctb service run` may still be supervised externally
 - non-writable state or config roots are treated as hard failures
@@ -231,6 +232,8 @@ Structured activity visibility:
 - the status card renders bold labels plus a Markdown-aware `Progress` body through Telegram HTML
 - raw agent-message deltas and reasoning deltas stay out of the default Telegram flow
 - completed `agentMessage` items with `phase = commentary` are the authoritative commentary source for user-visible progress
+- expanded subagent rows use protocol thread identity for display names, preferring agent nickname over thread title and falling back only when the runtime provides neither
+- expanded subagent rows keep commentary as the visible progress text until a new subagent turn starts, instead of replacing it with later command noise
 - if Telegram refuses an edit or rate-limits it, the bridge retries the same card later instead of sending replacement-message spam
 - `/inspect` shows a compact Chinese activity snapshot for the active session, hides empty sections, and does not expose local debug file paths
 - when live inspect state is unavailable for a completed session, `/inspect` can recover best-effort detail from Codex thread history

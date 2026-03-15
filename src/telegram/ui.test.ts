@@ -340,12 +340,14 @@ test("buildRuntimeStatusCard renders expanded running agents inline", () => {
       {
         threadId: "thread-agent-1",
         label: "agent-ent42",
+        labelSource: "fallback",
         status: "running",
         progress: "Searching docs"
       },
       {
         threadId: "thread-agent-2",
         label: "agent-x9k2p1",
+        labelSource: "fallback",
         status: "pendingInit",
         progress: null
       }
@@ -367,6 +369,7 @@ test("buildRuntimeStatusReplyMarkup adds an agent button when running subagents 
       {
         threadId: "thread-agent-1",
         label: "agent-ent42",
+        labelSource: "fallback",
         status: "running",
         progress: "Searching docs"
       }

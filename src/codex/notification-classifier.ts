@@ -13,6 +13,8 @@ import type {
   PlanUpdatedNotification,
   ProgressNotification,
   ThreadArchivedNotification,
+  ThreadNameUpdatedNotification,
+  ThreadStartedNotification,
   ThreadStatusChangedNotification,
   ThreadUnarchivedNotification,
   TurnAbortedNotification,
@@ -24,6 +26,22 @@ export function classifyNotification(method: string, params: unknown): Classifie
   const context = extractContext(method, params);
 
   switch (method) {
+    case "thread/started":
+      return {
+        kind: "thread_started",
+        ...context,
+        agentNickname: getThreadAgentNickname(params),
+        agentRole: getThreadAgentRole(params),
+        threadName: getThreadName(params)
+      } satisfies ThreadStartedNotification;
+
+    case "thread/name/updated":
+      return {
+        kind: "thread_name_updated",
+        ...context,
+        threadName: getThreadName(params)
+      } satisfies ThreadNameUpdatedNotification;
+
     case "turn/started":
       return {
         kind: "turn_started",
@@ -242,6 +260,18 @@ function getMessagePhase(params: unknown): "commentary" | "final_answer" | null 
   }
 
   return null;
+}
+
+function getThreadName(params: unknown): string | null {
+  return getString(params, "threadName") ?? getString(getObject(params)?.thread, "name") ?? null;
+}
+
+function getThreadAgentNickname(params: unknown): string | null {
+  return getString(getObject(params)?.thread, "agentNickname") ?? null;
+}
+
+function getThreadAgentRole(params: unknown): string | null {
+  return getString(getObject(params)?.thread, "agentRole") ?? null;
 }
 
 function getPlanEntries(params: unknown): string[] {

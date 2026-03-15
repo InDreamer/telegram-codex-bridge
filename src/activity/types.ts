@@ -105,9 +105,12 @@ export type CollabAgentStatus =
   | "shutdown"
   | "notFound";
 
+export type CollabAgentLabelSource = "nickname" | "threadName" | "fallback";
+
 export interface CollabAgentStateSnapshot {
   threadId: string;
   label: string;
+  labelSource: CollabAgentLabelSource;
   status: CollabAgentStatus;
   progress: string | null;
 }
@@ -128,6 +131,8 @@ export interface DebugJournalRecord {
 
 interface ClassifiedNotificationBase {
   kind:
+    | "thread_started"
+    | "thread_name_updated"
     | "turn_started"
     | "turn_completed"
     | "thread_status_changed"
@@ -148,6 +153,18 @@ interface ClassifiedNotificationBase {
   method: string;
   threadId: string | null;
   turnId: string | null;
+}
+
+export interface ThreadStartedNotification extends ClassifiedNotificationBase {
+  kind: "thread_started";
+  agentNickname: string | null;
+  agentRole: string | null;
+  threadName: string | null;
+}
+
+export interface ThreadNameUpdatedNotification extends ClassifiedNotificationBase {
+  kind: "thread_name_updated";
+  threadName: string | null;
 }
 
 export interface TurnStartedNotification extends ClassifiedNotificationBase {
@@ -247,6 +264,8 @@ export interface OtherNotification extends ClassifiedNotificationBase {
 }
 
 export type ClassifiedNotification =
+  | ThreadStartedNotification
+  | ThreadNameUpdatedNotification
   | TurnStartedNotification
   | TurnCompletedNotification
   | ThreadStatusChangedNotification

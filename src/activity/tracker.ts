@@ -3,6 +3,7 @@ import type {
   ActivityStatus,
   ActiveItemType,
   ClassifiedNotification,
+  CollabAgentLabelSource,
   CollabAgentStateSnapshot,
   CollabAgentStatus,
   HighValueEventType,
@@ -16,6 +17,7 @@ import type {
 const DEFAULT_TIMELINE_LIMIT = 100;
 const SUMMARY_LIMIT = 5;
 const STATUS_UPDATE_LIMIT = 3;
+const SUBAGENT_LABEL_DISPLAY_LIMIT = 48;
 
 interface ActivityTrackerOptions {
   threadId: string;
@@ -46,12 +48,32 @@ interface ActivityTrackerState {
 
 interface TrackedSubagent {
   threadId: string;
-  label: string;
+  fallbackLabel: string;
+  agentNickname: string | null;
+  agentRole: string | null;
+  threadName: string | null;
   status: CollabAgentStatus;
-  progress: string | null;
+  latestCommentary: string | null;
+  latestOperationalProgress: string | null;
   activeItemLabel: string | null;
   lastActivityAt: string | null;
 }
+
+interface SubagentIdentityUpdate {
+  agentNickname?: string | null;
+  agentRole?: string | null;
+  threadName?: string | null;
+}
+
+export interface SubagentIdentityEvent {
+  kind: "cached" | "applied";
+  threadId: string;
+  label: string | null;
+  labelSource: CollabAgentLabelSource | null;
+  origin: "notification" | "cache_replay" | "backfill";
+}
+
+type SubagentIdentityMergeMode = "replace" | "fillMissing";
 
 export class ActivityTracker {
   private readonly timelineLimit: number;
@@ -62,6 +84,8 @@ export class ActivityTracker {
   private readonly recentWebSearches: string[] = [];
   private readonly planSnapshot: string[] = [];
   private readonly subagents = new Map<string, TrackedSubagent>();
+  private readonly pendingSubagentIdentities = new Map<string, SubagentIdentityUpdate>();
+  private readonly subagentIdentityEvents: SubagentIdentityEvent[] = [];
   private readonly completedCommentary: string[] = [];
   private readonly commandOutputBuffers = new Map<string, string>();
   private readonly state: ActivityTrackerState;
@@ -105,6 +129,10 @@ export class ActivityTracker {
     }
 
     switch (notification.kind) {
+      case "thread_started":
+      case "thread_name_updated":
+        return;
+
       case "turn_started":
         this.state.turnStatus = "running";
         this.state.errorState = null;
@@ -454,6 +482,22 @@ export class ActivityTracker {
     };
   }
 
+  drainSubagentIdentityEvents(): SubagentIdentityEvent[] {
+    if (this.subagentIdentityEvents.length === 0) {
+      return [];
+    }
+
+    return this.subagentIdentityEvents.splice(0, this.subagentIdentityEvents.length);
+  }
+
+  applyResolvedSubagentIdentity(
+    threadId: string,
+    identity: SubagentIdentityUpdate,
+    receivedAt = new Date().toISOString()
+  ): boolean {
+    return this.recordSubagentIdentity(threadId, identity, receivedAt, "backfill", "fillMissing");
+  }
+
   private pushStreamBlock(block: StreamBlock): void {
     this.streamBlocks.push(block);
     if (block.kind !== "tool_summary") {
@@ -500,6 +544,32 @@ export class ActivityTracker {
       return;
     }
 
+    switch (notification.kind) {
+      case "thread_started": {
+        const changed = this.recordSubagentIdentity(threadId, {
+          agentNickname: notification.agentNickname,
+          agentRole: notification.agentRole,
+          threadName: notification.threadName
+        }, receivedAt, "notification");
+        const subagent = this.subagents.get(threadId);
+        if (subagent && changed) {
+          subagent.lastActivityAt = receivedAt;
+        }
+        return;
+      }
+
+      case "thread_name_updated": {
+        const changed = this.recordSubagentIdentity(threadId, {
+          threadName: notification.threadName
+        }, receivedAt, "notification");
+        const subagent = this.subagents.get(threadId);
+        if (subagent && changed) {
+          subagent.lastActivityAt = receivedAt;
+        }
+        return;
+      }
+    }
+
     const subagent = this.subagents.get(threadId);
     if (!subagent) {
       return;
@@ -508,7 +578,8 @@ export class ActivityTracker {
     switch (notification.kind) {
       case "turn_started":
         subagent.status = "running";
-        subagent.progress = null;
+        subagent.latestCommentary = null;
+        subagent.latestOperationalProgress = null;
         subagent.activeItemLabel = null;
         subagent.lastActivityAt = receivedAt;
         return;
@@ -524,12 +595,12 @@ export class ActivityTracker {
           subagent.status = "errored";
         } else if (notification.status === "active" || notification.status === "idle") {
           subagent.status = "running";
-          if (isBlockedProgress(subagent.progress) && !blockedReason) {
-            subagent.progress = null;
+          if (isBlockedProgress(subagent.latestOperationalProgress) && !blockedReason) {
+            subagent.latestOperationalProgress = null;
           }
         }
         if (blockedReason) {
-          subagent.progress = blockedReason === "waitingOnApproval"
+          subagent.latestOperationalProgress = blockedReason === "waitingOnApproval"
             ? "Waiting for approval"
             : "Waiting for user input";
         }
@@ -541,7 +612,7 @@ export class ActivityTracker {
         this.syncCollabAgentStates(notification.collabAgentStates);
         const activeItemType = mapActiveItemType(notification.itemType);
         subagent.status = "running";
-        subagent.progress = null;
+        subagent.latestOperationalProgress = null;
         subagent.activeItemLabel = notification.label ?? buildItemLabel(activeItemType, notification.itemType);
         subagent.lastActivityAt = receivedAt;
         if (activeItemType === "commandExecution" && notification.itemId) {
@@ -556,7 +627,7 @@ export class ActivityTracker {
         if (completedItemType === "agentMessage" && notification.itemPhase === "commentary") {
           const commentaryText = normalizeCommentaryText(notification.itemText);
           if (commentaryText) {
-            subagent.progress = commentaryText;
+            subagent.latestCommentary = commentaryText;
           }
         }
         if (notification.itemId) {
@@ -570,7 +641,7 @@ export class ActivityTracker {
       case "progress":
         if (notification.message) {
           subagent.status = "running";
-          subagent.progress = cleanSummary(notification.message);
+          subagent.latestOperationalProgress = cleanSummary(notification.message);
           subagent.lastActivityAt = receivedAt;
         }
         return;
@@ -583,7 +654,7 @@ export class ActivityTracker {
         );
         if (summary) {
           subagent.status = "running";
-          subagent.progress = summary;
+          subagent.latestOperationalProgress = summary;
           subagent.lastActivityAt = receivedAt;
         }
         return;
@@ -594,7 +665,7 @@ export class ActivityTracker {
           const summary = cleanSummary(notification.message);
           if (summary) {
             subagent.status = "running";
-            subagent.progress = summary;
+            subagent.latestOperationalProgress = summary;
             subagent.lastActivityAt = receivedAt;
           }
         }
@@ -608,7 +679,7 @@ export class ActivityTracker {
           const summary = summarizeCommandOutput(combinedText);
           const commandLabel = selectConcreteCommandLabel(summary.command, subagent.activeItemLabel);
           subagent.status = "running";
-          subagent.progress = cleanSummary(summary.detail ? `${commandLabel} -> ${summary.detail}` : commandLabel);
+          subagent.latestOperationalProgress = cleanSummary(summary.detail ? `${commandLabel} -> ${summary.detail}` : commandLabel);
           subagent.lastActivityAt = receivedAt;
         }
         return;
@@ -616,7 +687,7 @@ export class ActivityTracker {
       case "file_change_output":
         if (notification.text) {
           subagent.status = "running";
-          subagent.progress = cleanSummary(notification.text);
+          subagent.latestOperationalProgress = cleanSummary(notification.text);
           subagent.lastActivityAt = receivedAt;
         }
         return;
@@ -628,7 +699,7 @@ export class ActivityTracker {
 
       case "error":
         subagent.status = "errored";
-        subagent.progress = cleanSummary(notification.message ?? "unknown error");
+        subagent.latestOperationalProgress = cleanSummary(notification.message ?? "unknown error");
         subagent.lastActivityAt = receivedAt;
         return;
 
@@ -652,7 +723,7 @@ export class ActivityTracker {
       const subagent = this.ensureSubagent(state.threadId);
       subagent.status = state.status;
       if (state.message) {
-        subagent.progress = cleanSummary(state.message);
+        subagent.latestOperationalProgress = cleanSummary(state.message);
       }
     }
   }
@@ -665,12 +736,17 @@ export class ActivityTracker {
 
     const created: TrackedSubagent = {
       threadId,
-      label: buildSubagentLabel(threadId),
+      fallbackLabel: buildSubagentLabel(threadId),
+      agentNickname: null,
+      agentRole: null,
+      threadName: null,
       status: "pendingInit",
-      progress: null,
+      latestCommentary: null,
+      latestOperationalProgress: null,
       activeItemLabel: null,
       lastActivityAt: null
     };
+    this.applyPendingSubagentIdentity(created);
     this.subagents.set(threadId, created);
     return created;
   }
@@ -678,12 +754,72 @@ export class ActivityTracker {
   private getRunningAgentSnapshot(): CollabAgentStateSnapshot[] {
     return [...this.subagents.values()]
       .filter((agent) => agent.status === "pendingInit" || agent.status === "running")
-      .map((agent) => ({
-        threadId: agent.threadId,
-        label: agent.label,
-        status: agent.status,
-        progress: agent.progress ?? agent.activeItemLabel ?? null
-      }));
+      .map((agent) => {
+        const label = this.getSubagentLabel(agent);
+        return {
+          threadId: agent.threadId,
+          label: label.text,
+          labelSource: label.source,
+          status: agent.status,
+          progress: this.getSubagentDisplayProgress(agent)
+        };
+      });
+  }
+
+  private updateSubagentIdentity(
+    subagent: TrackedSubagent,
+    identity: SubagentIdentityUpdate,
+    mergeMode: SubagentIdentityMergeMode = "replace"
+  ): boolean {
+    let changed = false;
+    const nextNickname = mergeSubagentIdentityValue(subagent.agentNickname, identity.agentNickname, mergeMode);
+    if (nextNickname.changed) {
+      subagent.agentNickname = nextNickname.value;
+      changed = true;
+    }
+    const nextRole = mergeSubagentIdentityValue(subagent.agentRole, identity.agentRole, mergeMode);
+    if (nextRole.changed) {
+      subagent.agentRole = nextRole.value;
+      changed = true;
+    }
+    const nextThreadName = mergeSubagentIdentityValue(subagent.threadName, identity.threadName, mergeMode);
+    if (nextThreadName.changed) {
+      subagent.threadName = nextThreadName.value;
+      changed = true;
+    }
+    return changed;
+  }
+
+  private getSubagentLabel(subagent: TrackedSubagent): {
+    text: string;
+    source: CollabAgentLabelSource;
+  } {
+    if (subagent.agentNickname) {
+      return {
+        text: truncateSubagentDisplayText(subagent.agentNickname, SUBAGENT_LABEL_DISPLAY_LIMIT),
+        source: "nickname"
+      };
+    }
+
+    if (subagent.threadName) {
+      return {
+        text: truncateSubagentDisplayText(subagent.threadName, SUBAGENT_LABEL_DISPLAY_LIMIT),
+        source: "threadName"
+      };
+    }
+
+    return {
+      text: truncateSubagentDisplayText(subagent.fallbackLabel, SUBAGENT_LABEL_DISPLAY_LIMIT),
+      source: "fallback"
+    };
+  }
+
+  private getSubagentDisplayProgress(subagent: TrackedSubagent): string | null {
+    if (isBlockedProgress(subagent.latestOperationalProgress)) {
+      return subagent.latestOperationalProgress;
+    }
+
+    return subagent.latestCommentary ?? subagent.latestOperationalProgress ?? subagent.activeItemLabel ?? null;
   }
 
   private isRootNotification(notification: ClassifiedNotification): boolean {
@@ -698,11 +834,122 @@ export class ActivityTracker {
       return true;
     }
 
-    if (!notification.threadId || !this.subagents.has(notification.threadId)) {
+    if (!notification.threadId) {
+      return false;
+    }
+
+    if (notification.kind === "thread_started" || notification.kind === "thread_name_updated") {
+      return true;
+    }
+
+    if (!this.subagents.has(notification.threadId)) {
       return false;
     }
 
     return true;
+  }
+
+  private recordSubagentIdentity(
+    threadId: string,
+    identity: SubagentIdentityUpdate,
+    receivedAt: string,
+    origin: SubagentIdentityEvent["origin"],
+    mergeMode: SubagentIdentityMergeMode = "replace"
+  ): boolean {
+    const normalized = normalizeSubagentIdentity(identity);
+    if (!hasIdentityFields(normalized)) {
+      return false;
+    }
+
+    const subagent = this.subagents.get(threadId);
+    if (subagent) {
+      const changed = this.updateSubagentIdentity(subagent, normalized, mergeMode);
+      if (changed) {
+        subagent.lastActivityAt = receivedAt;
+        this.enqueueSubagentIdentityEvent("applied", threadId, subagent, origin);
+      }
+      return changed;
+    }
+
+    const changed = this.mergePendingSubagentIdentity(threadId, normalized, mergeMode);
+    if (changed) {
+      this.enqueuePendingSubagentIdentityEvent("cached", threadId, normalized, origin);
+    }
+    return changed;
+  }
+
+  private mergePendingSubagentIdentity(
+    threadId: string,
+    identity: SubagentIdentityUpdate,
+    mergeMode: SubagentIdentityMergeMode
+  ): boolean {
+    const existing = this.pendingSubagentIdentities.get(threadId) ?? {};
+    let changed = false;
+
+    const nextNickname = mergeSubagentIdentityValue(existing.agentNickname ?? null, identity.agentNickname, mergeMode);
+    if (nextNickname.changed) {
+      existing.agentNickname = nextNickname.value;
+      changed = true;
+    }
+    const nextRole = mergeSubagentIdentityValue(existing.agentRole ?? null, identity.agentRole, mergeMode);
+    if (nextRole.changed) {
+      existing.agentRole = nextRole.value;
+      changed = true;
+    }
+    const nextThreadName = mergeSubagentIdentityValue(existing.threadName ?? null, identity.threadName, mergeMode);
+    if (nextThreadName.changed) {
+      existing.threadName = nextThreadName.value;
+      changed = true;
+    }
+
+    if (changed) {
+      this.pendingSubagentIdentities.set(threadId, existing);
+    }
+    return changed;
+  }
+
+  private applyPendingSubagentIdentity(subagent: TrackedSubagent): void {
+    const pending = this.pendingSubagentIdentities.get(subagent.threadId);
+    if (!pending) {
+      return;
+    }
+
+    this.pendingSubagentIdentities.delete(subagent.threadId);
+    if (this.updateSubagentIdentity(subagent, pending)) {
+      this.enqueueSubagentIdentityEvent("applied", subagent.threadId, subagent, "cache_replay");
+    }
+  }
+
+  private enqueueSubagentIdentityEvent(
+    kind: SubagentIdentityEvent["kind"],
+    threadId: string,
+    subagent: TrackedSubagent,
+    origin: SubagentIdentityEvent["origin"]
+  ): void {
+    const label = this.getSubagentLabel(subagent);
+    this.subagentIdentityEvents.push({
+      kind,
+      threadId,
+      label: label.text,
+      labelSource: label.source,
+      origin
+    });
+  }
+
+  private enqueuePendingSubagentIdentityEvent(
+    kind: SubagentIdentityEvent["kind"],
+    threadId: string,
+    identity: SubagentIdentityUpdate,
+    origin: SubagentIdentityEvent["origin"]
+  ): void {
+    const label = getIdentityEventLabel(identity);
+    this.subagentIdentityEvents.push({
+      kind,
+      threadId,
+      label: label?.text ?? null,
+      labelSource: label?.source ?? null,
+      origin
+    });
   }
 
   private getCurrentItemDurationSec(now: string): number | null {
@@ -935,6 +1182,84 @@ function normalizeCommentaryText(text: string | null): string | null {
 
   const normalized = text.replace(/\s+/gu, " ").trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeSubagentIdentityText(text: string | null): string | null {
+  if (!text) {
+    return null;
+  }
+
+  const normalized = text.replace(/\s+/gu, " ").trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeSubagentIdentity(identity: SubagentIdentityUpdate): SubagentIdentityUpdate {
+  const normalized: SubagentIdentityUpdate = {};
+
+  if (identity.agentNickname !== undefined) {
+    normalized.agentNickname = normalizeSubagentIdentityText(identity.agentNickname);
+  }
+  if (identity.agentRole !== undefined) {
+    normalized.agentRole = normalizeSubagentIdentityText(identity.agentRole);
+  }
+  if (identity.threadName !== undefined) {
+    normalized.threadName = normalizeSubagentIdentityText(identity.threadName);
+  }
+
+  return normalized;
+}
+
+function hasIdentityFields(identity: SubagentIdentityUpdate): boolean {
+  return identity.agentNickname !== undefined || identity.agentRole !== undefined || identity.threadName !== undefined;
+}
+
+function getIdentityEventLabel(identity: SubagentIdentityUpdate): {
+  text: string;
+  source: CollabAgentLabelSource;
+} | null {
+  if (identity.agentNickname) {
+    return {
+      text: truncateSubagentDisplayText(identity.agentNickname, SUBAGENT_LABEL_DISPLAY_LIMIT),
+      source: "nickname"
+    };
+  }
+
+  if (identity.threadName) {
+    return {
+      text: truncateSubagentDisplayText(identity.threadName, SUBAGENT_LABEL_DISPLAY_LIMIT),
+      source: "threadName"
+    };
+  }
+
+  return null;
+}
+
+function mergeSubagentIdentityValue(
+  currentValue: string | null,
+  nextValue: string | null | undefined,
+  mergeMode: SubagentIdentityMergeMode
+): { value: string | null; changed: boolean } {
+  if (nextValue === undefined) {
+    return { value: currentValue, changed: false };
+  }
+
+  if (mergeMode === "fillMissing" && currentValue !== null) {
+    return { value: currentValue, changed: false };
+  }
+
+  if (currentValue === nextValue) {
+    return { value: currentValue, changed: false };
+  }
+
+  return { value: nextValue, changed: true };
+}
+
+function truncateSubagentDisplayText(text: string, limit: number): string {
+  if (text.length <= limit) {
+    return text;
+  }
+
+  return `${text.slice(0, limit)}…`;
 }
 
 function computeDurationSec(startIso: string, endIso: string): number | null {

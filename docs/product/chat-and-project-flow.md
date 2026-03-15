@@ -299,6 +299,8 @@ While a turn is running:
 - status card command activity should appear only through the `Progress` section when a visible progress unit exists
 - render the `Progress` body on its own line using Telegram HTML from a safe inline Markdown subset
 - keep `Progress` for commentary and other user-readable stage updates rather than using it as the only running-state signal
+- when subagents are expanded inline, show protocol-backed agent names whenever the runtime provides them instead of keeping the thread-id fallback label
+- when subagents are expanded inline, prefer completed commentary over command or tool chatter for the visible per-agent progress text
 - keep full per-command detail in `/inspect`, ordered by execution sequence and including command text, state, and latest output summary when available
 - create separate error cards for runtime failures
 - update the status card only when the visible turn state changes or when a complete progress unit is available

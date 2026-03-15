@@ -25,6 +25,8 @@ const REQUIRED_CLIENT_REQUESTS = [
   "turn/interrupt"
 ] as const;
 const REQUIRED_SERVER_NOTIFICATIONS = [
+  "thread/started",
+  "thread/name/updated",
   "turn/started",
   "turn/completed",
   "thread/status/changed",

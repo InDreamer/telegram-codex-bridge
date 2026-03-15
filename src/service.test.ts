@@ -1829,6 +1829,8 @@ test("status card shows running subagents behind an agent button and expands the
   const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
   const edited: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
   const callbackAnswers: Array<string | undefined> = [];
+  const longNickname = "Protocol backed agent nickname repeated beyond limit";
+  const truncatedNickname = `${longNickname.slice(0, 48)}…`;
   let nextMessageId = 730;
 
   try {
@@ -1912,13 +1914,45 @@ test("status card shows running subagents behind an agent button and expands the
     assert.match(edited.at(-1)?.text ?? "", /Booting/u);
     assert.equal(edited.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "收起 Agent");
 
-    await withMockedNow("2026-03-10T11:00:04.000Z", async () => {
+    await withMockedNow("2026-03-10T11:00:05.000Z", async () => {
+      await (service as any).handleAppServerNotification("thread/started", {
+        thread: {
+          id: "thread-agent-sub-1",
+          agentNickname: longNickname,
+          agentRole: "explorer",
+          name: "Telegram Flow"
+        }
+      });
+    });
+
+    assert.match(edited.at(-1)?.text ?? "", new RegExp(`${truncatedNickname} \\(pending\\): Booting`, "u"));
+    assert.equal((edited.at(-1)?.text ?? "").includes(longNickname), false);
+
+    await withMockedNow("2026-03-10T11:00:07.000Z", async () => {
       await (service as any).handleAppServerNotification("turn/started", {
         threadId: "thread-agent-sub-1",
         turnId: "turn-agent-sub-1"
       });
     });
-    await withMockedNow("2026-03-10T11:00:06.000Z", async () => {
+    await withMockedNow("2026-03-10T11:00:09.500Z", async () => {
+      await (service as any).handleAppServerNotification("item/completed", {
+        threadId: "thread-agent-sub-1",
+        turnId: "turn-agent-sub-1",
+        item: {
+          id: "commentary-agent-sub-1",
+          type: "agentMessage",
+          phase: "commentary",
+          text: "Comparing Telegram flow with the shipped callbacks."
+        }
+      });
+    });
+
+    assert.match(
+      edited.at(-1)?.text ?? "",
+      new RegExp(`${truncatedNickname} \\(running\\): Comparing Telegram flow with the shipped callbacks\\.`, "u")
+    );
+
+    await withMockedNow("2026-03-10T11:00:11.500Z", async () => {
       await (service as any).handleAppServerNotification("item/started", {
         threadId: "thread-agent-sub-1",
         turnId: "turn-agent-sub-1",
@@ -1929,7 +1963,14 @@ test("status card shows running subagents behind an agent button and expands the
         }
       });
     });
-    await withMockedNow("2026-03-10T11:00:08.500Z", async () => {
+
+    assert.match(
+      edited.at(-1)?.text ?? "",
+      new RegExp(`${truncatedNickname} \\(running\\): Comparing Telegram flow with the shipped callbacks\\.`, "u")
+    );
+
+    const editCountBeforeCommandOutput = edited.length;
+    await withMockedNow("2026-03-10T11:00:13.500Z", async () => {
       await (service as any).handleAppServerNotification("item/commandExecution/outputDelta", {
         threadId: "thread-agent-sub-1",
         turnId: "turn-agent-sub-1",
@@ -1938,9 +1979,45 @@ test("status card shows running subagents behind an agent button and expands the
       });
     });
 
-    assert.match(edited.at(-1)?.text ?? "", /rg plan -&gt; 2 matches/u);
+    assert.equal(edited.length, editCountBeforeCommandOutput);
+    assert.match(
+      edited.at(-1)?.text ?? "",
+      new RegExp(`${truncatedNickname} \\(running\\): Comparing Telegram flow with the shipped callbacks\\.`, "u")
+    );
 
-    await withMockedNow("2026-03-10T11:00:12.000Z", async () => {
+    await withMockedNow("2026-03-10T11:00:15.000Z", async () => {
+      await (service as any).handleAppServerNotification("thread/status/changed", {
+        threadId: "thread-agent-sub-1",
+        status: {
+          type: "active",
+          activeFlags: ["waitingOnApproval"]
+        }
+      });
+    });
+
+    assert.match(edited.at(-1)?.text ?? "", new RegExp(`${truncatedNickname} \\(running\\): Waiting for approval`, "u"));
+
+    await withMockedNow("2026-03-10T11:00:16.000Z", async () => {
+      await (service as any).handleAppServerNotification("thread/status/changed", {
+        threadId: "thread-agent-sub-1",
+        status: {
+          type: "active",
+          activeFlags: []
+        }
+      });
+    });
+
+    await withMockedNow("2026-03-10T11:00:18.500Z", async () => {
+      const activeTurn = (service as any).activeTurn;
+      await (service as any).flushRuntimeCardRender(activeTurn, activeTurn.statusCard);
+    });
+
+    assert.match(
+      edited.at(-1)?.text ?? "",
+      new RegExp(`${truncatedNickname} \\(running\\): Comparing Telegram flow with the shipped callbacks\\.`, "u")
+    );
+
+    await withMockedNow("2026-03-10T11:00:21.000Z", async () => {
       await (service as any).handleCallback({
         id: "callback-agent-collapse",
         from: { id: 1, is_bot: false, first_name: "Tester" },
@@ -1957,6 +2034,579 @@ test("status card shows running subagents behind an agent button and expands the
     assert.equal(callbackAnswers.at(-1), undefined);
     assert.doesNotMatch(edited.at(-1)?.text ?? "", /<b>Agents:<\/b>/u);
     assert.equal(edited.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "Agent：1 个运行中");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("status card replays cached subagent identity when the thread identity arrives before collab state", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const callbackAnswers: Array<string | undefined> = [];
+  let nextMessageId = 735;
+
+  try {
+    store.upsertPendingAuthorization({
+      telegramUserId: "1",
+      telegramChatId: "chat-1",
+      telegramUsername: "tester",
+      displayName: "Tester"
+    });
+    const candidate = store.listPendingAuthorizations()[0];
+    if (!candidate) {
+      throw new Error("expected pending authorization candidate");
+    }
+    store.confirmPendingAuthorization(candidate);
+    const session = createSession(store, "chat-1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ messageId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      answerCallbackQuery: async (_callbackQueryId: string, text?: string) => {
+        callbackAnswers.push(text);
+      }
+    };
+
+    installRunningAppServer(service, "thread-agent-main-early", "turn-agent-main-early");
+
+    await withMockedNow("2026-03-10T11:12:00.000Z", async () => {
+      await (service as any).startRealTurn("chat-1", session, "Do the work");
+    });
+    await withMockedNow("2026-03-10T11:12:01.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/started", {
+        threadId: "thread-agent-main-early",
+        turnId: "turn-agent-main-early"
+      });
+    });
+    await withMockedNow("2026-03-10T11:12:02.000Z", async () => {
+      await (service as any).handleAppServerNotification("thread/started", {
+        thread: {
+          id: "thread-agent-sub-early",
+          agentNickname: "Gauss",
+          agentRole: "explorer",
+          name: "Protocol Audit"
+        }
+      });
+    });
+    await withMockedNow("2026-03-10T11:12:03.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/started", {
+        threadId: "thread-agent-main-early",
+        turnId: "turn-agent-main-early",
+        item: {
+          id: "collab-early",
+          type: "collabAgentToolCall",
+          tool: "spawnAgent",
+          receiverThreadIds: ["thread-agent-sub-early"],
+          agentsStates: {
+            "thread-agent-sub-early": {
+              status: "pendingInit",
+              message: "Booting"
+            }
+          }
+        }
+      });
+    });
+
+    assert.equal((edited.at(-1) ?? sent.at(-1))?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "Agent：1 个运行中");
+
+    await withMockedNow("2026-03-10T11:12:04.000Z", async () => {
+      await (service as any).handleCallback({
+        id: "callback-agent-expand-early",
+        from: { id: 1, is_bot: false, first_name: "Tester" },
+        message: {
+          message_id: 735,
+          chat: { id: 1, type: "private" },
+          date: 0,
+          text: "<b>Runtime Status</b>"
+        },
+        data: `v1:agent:expand:${session.sessionId}`
+      });
+    });
+
+    assert.equal(callbackAnswers.at(-1), undefined);
+    assert.match(edited.at(-1)?.text ?? "", /Gauss \(pending\): Booting/u);
+    assert.doesNotMatch(edited.at(-1)?.text ?? "", /agent-early/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("status card backfills missing subagent identity from thread read once per turn", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const callbackAnswers: Array<string | undefined> = [];
+  let nextMessageId = 736;
+  let readCalls = 0;
+
+  try {
+    store.upsertPendingAuthorization({
+      telegramUserId: "1",
+      telegramChatId: "chat-1",
+      telegramUsername: "tester",
+      displayName: "Tester"
+    });
+    const candidate = store.listPendingAuthorizations()[0];
+    if (!candidate) {
+      throw new Error("expected pending authorization candidate");
+    }
+    store.confirmPendingAuthorization(candidate);
+    const session = createSession(store, "chat-1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ messageId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      answerCallbackQuery: async (_callbackQueryId: string, text?: string) => {
+        callbackAnswers.push(text);
+      }
+    };
+
+    installRunningAppServer(service, "thread-agent-main-backfill", "turn-agent-main-backfill");
+    (service as any).appServer.readThread = async (threadId: string, includeTurns?: boolean) => {
+      readCalls += 1;
+      assert.equal(threadId, "thread-agent-sub-backfill");
+      assert.equal(includeTurns, false);
+      return {
+        thread: {
+          id: threadId,
+          agentNickname: "Euler",
+          agentRole: "explorer",
+          name: "Backfill Title",
+          turns: []
+        }
+      };
+    };
+
+    await withMockedNow("2026-03-10T11:13:00.000Z", async () => {
+      await (service as any).startRealTurn("chat-1", session, "Do the work");
+    });
+    await withMockedNow("2026-03-10T11:13:01.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/started", {
+        threadId: "thread-agent-main-backfill",
+        turnId: "turn-agent-main-backfill"
+      });
+    });
+    await withMockedNow("2026-03-10T11:13:02.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/started", {
+        threadId: "thread-agent-main-backfill",
+        turnId: "turn-agent-main-backfill",
+        item: {
+          id: "collab-backfill",
+          type: "collabAgentToolCall",
+          tool: "spawnAgent",
+          receiverThreadIds: ["thread-agent-sub-backfill"],
+          agentsStates: {
+            "thread-agent-sub-backfill": {
+              status: "pendingInit",
+              message: "Booting"
+            }
+          }
+        }
+      });
+    });
+
+    assert.equal(readCalls, 1);
+
+    await withMockedNow("2026-03-10T11:13:03.000Z", async () => {
+      await (service as any).handleCallback({
+        id: "callback-agent-expand-backfill",
+        from: { id: 1, is_bot: false, first_name: "Tester" },
+        message: {
+          message_id: 736,
+          chat: { id: 1, type: "private" },
+          date: 0,
+          text: "<b>Runtime Status</b>"
+        },
+        data: `v1:agent:expand:${session.sessionId}`
+      });
+    });
+
+    assert.equal(callbackAnswers.at(-1), undefined);
+    assert.match(edited.at(-1)?.text ?? "", /Euler \(pending\): Booting/u);
+
+    await withMockedNow("2026-03-10T11:13:04.000Z", async () => {
+      await (service as any).handleAppServerNotification("thread/status/changed", {
+        threadId: "thread-agent-sub-backfill",
+        status: {
+          type: "active",
+          activeFlags: []
+        }
+      });
+    });
+
+    assert.equal(readCalls, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("status card backfills title-only subagent identity to nickname", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const callbackAnswers: Array<string | undefined> = [];
+  let nextMessageId = 738;
+  let readCalls = 0;
+
+  try {
+    store.upsertPendingAuthorization({
+      telegramUserId: "1",
+      telegramChatId: "chat-1",
+      telegramUsername: "tester",
+      displayName: "Tester"
+    });
+    const candidate = store.listPendingAuthorizations()[0];
+    if (!candidate) {
+      throw new Error("expected pending authorization candidate");
+    }
+    store.confirmPendingAuthorization(candidate);
+    const session = createSession(store, "chat-1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ messageId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      answerCallbackQuery: async (_callbackQueryId: string, text?: string) => {
+        callbackAnswers.push(text);
+      }
+    };
+
+    installRunningAppServer(service, "thread-agent-main-title-backfill", "turn-agent-main-title-backfill");
+    (service as any).appServer.readThread = async (threadId: string, includeTurns?: boolean) => {
+      readCalls += 1;
+      assert.equal(threadId, "thread-agent-sub-title-backfill");
+      assert.equal(includeTurns, false);
+      return {
+        thread: {
+          id: threadId,
+          agentNickname: "Euler",
+          agentRole: "explorer",
+          name: "Delayed Title",
+          turns: []
+        }
+      };
+    };
+
+    await withMockedNow("2026-03-10T11:13:20.000Z", async () => {
+      await (service as any).startRealTurn("chat-1", session, "Do the work");
+    });
+    await withMockedNow("2026-03-10T11:13:21.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/started", {
+        threadId: "thread-agent-main-title-backfill",
+        turnId: "turn-agent-main-title-backfill"
+      });
+    });
+    await withMockedNow("2026-03-10T11:13:21.500Z", async () => {
+      await (service as any).handleAppServerNotification("thread/name/updated", {
+        threadId: "thread-agent-sub-title-backfill",
+        threadName: "Delayed Title"
+      });
+    });
+    await withMockedNow("2026-03-10T11:13:22.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/started", {
+        threadId: "thread-agent-main-title-backfill",
+        turnId: "turn-agent-main-title-backfill",
+        item: {
+          id: "collab-title-backfill",
+          type: "collabAgentToolCall",
+          tool: "spawnAgent",
+          receiverThreadIds: ["thread-agent-sub-title-backfill"],
+          agentsStates: {
+            "thread-agent-sub-title-backfill": {
+              status: "pendingInit",
+              message: "Booting"
+            }
+          }
+        }
+      });
+    });
+
+    assert.equal(readCalls, 1);
+
+    await withMockedNow("2026-03-10T11:13:23.000Z", async () => {
+      await (service as any).handleCallback({
+        id: "callback-agent-expand-title-backfill",
+        from: { id: 1, is_bot: false, first_name: "Tester" },
+        message: {
+          message_id: 738,
+          chat: { id: 1, type: "private" },
+          date: 0,
+          text: "<b>Runtime Status</b>"
+        },
+        data: `v1:agent:expand:${session.sessionId}`
+      });
+    });
+
+    assert.equal(callbackAnswers.at(-1), undefined);
+    assert.match(edited.at(-1)?.text ?? "", /Euler \(pending\): Booting/u);
+    assert.doesNotMatch(edited.at(-1)?.text ?? "", /Delayed Title \(pending\): Booting/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("status card ignores stale thread read identity after newer notification", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const callbackAnswers: Array<string | undefined> = [];
+  let nextMessageId = 739;
+  let readCalls = 0;
+  let signalReadStarted!: () => void;
+  let resolveReadThread!: (value: unknown) => void;
+  const readStarted = new Promise<void>((resolve) => {
+    signalReadStarted = resolve;
+  });
+  const readThreadResult = new Promise<unknown>((resolve) => {
+    resolveReadThread = resolve;
+  });
+
+  try {
+    store.upsertPendingAuthorization({
+      telegramUserId: "1",
+      telegramChatId: "chat-1",
+      telegramUsername: "tester",
+      displayName: "Tester"
+    });
+    const candidate = store.listPendingAuthorizations()[0];
+    if (!candidate) {
+      throw new Error("expected pending authorization candidate");
+    }
+    store.confirmPendingAuthorization(candidate);
+    const session = createSession(store, "chat-1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ messageId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      answerCallbackQuery: async (_callbackQueryId: string, text?: string) => {
+        callbackAnswers.push(text);
+      }
+    };
+
+    installRunningAppServer(service, "thread-agent-main-stale-read", "turn-agent-main-stale-read");
+    (service as any).appServer.readThread = async (threadId: string, includeTurns?: boolean) => {
+      readCalls += 1;
+      assert.equal(threadId, "thread-agent-sub-stale-read");
+      assert.equal(includeTurns, false);
+      signalReadStarted();
+      return await readThreadResult;
+    };
+
+    await withMockedNow("2026-03-10T11:13:40.000Z", async () => {
+      await (service as any).startRealTurn("chat-1", session, "Do the work");
+    });
+    await withMockedNow("2026-03-10T11:13:41.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/started", {
+        threadId: "thread-agent-main-stale-read",
+        turnId: "turn-agent-main-stale-read"
+      });
+    });
+
+    const pendingBackfill = (service as any).handleAppServerNotification("item/started", {
+      threadId: "thread-agent-main-stale-read",
+      turnId: "turn-agent-main-stale-read",
+      item: {
+        id: "collab-stale-read",
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        receiverThreadIds: ["thread-agent-sub-stale-read"],
+        agentsStates: {
+          "thread-agent-sub-stale-read": {
+            status: "pendingInit",
+            message: "Booting"
+          }
+        }
+      }
+    });
+
+    await readStarted;
+
+    await (service as any).handleAppServerNotification("thread/started", {
+      thread: {
+        id: "thread-agent-sub-stale-read",
+        agentNickname: "Noether",
+        agentRole: "explorer",
+        name: "Fresh Title"
+      }
+    });
+
+    resolveReadThread({
+      thread: {
+        id: "thread-agent-sub-stale-read",
+        agentNickname: null,
+        agentRole: null,
+        name: "Stale Title",
+        turns: []
+      }
+    });
+    await pendingBackfill;
+
+    assert.equal(readCalls, 1);
+
+    const activeTurn = (service as any).activeTurn;
+    await (service as any).flushRuntimeCardRender(activeTurn, activeTurn.statusCard);
+    assert.equal((edited.at(-1) ?? sent.at(-1))?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "Agent：1 个运行中");
+
+    const inspect = activeTurn.tracker.getInspectSnapshot();
+    assert.equal(inspect.agentSnapshot[0]?.label, "Noether");
+    assert.equal(inspect.agentSnapshot[0]?.labelSource, "nickname");
+
+    activeTurn.statusCard.agentsExpanded = true;
+    const rendered = (service as any).buildStatusCardRenderPayload(session.sessionId, activeTurn.tracker, activeTurn.statusCard);
+    await (service as any).requestRuntimeCardRender(
+      activeTurn,
+      activeTurn.statusCard,
+      rendered.text,
+      rendered.replyMarkup,
+      { force: true, reason: "test_agents_expanded" }
+    );
+
+    assert.match(edited.at(-1)?.text ?? "", /Noether \(pending\): Booting/u);
+    assert.doesNotMatch(edited.at(-1)?.text ?? "", /Stale Title/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("status card keeps the fallback subagent label when thread read cannot resolve identity", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const callbackAnswers: Array<string | undefined> = [];
+  let nextMessageId = 737;
+  let readCalls = 0;
+
+  try {
+    store.upsertPendingAuthorization({
+      telegramUserId: "1",
+      telegramChatId: "chat-1",
+      telegramUsername: "tester",
+      displayName: "Tester"
+    });
+    const candidate = store.listPendingAuthorizations()[0];
+    if (!candidate) {
+      throw new Error("expected pending authorization candidate");
+    }
+    store.confirmPendingAuthorization(candidate);
+    const session = createSession(store, "chat-1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ messageId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      answerCallbackQuery: async (_callbackQueryId: string, text?: string) => {
+        callbackAnswers.push(text);
+      }
+    };
+
+    installRunningAppServer(service, "thread-agent-main-fallback", "turn-agent-main-fallback");
+    (service as any).appServer.readThread = async (threadId: string, includeTurns?: boolean) => {
+      readCalls += 1;
+      assert.equal(threadId, "thread-agent-sub-fallback");
+      assert.equal(includeTurns, false);
+      return {
+        thread: {
+          id: threadId,
+          agentNickname: null,
+          agentRole: "explorer",
+          name: null,
+          turns: []
+        }
+      };
+    };
+
+    await withMockedNow("2026-03-10T11:14:00.000Z", async () => {
+      await (service as any).startRealTurn("chat-1", session, "Do the work");
+    });
+    await withMockedNow("2026-03-10T11:14:01.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/started", {
+        threadId: "thread-agent-main-fallback",
+        turnId: "turn-agent-main-fallback"
+      });
+    });
+    await withMockedNow("2026-03-10T11:14:02.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/started", {
+        threadId: "thread-agent-main-fallback",
+        turnId: "turn-agent-main-fallback",
+        item: {
+          id: "collab-fallback",
+          type: "collabAgentToolCall",
+          tool: "spawnAgent",
+          receiverThreadIds: ["thread-agent-sub-fallback"],
+          agentsStates: {
+            "thread-agent-sub-fallback": {
+              status: "pendingInit",
+              message: "Booting"
+            }
+          }
+        }
+      });
+    });
+
+    assert.equal(readCalls, 1);
+
+    await withMockedNow("2026-03-10T11:14:03.000Z", async () => {
+      await (service as any).handleCallback({
+        id: "callback-agent-expand-fallback",
+        from: { id: 1, is_bot: false, first_name: "Tester" },
+        message: {
+          message_id: 737,
+          chat: { id: 1, type: "private" },
+          date: 0,
+          text: "<b>Runtime Status</b>"
+        },
+        data: `v1:agent:expand:${session.sessionId}`
+      });
+    });
+
+    assert.equal(callbackAnswers.at(-1), undefined);
+    assert.match(edited.at(-1)?.text ?? "", /agent-llback \(pending\): Booting/u);
+
+    await withMockedNow("2026-03-10T11:14:04.000Z", async () => {
+      await (service as any).handleAppServerNotification("thread/status/changed", {
+        threadId: "thread-agent-sub-fallback",
+        status: {
+          type: "active",
+          activeFlags: []
+        }
+      });
+    });
+
+    assert.equal(readCalls, 1);
   } finally {
     await cleanup();
   }

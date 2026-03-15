@@ -34,6 +34,8 @@ const REQUIRED_CLIENT_REQUESTS = [
   "turn/interrupt"
 ];
 const REQUIRED_SERVER_NOTIFICATIONS = [
+  "thread/started",
+  "thread/name/updated",
   "turn/started",
   "turn/completed",
   "thread/status/changed",
@@ -285,6 +287,67 @@ test("probeReadiness fails hard when the current Codex capability surface is bel
     assert.match(result.snapshot.details.issues.join("\n"), /thread\/archived/u);
   } finally {
     await cleanup();
+  }
+});
+
+test("probeReadiness fails hard when required subagent naming notifications are missing from generated schema", async () => {
+  for (const missingMethod of ["thread/started", "thread/name/updated"]) {
+    const { paths, store, cleanup } = await createReadinessContext();
+
+    try {
+      const result = await probeReadiness({
+        config: testConfig,
+        store,
+        paths,
+        logger: testLogger,
+        persist: false,
+        deps: {
+          nodeVersion: process.version,
+          detectServiceManager: async () => ({
+            manager: "none",
+            health: "warning",
+            issues: []
+          }),
+          commandExists: async () => true,
+          runCommand: async (_command: string, args: string[]) => {
+            if (args[0] === "--version") {
+              return { exitCode: 0, stdout: "codex-cli 0.114.0", stderr: "" };
+            }
+            if (args[0] === "login") {
+              return { exitCode: 0, stdout: "Logged in", stderr: "" };
+            }
+            if (args[0] === "app-server" && args[1] === "generate-json-schema") {
+              const outIndex = args.indexOf("--out");
+              assert.notEqual(outIndex, -1);
+              const schemaDir = args[outIndex + 1];
+              assert.ok(schemaDir);
+              await writeCapabilitySchemas(schemaDir, {
+                serverNotifications: REQUIRED_SERVER_NOTIFICATIONS.filter((method) => method !== missingMethod)
+              });
+              return { exitCode: 0, stdout: "", stderr: "" };
+            }
+            throw new Error(`unexpected command: ${args.join(" ")}`);
+          },
+          validateTelegramToken: async () => ({
+            ok: true,
+            botId: "1",
+            username: "bridge_bot"
+          }),
+          createAppServer: () => ({
+            pid: 123,
+            initializeAndProbe: async () => {},
+            stop: async () => {}
+          })
+        }
+      } as any);
+
+      assert.equal(result.snapshot.state, "bridge_unhealthy");
+      assert.equal(result.snapshot.details.capabilityCheckPassed, false);
+      assert.equal(result.snapshot.details.capabilityCheckSource, "generated_schema");
+      assert.match(result.snapshot.details.issues.join("\n"), new RegExp(missingMethod.replace("/", "\\/"), "u"));
+    } finally {
+      await cleanup();
+    }
   }
 });
 

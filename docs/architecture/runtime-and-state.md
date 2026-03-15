@@ -56,6 +56,8 @@ It should:
 - keep reasoning deltas and raw token fragments out of the normal Telegram chat flow
 - treat completed `agentMessage` items with `phase = commentary` as the authoritative commentary source
 - keep commentary-driven `Progress` separate from the reduced runtime `State` so phase narration does not replace the running or blocked indicator
+- use the same commentary-first rule for expanded subagent rows, but let blocker text override stale commentary while the subagent is waiting on approval or user input
+- resolve expanded subagent labels from protocol thread identity when available, preferring `agentNickname`, then thread title, then a local fallback label, and bound the rendered label length before building the Telegram card
 - keep raw `item/agentMessage/delta` traffic out of the normal Telegram chat flow
 - retain richer structured command detail for `/inspect` and the on-disk debug journal
 - capture the final assistant message emitted before `turn/completed`
@@ -204,6 +206,7 @@ Readiness details also capture:
 - service-manager health
 - state/config/install root writability
 - capability-check results for the required V2 app-server request and notification surface
+- whether the runtime exposes the subagent identity notifications needed for protocol-backed agent naming
 
 ### `final_answer_view`
 
