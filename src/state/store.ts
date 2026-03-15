@@ -92,6 +92,7 @@ interface SessionRecord {
   session_id: string;
   telegram_chat_id: string;
   thread_id: string | null;
+  selected_model: string | null;
   display_name: string;
   project_name: string;
   project_path: string;
@@ -135,7 +136,7 @@ interface SessionProjectStatsRecord {
 interface RuntimeNoticeRecord {
   key: string;
   telegram_chat_id: string;
-  type: "bridge_restart_recovery";
+  type: "bridge_restart_recovery" | "app_server_notice";
   message: string;
   created_at: string;
 }
@@ -216,6 +217,7 @@ function mapSession(record: SessionRecord): SessionRow {
     sessionId: record.session_id,
     telegramChatId: record.telegram_chat_id,
     threadId: record.thread_id,
+    selectedModel: record.selected_model,
     displayName: record.display_name,
     projectName: record.project_name,
     projectPath: record.project_path,
@@ -352,6 +354,7 @@ function initialSchema(): string {
       session_id TEXT PRIMARY KEY,
       telegram_chat_id TEXT NOT NULL,
       thread_id TEXT NULL,
+      selected_model TEXT NULL,
       display_name TEXT NOT NULL,
       project_name TEXT NOT NULL,
       project_path TEXT NOT NULL,
@@ -449,7 +452,7 @@ function initialSchema(): string {
   `;
 }
 
-const CURRENT_SCHEMA_VERSION = 4;
+const CURRENT_SCHEMA_VERSION = 5;
 
 function listColumns(db: DatabaseSync, tableName: string): string[] {
   const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
@@ -570,6 +573,14 @@ function applyMigrations(db: DatabaseSync): void {
     );
 
     recordMigration(db, 4);
+  }
+
+  if (!applied.has(5)) {
+    if (!hasColumn(db, "session", "selected_model")) {
+      db.exec("ALTER TABLE session ADD COLUMN selected_model TEXT NULL");
+    }
+
+    recordMigration(db, 5);
   }
 }
 
@@ -1080,13 +1091,18 @@ export class BridgeStateStore {
     projectName: string;
     projectPath: string;
     displayName?: string;
+    selectedModel?: string | null;
+    threadId?: string | null;
+    lastTurnId?: string | null;
+    lastTurnStatus?: string | null;
   }): SessionRow {
     const timestamp = nowIso();
     const sessionId = randomUUID();
     const session: SessionRow = {
       sessionId,
       telegramChatId: options.telegramChatId,
-      threadId: null,
+      threadId: options.threadId ?? null,
+      selectedModel: options.selectedModel ?? null,
       displayName: options.displayName ?? options.projectName,
       projectName: options.projectName,
       projectPath: options.projectPath,
@@ -1096,8 +1112,8 @@ export class BridgeStateStore {
       archivedAt: null,
       createdAt: timestamp,
       lastUsedAt: timestamp,
-      lastTurnId: null,
-      lastTurnStatus: null
+      lastTurnId: options.lastTurnId ?? null,
+      lastTurnStatus: options.lastTurnStatus ?? null
     };
 
     this.db.exec("BEGIN");
@@ -1110,6 +1126,7 @@ export class BridgeStateStore {
               session_id,
               telegram_chat_id,
               thread_id,
+              selected_model,
               display_name,
               project_name,
               project_path,
@@ -1122,13 +1139,14 @@ export class BridgeStateStore {
               last_turn_id,
               last_turn_status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `
         )
         .run(
           session.sessionId,
           session.telegramChatId,
           session.threadId,
+          session.selectedModel,
           session.displayName,
           session.projectName,
           session.projectPath,
@@ -1497,6 +1515,18 @@ export class BridgeStateStore {
       .run(threadId, nowIso(), sessionId);
   }
 
+  setSessionSelectedModel(sessionId: string, selectedModel: string | null): void {
+    this.db
+      .prepare(
+        `
+          UPDATE session
+          SET selected_model = ?, last_used_at = ?
+          WHERE session_id = ?
+        `
+      )
+      .run(selectedModel, nowIso(), sessionId);
+  }
+
   updateSessionStatus(
     sessionId: string,
     status: SessionStatus,
@@ -1620,6 +1650,38 @@ export class BridgeStateStore {
     this.db.prepare("DELETE FROM runtime_notice WHERE key = ?").run(key);
   }
 
+  createRuntimeNotice(options: {
+    key?: string;
+    telegramChatId: string;
+    type: RuntimeNotice["type"];
+    message: string;
+  }): RuntimeNotice {
+    const notice: RuntimeNotice = {
+      key: options.key ?? `notice:${randomUUID()}`,
+      telegramChatId: options.telegramChatId,
+      type: options.type,
+      message: options.message,
+      createdAt: nowIso()
+    };
+
+    this.db
+      .prepare(
+        `
+          INSERT OR REPLACE INTO runtime_notice (
+            key,
+            telegram_chat_id,
+            type,
+            message,
+            created_at
+          )
+          VALUES (?, ?, ?, ?, ?)
+        `
+      )
+      .run(notice.key, notice.telegramChatId, notice.type, notice.message, notice.createdAt);
+
+    return notice;
+  }
+
   listNoticeChatIds(): string[] {
     const rows = this.db
       .prepare("SELECT DISTINCT telegram_chat_id FROM runtime_notice ORDER BY telegram_chat_id ASC")
@@ -1681,7 +1743,7 @@ export class BridgeStateStore {
               SELECT answer_id
               FROM final_answer_view
               WHERE telegram_chat_id = ?
-              ORDER BY created_at DESC, answer_id DESC
+              ORDER BY created_at DESC, rowid DESC
               LIMIT -1 OFFSET 50
             )
           `
@@ -1723,7 +1785,7 @@ export class BridgeStateStore {
           SELECT *
           FROM final_answer_view
           WHERE telegram_chat_id = ?
-          ORDER BY created_at DESC, answer_id DESC
+          ORDER BY created_at DESC, rowid DESC
         `
       )
       .all(telegramChatId) as unknown as FinalAnswerViewRecord[];
@@ -1835,6 +1897,23 @@ export class BridgeStateStore {
         .get(interactionId);
 
     return row ? mapPendingInteraction(row as unknown as PendingInteractionRecord) : null;
+  }
+
+  listPendingInteractionsByRequest(threadId: string, requestId: string): PendingInteractionRow[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM pending_interaction
+          WHERE thread_id = ?
+            AND request_id = ?
+            AND state IN ('pending', 'awaiting_text')
+          ORDER BY created_at DESC, interaction_id DESC
+        `
+      )
+      .all(threadId, requestId) as unknown as PendingInteractionRecord[];
+
+    return rows.map(mapPendingInteraction);
   }
 
   listPendingInteractionsByChat(

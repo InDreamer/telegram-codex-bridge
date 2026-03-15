@@ -56,6 +56,7 @@ function createSession(overrides: Partial<SessionRow>): SessionRow {
     sessionId: overrides.sessionId ?? "session-1",
     telegramChatId: overrides.telegramChatId ?? "chat-1",
     threadId: overrides.threadId ?? null,
+    selectedModel: "selectedModel" in overrides ? overrides.selectedModel ?? null : null,
     displayName: overrides.displayName ?? "Session Alpha",
     projectName: overrides.projectName ?? "Project One",
     projectPath: overrides.projectPath ?? "/tmp/project-one",
@@ -112,9 +113,14 @@ function createInspectSnapshot(overrides: Partial<InspectSnapshot> = {}): Inspec
     recentFileChangeSummaries: overrides.recentFileChangeSummaries ?? [],
     recentMcpSummaries: overrides.recentMcpSummaries ?? [],
     recentWebSearches: overrides.recentWebSearches ?? [],
+    recentHookSummaries: overrides.recentHookSummaries ?? [],
+    recentNoticeSummaries: overrides.recentNoticeSummaries ?? [],
     planSnapshot: overrides.planSnapshot ?? [],
     agentSnapshot: overrides.agentSnapshot ?? [],
     completedCommentary: overrides.completedCommentary ?? [],
+    tokenUsage: overrides.tokenUsage ?? null,
+    latestDiffSummary: overrides.latestDiffSummary ?? null,
+    terminalInteractionSummary: overrides.terminalInteractionSummary ?? null,
     pendingInteractions: overrides.pendingInteractions ?? []
   };
 }

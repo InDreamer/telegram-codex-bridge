@@ -11,6 +11,7 @@ import type {
   StreamBlock,
   StreamSnapshot,
   ThreadBlockedReason,
+  TokenUsageSnapshot,
   TurnStatus
 } from "./types.js";
 
@@ -82,6 +83,8 @@ export class ActivityTracker {
   private readonly recentFileChangeSummaries: string[] = [];
   private readonly recentMcpSummaries: string[] = [];
   private readonly recentWebSearches: string[] = [];
+  private readonly recentHookSummaries: string[] = [];
+  private readonly recentNoticeSummaries: string[] = [];
   private readonly planSnapshot: string[] = [];
   private readonly subagents = new Map<string, TrackedSubagent>();
   private readonly pendingSubagentIdentities = new Map<string, SubagentIdentityUpdate>();
@@ -92,6 +95,9 @@ export class ActivityTracker {
   private readonly streamBlocks: StreamBlock[] = [];
   private turnStartedAt: string | null = null;
   private lastStreamToolSummary: string | null = null;
+  private tokenUsage: TokenUsageSnapshot | null = null;
+  private latestDiffSummary: string | null = null;
+  private terminalInteractionSummary: string | null = null;
 
   constructor(
     private readonly options: ActivityTrackerOptions
@@ -131,6 +137,19 @@ export class ActivityTracker {
     switch (notification.kind) {
       case "thread_started":
       case "thread_name_updated":
+        return;
+
+      case "thread_token_usage_updated":
+        this.tokenUsage = notification.tokenUsage;
+        this.state.inspectAvailable = true;
+        this.state.lastActivityAt = receivedAt;
+        return;
+
+      case "thread_compacted":
+        this.state.inspectAvailable = true;
+        this.state.lastActivityAt = receivedAt;
+        this.pushUniqueSummary(this.recentNoticeSummaries, "上下文已压缩");
+        this.pushTransition(receivedAt, "thread", "thread compacted");
         return;
 
       case "turn_started":
@@ -174,6 +193,16 @@ export class ActivityTracker {
           });
         }
         return;
+
+      case "turn_diff_updated": {
+        const summary = summarizeUnifiedDiff(notification.diff);
+        if (summary) {
+          this.latestDiffSummary = summary;
+          this.state.inspectAvailable = true;
+          this.state.lastActivityAt = receivedAt;
+        }
+        return;
+      }
 
       case "thread_status_changed": {
         const blockedReason = deriveBlockedReason(notification.activeFlags);
@@ -306,6 +335,87 @@ export class ActivityTracker {
             this.pushStatusUpdate(cleanSummary(notification.message));
           }
         }
+        return;
+
+      case "hook_started":
+      case "hook_completed": {
+        const summary = summarizeHookRun(notification.run, notification.kind === "hook_completed");
+        if (summary) {
+          this.pushUniqueSummary(this.recentHookSummaries, summary);
+          this.state.inspectAvailable = true;
+          this.state.lastActivityAt = receivedAt;
+          this.pushTransition(receivedAt, "progress", summary);
+        }
+        for (const entry of notification.run.entries) {
+          const entrySummary = summarizeHookEntry(entry.kind, entry.text);
+          if (entrySummary) {
+            this.pushUniqueSummary(this.recentNoticeSummaries, entrySummary);
+          }
+        }
+        return;
+      }
+
+      case "terminal_interaction": {
+        const summary = summarizeTerminalInteraction(notification.stdin);
+        this.terminalInteractionSummary = summary;
+        this.state.latestProgress = summary;
+        this.state.inspectAvailable = true;
+        this.state.lastActivityAt = receivedAt;
+        this.pushUniqueSummary(this.recentNoticeSummaries, summary);
+        this.pushTransition(receivedAt, "progress", summary);
+        this.pushStatusUpdate(summary);
+        return;
+      }
+
+      case "server_request_resolved":
+        if (notification.requestId) {
+          const summary = `交互已完成：${notification.requestId}`;
+          this.state.inspectAvailable = true;
+          this.state.lastActivityAt = receivedAt;
+          this.pushUniqueSummary(this.recentNoticeSummaries, summary);
+          this.pushTransition(receivedAt, "progress", summary);
+        }
+        return;
+
+      case "config_warning": {
+        const summary = summarizeNotice(notification.summary, notification.detail, "配置警告");
+        if (summary) {
+          this.state.inspectAvailable = true;
+          this.state.lastActivityAt = receivedAt;
+          this.pushUniqueSummary(this.recentNoticeSummaries, summary);
+          this.pushTransition(receivedAt, "progress", summary);
+        }
+        return;
+      }
+
+      case "deprecation_notice": {
+        const summary = summarizeNotice(notification.summary, notification.detail, "弃用提示");
+        if (summary) {
+          this.state.inspectAvailable = true;
+          this.state.lastActivityAt = receivedAt;
+          this.pushUniqueSummary(this.recentNoticeSummaries, summary);
+          this.pushTransition(receivedAt, "progress", summary);
+        }
+        return;
+      }
+
+      case "model_rerouted": {
+        const summary = summarizeModelReroute(notification.fromModel, notification.toModel, notification.reason);
+        if (summary) {
+          this.state.inspectAvailable = true;
+          this.state.lastActivityAt = receivedAt;
+          this.pushUniqueSummary(this.recentNoticeSummaries, summary);
+          this.pushTransition(receivedAt, "progress", summary);
+          this.pushStatusUpdate(summary);
+        }
+        return;
+      }
+
+      case "skills_changed":
+        this.state.inspectAvailable = true;
+        this.state.lastActivityAt = receivedAt;
+        this.pushUniqueSummary(this.recentNoticeSummaries, "技能列表已刷新");
+        this.pushTransition(receivedAt, "progress", "skills changed");
         return;
 
       case "final_message_available":
@@ -468,9 +578,14 @@ export class ActivityTracker {
       recentFileChangeSummaries: [...this.recentFileChangeSummaries],
       recentMcpSummaries: [...this.recentMcpSummaries],
       recentWebSearches: [...this.recentWebSearches],
+      recentHookSummaries: [...this.recentHookSummaries],
+      recentNoticeSummaries: [...this.recentNoticeSummaries],
       planSnapshot: [...this.planSnapshot],
       agentSnapshot: this.getRunningAgentSnapshot(),
       completedCommentary: [...this.completedCommentary],
+      tokenUsage: this.tokenUsage ? { ...this.tokenUsage } : null,
+      latestDiffSummary: this.latestDiffSummary,
+      terminalInteractionSummary: this.terminalInteractionSummary,
       pendingInteractions: []
     };
   }
@@ -706,6 +821,17 @@ export class ActivityTracker {
 
       case "final_message_available":
       case "agent_message_delta":
+      case "thread_token_usage_updated":
+      case "thread_compacted":
+      case "turn_diff_updated":
+      case "hook_started":
+      case "hook_completed":
+      case "terminal_interaction":
+      case "server_request_resolved":
+      case "config_warning":
+      case "deprecation_notice":
+      case "model_rerouted":
+      case "skills_changed":
       case "thread_archived":
       case "thread_unarchived":
       case "other":
@@ -1023,6 +1149,85 @@ export class ActivityTracker {
     this.commandOutputBuffers.set(itemId, combined);
     return combined;
   }
+}
+
+function summarizeUnifiedDiff(diff: string | null): string | null {
+  if (!diff) {
+    return null;
+  }
+
+  const files = diff.split(/\n(?=diff --git )/u).filter((chunk) => chunk.includes("diff --git "));
+  const additions = (diff.match(/^\+/gmu) ?? []).length;
+  const deletions = (diff.match(/^-/gmu) ?? []).length;
+  const summaryParts = [
+    files.length > 0 ? `${files.length} 个文件` : null,
+    additions > 0 ? `+${additions}` : null,
+    deletions > 0 ? `-${deletions}` : null
+  ].filter((value): value is string => Boolean(value));
+  return summaryParts.length > 0 ? `差异更新：${summaryParts.join(" / ")}` : "差异已更新";
+}
+
+function summarizeHookRun(
+  run: {
+    eventName: string | null;
+    handlerType: string | null;
+    status: string | null;
+    statusMessage: string | null;
+    durationMs: number | null;
+  },
+  completed: boolean
+): string | null {
+  const parts = [
+    run.eventName ? `hook ${run.eventName}` : "hook",
+    run.handlerType ? `(${run.handlerType})` : null,
+    run.status ?? (completed ? "completed" : "running")
+  ].filter((value): value is string => Boolean(value));
+  const suffix = run.durationMs !== null ? ` ${run.durationMs}ms` : "";
+  const summary = `${parts.join(" ")}${suffix}`.trim();
+  if (!summary) {
+    return null;
+  }
+
+  return run.statusMessage ? `${summary}: ${cleanSummary(run.statusMessage)}` : summary;
+}
+
+function summarizeHookEntry(kind: string | null, text: string | null): string | null {
+  if (!text) {
+    return null;
+  }
+
+  const prefix = kind ? `hook ${kind}` : "hook";
+  return `${prefix}: ${cleanSummary(text)}`;
+}
+
+function summarizeTerminalInteraction(stdin: string | null): string {
+  const preview = cleanSummary(stdin ?? "");
+  return preview
+    ? `终端输入请求未转发到 Telegram：${preview}`
+    : "终端输入请求未转发到 Telegram";
+}
+
+function summarizeNotice(summary: string | null, detail: string | null, prefix: string): string | null {
+  const head = cleanSummary(summary ?? "");
+  if (!head) {
+    return null;
+  }
+
+  const tail = cleanSummary(detail ?? "");
+  return tail ? `${prefix}：${head} - ${tail}` : `${prefix}：${head}`;
+}
+
+function summarizeModelReroute(
+  fromModel: string | null,
+  toModel: string | null,
+  reason: string | null
+): string | null {
+  if (!fromModel || !toModel) {
+    return null;
+  }
+
+  const suffix = reason ? `（${reason}）` : "";
+  return `模型已改道：${fromModel} -> ${toModel}${suffix}`;
 }
 
 function mapCompletionStatus(status: string): TurnStatus {

@@ -180,7 +180,9 @@ Conclusion:
 
 Runtime `requestApproval` behavior was not captured reliably.
 
-This does not block v1 because approval handling is explicitly out of scope.
+Historical note:
+- this phase-0 capture predates the shipped bridge interaction broker
+- lack of runtime capture here is not evidence that approval handling is absent in the current bridge
 
 ## Verified Interrupt Behavior
 
@@ -231,7 +233,7 @@ Important observed fields:
 
 1. stdout event traffic is broader than only `thread/*`, `turn/*`, and `item/*`
 2. `thread/start` returns a richer payload than the earlier minimal assumption
-3. approval remains unverified at runtime, but no longer blocks v1
+3. approval remained unverified in this dated capture, but that gap is now handled by newer schema-first bridge work
 4. readiness should include a non-destructive follow-up request after initialization
 
 ## Final Phase 0 Conclusion

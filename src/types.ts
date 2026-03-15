@@ -82,7 +82,7 @@ export interface InstallManifest {
 export interface RuntimeNotice {
   key: string;
   telegramChatId: string;
-  type: "bridge_restart_recovery";
+  type: "bridge_restart_recovery" | "app_server_notice";
   message: string;
   createdAt: string;
 }
@@ -144,6 +144,7 @@ export interface SessionRow {
   sessionId: string;
   telegramChatId: string;
   threadId: string | null;
+  selectedModel: string | null;
   displayName: string;
   projectName: string;
   projectPath: string;

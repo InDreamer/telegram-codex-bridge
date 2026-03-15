@@ -201,6 +201,144 @@ Responses:
 - success: `已收藏项目：{project_name}`
 - already pinned: `这个项目已经收藏。`
 
+### `/model` and `/model <model_id>`
+
+Shows:
+- the available model list from the current app-server runtime
+- the per-session selected model when one is pinned for the active session
+
+Rules:
+- selection is stored on the bridge session and applied on the next `thread/start` or `turn/start`
+- the bridge does not expose provider setup or arbitrary config editing through Telegram
+
+### `/skills`
+
+Shows:
+- the current project's available skills from `skills/list`
+- each skill's enabled state and concise description when present
+
+### `/skill <name> :: <prompt>`
+
+Behavior:
+- sends the selected skill as structured input
+- if the prompt is omitted, queue the skill and use the next normal text message as the task prompt
+- `/cancel` clears the queued structured input
+
+### `/plugins`
+
+Shows:
+- the current project's discovered plugin marketplaces plus plugin summaries from `plugin/list`
+- installed and enabled state per plugin when available
+- install and uninstall command hints
+
+Rules:
+- use the active session project path as the discovery cwd
+- keep the Telegram output to a compact list instead of dumping raw marketplace JSON
+
+### `/plugin install <marketplace>/<plugin>` and `/plugin uninstall <plugin_id>`
+
+Behavior:
+- resolves `<marketplace>/<plugin>` against the live `plugin/list` result for the active project
+- calls `plugin/install` with the resolved marketplace path plus plugin name
+- calls `plugin/uninstall` with the provided plugin id
+
+Responses:
+- install success: `已安装插件：{plugin_name}`
+- uninstall success: `已卸载插件：{plugin_id}`
+- install or uninstall failure: compact Telegram error text rather than raw protocol frames
+- when install returns `appsNeedingAuth`, include a short follow-up list of affected app names and install URLs when present
+
+### `/apps`
+
+Shows:
+- the current app list from `app/list`
+- app accessibility and enabled state
+- concise plugin linkage and install URL data when present
+
+Rules:
+- use the active thread id when available so app gating matches the current session config
+- keep the Telegram surface read-only; app install flows remain link-first rather than form-heavy Telegram setup
+
+### `/mcp`, `/mcp reload`, and `/mcp login <name>`
+
+Shows:
+- current MCP server status from `mcpServerStatus/list`
+- auth status plus compact counts for tools, resources, and templates
+
+Behavior:
+- `/mcp reload` calls `config/mcpServer/reload`
+- `/mcp login <name>` calls `mcpServer/oauth/login` and returns the generated authorization URL
+
+Rules:
+- Telegram shows the login link and asks the user to re-run `/mcp` after auth instead of trying to mirror the whole OAuth browser flow inline
+- keep MCP status in compact chat form rather than exposing raw server metadata dumps
+
+### `/account`
+
+Shows:
+- current account summary from `account/read`
+- whether OpenAI auth is still required
+- best-effort rate-limit summary from `account/rateLimits/read` when available
+
+### `/review [detached] [branch <name>|commit <sha>|custom <instructions>]`
+
+Behavior:
+- starts `review/start` against the active session thread
+- if Codex returns a new review thread, the bridge creates a dedicated review session and makes it active
+- review sessions inherit the active session's selected model
+
+### `/fork [name]`
+
+Behavior:
+- forks the active Codex thread into a new bridge session
+- the new session becomes active immediately
+- the selected model follows the forked session when present
+
+### `/rollback <n>`
+
+Behavior:
+- calls `thread/rollback`
+- updates the active session's latest turn pointer to the returned thread state
+- reminds the user that local file edits are not auto-reverted
+
+### `/compact`
+
+Behavior:
+- requests `thread/compact/start`
+- keeps the Telegram UX at the session level instead of exposing raw compact protocol detail
+
+### `/thread name <name>`
+
+Behavior:
+- calls `thread/name/set`
+- mirrors the new thread name into the bridge session display name
+
+### `/thread meta branch=<branch> sha=<sha> origin=<url>`
+
+Behavior:
+- calls `thread/metadata/update`
+- supports `-` as a clear value for any provided field
+
+### `/thread clean-terminals`
+
+Behavior:
+- calls `thread/backgroundTerminals/clean`
+- keeps the response compact at the thread level instead of exposing terminal-session internals
+
+### `/local_image <path> :: <prompt>`
+
+Behavior:
+- resolves the image path relative to the active project path
+- sends a real `localImage` input to Codex
+- if the prompt is omitted, queue the image and use the next normal text message as the task prompt
+
+### `/mention <path-or-name|path> :: <prompt>`
+
+Behavior:
+- sends a real `mention` input to Codex
+- `name | path` sets the visible mention label explicitly
+- if the prompt is omitted, queue the mention and use the next normal text message as the task prompt
+
 ### `/where`
 
 Shows:
@@ -208,6 +346,7 @@ Shows:
 - current project name
 - current project path
 - session status
+- selected model when present
 - bridge `session_id`
 - Codex `thread_id` when available, otherwise an explicit not-created-yet note
 - latest `turn_id` when available
@@ -226,8 +365,14 @@ Responses:
   - recent command details, including command text and latest result summary when available
   - recent file-change summaries
   - recent MCP and web-search summaries grouped into one user-facing section
+  - latest token-usage snapshot when available
+  - latest diff summary when available
+  - recent hook summaries when available
+  - recent runtime notices such as config warnings, deprecation notices, model reroutes, skills refreshes, and thread compaction
+  - terminal interaction summary when available
   - current plan snapshot
   - completed commentary entries when available
+  - unresolved interaction summaries
   - when no live snapshot exists but the session has a completed turn, best-effort detail recovered from thread history
 - with no activity data: `当前没有可用的活动详情。`
 
@@ -261,15 +406,22 @@ Versioned callback formats:
 - `v1:path:confirm:{project_key}`
 - `v1:plan:expand:{session_id}`
 - `v1:plan:collapse:{session_id}`
+- `v1:agent:expand:{session_id}`
+- `v1:agent:collapse:{session_id}`
 - `v1:final:open:{answer_id}`
 - `v1:final:close:{answer_id}`
 - `v1:final:page:{answer_id}:{page}`
+- `v3:ix:decision:{interaction_id}:{decision_key}`
+- `v3:ix:question:{interaction_id}:{question_id}:{option_index}`
+- `v3:ix:text:{interaction_id}:{question_id}`
+- `v3:ix:cancel:{interaction_id}`
 
 Rules:
 - `project_key` is a stable short hash of the project path, never the raw path
 - duplicate clicks must be idempotent and return `这个操作已处理。`
 - stale callbacks must return `这个按钮已过期，请重新操作。`
 - session switching and pinning are text commands (`/use <n>` and `/pin`), not callback actions
+- interaction callbacks are bridge-owned UX for persisted pending interactions, not raw protocol passthrough
 
 ## Message And Turn Rules
 
@@ -313,3 +465,10 @@ While a turn is running:
 While a turn is running:
 - do not queue a second turn
 - reply with `当前项目仍在执行，请等待完成或发送 /interrupt。`
+
+Blocked-turn continuation and rich input rules:
+- if the active turn is blocked on user input and no interaction is already waiting for free-text answer mode, plain text becomes `turn/steer`
+- the same blocked-turn continuation path also accepts queued `skill`, `localImage`, `mention`, and Telegram photo inputs
+- Telegram photo messages are downloaded bridge-side and submitted as `localImage` input
+- a photo caption is used as the prompt immediately; without a caption, the bridge queues the image and waits for the next text message
+- Telegram remains an adapted UX, not a raw terminal surface

@@ -2,23 +2,35 @@ import type {
   AgentMessageDeltaNotification,
   CommandOutputNotification,
   ClassifiedNotification,
+  ConfigWarningNotification,
   CollabAgentStateUpdate,
+  DeprecationNoticeNotification,
   ErrorNotification,
   FileChangeOutputNotification,
   FinalMessageAvailableNotification,
+  HookRunSummary,
+  HookNotification,
   ItemCompletedNotification,
   ItemStartedNotification,
+  ModelReroutedNotification,
   OtherNotification,
   PlanDeltaNotification,
   PlanUpdatedNotification,
   ProgressNotification,
+  ServerRequestResolvedNotification,
+  SkillsChangedNotification,
+  TerminalInteractionNotification,
   ThreadArchivedNotification,
+  ThreadCompactedNotification,
   ThreadNameUpdatedNotification,
   ThreadStartedNotification,
   ThreadStatusChangedNotification,
+  ThreadTokenUsageUpdatedNotification,
   ThreadUnarchivedNotification,
+  TokenUsageSnapshot,
   TurnAbortedNotification,
   TurnCompletedNotification,
+  TurnDiffUpdatedNotification,
   TurnStartedNotification
 } from "../activity/types.js";
 
@@ -42,6 +54,19 @@ export function classifyNotification(method: string, params: unknown): Classifie
         threadName: getThreadName(params)
       } satisfies ThreadNameUpdatedNotification;
 
+    case "thread/tokenUsage/updated":
+      return {
+        kind: "thread_token_usage_updated",
+        ...context,
+        tokenUsage: getTokenUsageSnapshot(params)
+      } satisfies ThreadTokenUsageUpdatedNotification;
+
+    case "thread/compacted":
+      return {
+        kind: "thread_compacted",
+        ...context
+      } satisfies ThreadCompactedNotification;
+
     case "turn/started":
       return {
         kind: "turn_started",
@@ -54,6 +79,13 @@ export function classifyNotification(method: string, params: unknown): Classifie
         ...context,
         status: getString(getObject(params)?.turn, "status") ?? getString(params, "status") ?? "unknown"
       } satisfies TurnCompletedNotification;
+
+    case "turn/diff/updated":
+      return {
+        kind: "turn_diff_updated",
+        ...context,
+        diff: getString(params, "diff")
+      } satisfies TurnDiffUpdatedNotification;
 
     case "thread/status/changed":
       return {
@@ -106,6 +138,61 @@ export function classifyNotification(method: string, params: unknown): Classifie
         itemId: getItemId(params),
         message: getString(params, "message") ?? getString(getObject(params)?.progress, "message") ?? null
       } satisfies ProgressNotification;
+
+    case "hook/started":
+    case "hook/completed":
+      return {
+        kind: method === "hook/started" ? "hook_started" : "hook_completed",
+        ...context,
+        run: getHookRunSummary(params)
+      } satisfies HookNotification;
+
+    case "item/commandExecution/terminalInteraction":
+      return {
+        kind: "terminal_interaction",
+        ...context,
+        itemId: getItemId(params),
+        processId: getString(params, "processId"),
+        stdin: getString(params, "stdin")
+      } satisfies TerminalInteractionNotification;
+
+    case "serverRequest/resolved":
+      return {
+        kind: "server_request_resolved",
+        ...context,
+        requestId: getRequestIdString(params)
+      } satisfies ServerRequestResolvedNotification;
+
+    case "configWarning":
+      return {
+        kind: "config_warning",
+        ...context,
+        summary: getString(params, "summary"),
+        detail: getString(params, "details")
+      } satisfies ConfigWarningNotification;
+
+    case "deprecationNotice":
+      return {
+        kind: "deprecation_notice",
+        ...context,
+        summary: getString(params, "summary"),
+        detail: getString(params, "details")
+      } satisfies DeprecationNoticeNotification;
+
+    case "model/rerouted":
+      return {
+        kind: "model_rerouted",
+        ...context,
+        fromModel: getString(params, "fromModel"),
+        toModel: getString(params, "toModel"),
+        reason: getString(params, "reason")
+      } satisfies ModelReroutedNotification;
+
+    case "skills/changed":
+      return {
+        kind: "skills_changed",
+        ...context
+      } satisfies SkillsChangedNotification;
 
     case "codex/event/task_complete":
       return {
@@ -251,6 +338,56 @@ function getDeltaText(params: unknown): string | null {
     getString(getObject(params)?.output, "text") ??
     null
   );
+}
+
+function getTokenUsageSnapshot(params: unknown): TokenUsageSnapshot | null {
+  const usage = getObject(params)?.tokenUsage;
+  const last = getObject(getObject(usage)?.last);
+  const total = getObject(getObject(usage)?.total);
+  if (!last || !total) {
+    return null;
+  }
+
+  return {
+    lastInputTokens: getNumber(last, "inputTokens") ?? 0,
+    lastCachedInputTokens: getNumber(last, "cachedInputTokens") ?? 0,
+    lastOutputTokens: getNumber(last, "outputTokens") ?? 0,
+    lastReasoningOutputTokens: getNumber(last, "reasoningOutputTokens") ?? 0,
+    lastTotalTokens: getNumber(last, "totalTokens") ?? 0,
+    totalInputTokens: getNumber(total, "inputTokens") ?? 0,
+    totalCachedInputTokens: getNumber(total, "cachedInputTokens") ?? 0,
+    totalOutputTokens: getNumber(total, "outputTokens") ?? 0,
+    totalReasoningOutputTokens: getNumber(total, "reasoningOutputTokens") ?? 0,
+    totalTokens: getNumber(total, "totalTokens") ?? 0,
+    modelContextWindow: getNumber(getObject(usage), "modelContextWindow")
+  };
+}
+
+function getHookRunSummary(params: unknown): HookRunSummary {
+  const run = getObject(params)?.run;
+  const entries = Array.isArray(getObject(run)?.entries)
+    ? (getObject(run)?.entries as unknown[])
+    : [];
+
+  return {
+    id: getString(run, "id"),
+    eventName: getString(run, "eventName"),
+    executionMode: getString(run, "executionMode"),
+    handlerType: getString(run, "handlerType"),
+    scope: getString(run, "scope"),
+    status: getString(run, "status"),
+    statusMessage: getString(run, "statusMessage"),
+    durationMs: getNumber(run, "durationMs"),
+    sourcePath: getString(run, "sourcePath"),
+    entries: entries.map((entry) => ({
+      kind: getString(entry, "kind"),
+      text: getString(entry, "text")
+    }))
+  };
+}
+
+function getRequestIdString(params: unknown): string | null {
+  return getString(params, "requestId") ?? getNumberString(params, "requestId");
 }
 
 function getMessagePhase(params: unknown): "commentary" | "final_answer" | null {
@@ -410,6 +547,12 @@ function getNumberString(value: unknown, key: string): string | null {
   const objectValue = getObject(value);
   const candidate = objectValue?.[key];
   return typeof candidate === "number" ? `${candidate}` : null;
+}
+
+function getNumber(value: unknown, key: string): number | null {
+  const objectValue = getObject(value);
+  const candidate = objectValue?.[key];
+  return typeof candidate === "number" ? candidate : null;
 }
 
 function getStringArray(value: unknown): string[] {

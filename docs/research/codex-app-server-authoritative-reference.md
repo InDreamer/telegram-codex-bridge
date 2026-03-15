@@ -23,12 +23,22 @@ This document is the repository's LLM-first app-server guide. It is intentionall
 
 ## Source Priority
 
-When sources disagree, use this order:
+Do not use one flat priority list for everything.
+
+For current bridge behavior in this repository, use this order:
+
+1. Repository code, config, scripts, and observed runtime behavior
+2. Current local `codex-cli` version plus generated schema to confirm protocol availability or payload shape
+3. Official OpenAI Codex app-server and CLI docs
+4. Repository docs
+5. Historical verification docs and planning docs
+
+For raw protocol-only questions, use this order:
 
 1. Current local `codex-cli` version on the host
 2. JSON Schema or TypeScript bindings generated from that exact CLI version
 3. Official OpenAI Codex app-server and CLI docs
-4. Repository code and current-state docs
+4. Repository docs
 5. Historical verification docs and planning docs
 
 For this host on 2026-03-15:
@@ -94,6 +104,7 @@ Relevant local docs:
 
 Implementation rule for this repo:
 - use the broader app-server surface to inform future work, but do not assume current bridge code already consumes it
+- when project code and API availability disagree about what is shipped, trust the project and fix the docs
 
 ## Correct Usage Rules For LLMs
 
@@ -434,20 +445,62 @@ Current implementation note:
   - legacy approval compatibility for `applyPatchApproval`
   - legacy approval compatibility for `execCommandApproval`
 - the bridge also sends server-request responses and uses `turn/steer` for blocked-turn continuation
+- the bridge now consumes stable control-plane surfaces:
+  - `model/list`
+  - `skills/list`
+  - `review/start`
+  - `plugin/list`
+  - `plugin/install`
+  - `plugin/uninstall`
+  - `app/list`
+  - `mcpServerStatus/list`
+  - `config/mcpServer/reload`
+  - `mcpServer/oauth/login`
+  - `account/read`
+  - `account/rateLimits/read`
+  - `thread/fork`
+  - `thread/name/set`
+  - `thread/metadata/update`
+  - `thread/rollback`
+  - `thread/compact/start`
+  - `thread/backgroundTerminals/clean`
+- the bridge now sends non-text Telegram-adapted inputs through `turn/start` and `turn/steer`:
+  - `localImage`
+  - `skill`
+  - `mention`
+- Telegram photo uploads are downloaded bridge-side and submitted as `localImage`
+- the current schema also includes remote URL `image`, but the bridge does not expose a direct Telegram command for that input today
+- the bridge now reduces selected runtime-parity notifications for inspect/notices:
+  - `thread/tokenUsage/updated`
+  - `turn/diff/updated`
+  - `hook/started`
+  - `hook/completed`
+  - `item/commandExecution/terminalInteraction`
+  - `serverRequest/resolved`
+  - `configWarning`
+  - `deprecationNotice`
+  - `model/rerouted`
+  - `skills/changed`
+  - `thread/compacted`
 
 Current-host note for `codex-cli 0.114.0`:
 - `thread/status/changed` carries a structured `status` object such as `active` plus nested `activeFlags`, not only a flat status string
+- `collaborationMode/list` rejects requests unless the app-server is started with the experimental API capability, so the current bridge does not ship collaboration-mode selection
 
 Still not used today by the bridge:
 - `item/tool/call`
 - `account/chatgptAuthTokens/refresh`
 - realtime thread APIs
-- plugin or skills management APIs
-- MCP OAuth flows
+- remote skills APIs
+- `externalAgentConfig/detect`
+- `externalAgentConfig/import`
+- `feedback/upload`
+- `fuzzyFileSearch*`
 - broader command/exec control surfaces
 
 LLM warning:
 - do not assume unimplemented surfaces are unsupported by Codex; many are present in the current schema and simply not wired into this bridge yet
+- for `item/tool/call` and `account/chatgptAuthTokens/refresh`, the bridge now rejects them explicitly with a bridge-owned error plus Telegram notice because the current Telegram product boundary still lacks a truthful adapted UX for those client-managed flows
 
 ## Refresh Workflow
 

@@ -238,6 +238,117 @@ test("accumulates fragmented command output before summarizing command progress"
   assert.equal(inspect.recentCommandSummaries.at(-1), "pnpm test -> 26/26 tests passed");
 });
 
+test("tracks token usage, diff, hook summaries, and runtime notices without leaking raw noise", () => {
+  const tracker = new ActivityTracker({
+    threadId: "thread-runtime",
+    turnId: "turn-runtime"
+  });
+
+  tracker.apply(
+    classifyNotification("turn/started", {
+      threadId: "thread-runtime",
+      turnId: "turn-runtime"
+    }),
+    "2026-03-10T10:10:00.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("thread/tokenUsage/updated", {
+      threadId: "thread-runtime",
+      turnId: "turn-runtime",
+      tokenUsage: {
+        last: {
+          inputTokens: 12,
+          cachedInputTokens: 3,
+          outputTokens: 7,
+          reasoningOutputTokens: 2,
+          totalTokens: 24
+        },
+        total: {
+          inputTokens: 120,
+          cachedInputTokens: 30,
+          outputTokens: 70,
+          reasoningOutputTokens: 20,
+          totalTokens: 240
+        },
+        modelContextWindow: 272000
+      }
+    }),
+    "2026-03-10T10:10:00.200Z"
+  );
+
+  tracker.apply(
+    classifyNotification("turn/diff/updated", {
+      threadId: "thread-runtime",
+      turnId: "turn-runtime",
+      diff: "diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-old\n+new\n"
+    }),
+    "2026-03-10T10:10:00.300Z"
+  );
+
+  tracker.apply(
+    classifyNotification("hook/completed", {
+      threadId: "thread-runtime",
+      turnId: "turn-runtime",
+      run: {
+        id: "hook-1",
+        eventName: "sessionStart",
+        executionMode: "sync",
+        handlerType: "command",
+        scope: "thread",
+        sourcePath: "/tmp/hook.sh",
+        startedAt: 1,
+        status: "completed",
+        durationMs: 12,
+        entries: [{ kind: "warning", text: "refresh config" }]
+      }
+    }),
+    "2026-03-10T10:10:00.400Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/commandExecution/terminalInteraction", {
+      threadId: "thread-runtime",
+      turnId: "turn-runtime",
+      itemId: "cmd-1",
+      processId: "proc-1",
+      stdin: "continue?"
+    }),
+    "2026-03-10T10:10:00.500Z"
+  );
+
+  tracker.apply(
+    classifyNotification("configWarning", {
+      summary: "config mismatch",
+      details: "line 2"
+    }),
+    "2026-03-10T10:10:00.600Z"
+  );
+
+  tracker.apply(
+    classifyNotification("model/rerouted", {
+      threadId: "thread-runtime",
+      turnId: "turn-runtime",
+      fromModel: "gpt-5.3-codex",
+      toModel: "gpt-5.4",
+      reason: "highRiskCyberActivity"
+    }),
+    "2026-03-10T10:10:00.700Z"
+  );
+
+  const status = tracker.getStatus("2026-03-10T10:10:01.000Z");
+  assert.equal(status.latestProgress, "终端输入请求未转发到 Telegram：continue?");
+
+  const inspect = tracker.getInspectSnapshot("2026-03-10T10:10:01.000Z");
+  assert.equal(inspect.tokenUsage?.lastTotalTokens, 24);
+  assert.equal(inspect.tokenUsage?.totalTokens, 240);
+  assert.equal(inspect.latestDiffSummary, "差异更新：1 个文件 / +1 / -1");
+  assert.match(inspect.recentHookSummaries[0] ?? "", /hook sessionStart/u);
+  assert.equal(inspect.terminalInteractionSummary, "终端输入请求未转发到 Telegram：continue?");
+  assert.match(inspect.recentNoticeSummaries.join("\n"), /配置警告/u);
+  assert.match(inspect.recentNoticeSummaries.join("\n"), /模型已改道/u);
+});
+
 test("tracks running subagents and their latest progress separately from the main thread", () => {
   const tracker = new ActivityTracker({
     threadId: "thread-main",

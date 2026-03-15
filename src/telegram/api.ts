@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 
 export interface TelegramUser {
   id: number;
@@ -13,12 +15,27 @@ export interface TelegramChat {
   type: "private" | "group" | "supergroup" | "channel";
 }
 
+export interface TelegramPhotoSize {
+  file_id: string;
+  width: number;
+  height: number;
+  file_size?: number;
+}
+
+export interface TelegramFile {
+  file_id: string;
+  file_path?: string;
+  file_size?: number;
+}
+
 export interface TelegramMessage {
   message_id: number;
   from?: TelegramUser;
   chat: TelegramChat;
   date: number;
   text?: string;
+  caption?: string;
+  photo?: TelegramPhotoSize[];
 }
 
 export interface TelegramCallbackQuery {
@@ -113,6 +130,71 @@ export class TelegramApi {
       reply_markup: options?.replyMarkup,
       parse_mode: options?.parseMode
     }, 20_000);
+  }
+
+  async getFile(fileId: string): Promise<TelegramFile> {
+    return await this.call<TelegramFile>("getFile", {
+      file_id: fileId
+    }, 20_000);
+  }
+
+  async getFileUrl(fileId: string): Promise<string | null> {
+    const file = await this.getFile(fileId);
+    if (!file.file_path) {
+      return null;
+    }
+
+    return this.buildFileUrl(file.file_path);
+  }
+
+  async downloadFile(
+    fileId: string,
+    destinationPath: string,
+    file?: TelegramFile
+  ): Promise<string | null> {
+    const resolvedFile = file ?? await this.getFile(fileId);
+    if (!resolvedFile.file_path) {
+      return null;
+    }
+
+    await mkdir(dirname(destinationPath), { recursive: true });
+    const tempPath = `${destinationPath}.${process.pid}.${Date.now()}.tmp`;
+    const url = this.buildFileUrl(resolvedFile.file_path);
+
+    if (shouldPreferCurl()) {
+      try {
+        await this.downloadWithCurl(url, tempPath, 20_000, "proxy-environment");
+        await rename(tempPath, destinationPath);
+        return destinationPath;
+      } catch (error) {
+        await rm(tempPath, { force: true }).catch(() => {});
+        throw error;
+      }
+    }
+
+    try {
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(20_000)
+      });
+      if (!response.ok) {
+        throw new Error(`Telegram file download failed: ${response.status} ${response.statusText}`);
+      }
+
+      const content = new Uint8Array(await response.arrayBuffer());
+      await writeFile(tempPath, content);
+      await rename(tempPath, destinationPath);
+      return destinationPath;
+    } catch (error) {
+      await rm(tempPath, { force: true }).catch(() => {});
+      try {
+        await this.downloadWithCurl(url, tempPath, 20_000, error);
+        await rename(tempPath, destinationPath);
+        return destinationPath;
+      } catch (curlError) {
+        await rm(tempPath, { force: true }).catch(() => {});
+        throw curlError;
+      }
+    }
   }
 
   async editMessageText(
@@ -222,6 +304,48 @@ export class TelegramApi {
     }
 
     return payload.result;
+  }
+
+  private buildFileUrl(filePath: string): string {
+    return `${this.baseUrl}/file/bot${this.token}/${filePath}`;
+  }
+
+  private async downloadWithCurl(
+    url: string,
+    destinationPath: string,
+    timeoutMs: number,
+    originalError: unknown
+  ): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      const child = execFile(
+        "curl",
+        [
+          "--silent",
+          "--show-error",
+          "--fail",
+          "--location",
+          "--max-time",
+          `${Math.ceil(timeoutMs / 1000)}`,
+          "--output",
+          destinationPath,
+          url
+        ],
+        (error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+
+          resolve();
+        }
+      );
+
+      child.on("error", reject);
+    }).catch((curlError) => {
+      throw new Error(
+        `Telegram file download failed via fetch and curl: ${String(originalError)} | ${String(curlError)}`
+      );
+    });
   }
 }
 

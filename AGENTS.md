@@ -1,7 +1,17 @@
 # Project Documents Guide
 
 Low-token docs router for the bridge. There is no root `README`.
-Read the smallest relevant file first and treat code plus observed runtime behavior as the source of truth for current-state docs.
+Read the smallest relevant file first.
+
+Truth-source priority for this repo:
+1. project runtime and code
+2. live Codex API / generated schema
+3. repository docs
+
+Practical rule:
+- shipped bridge behavior follows the repository first
+- Codex protocol shape follows the live CLI/schema first
+- docs summarize both and should be corrected when either one disagrees
 
 ## Read In This Order
 
@@ -35,11 +45,13 @@ Read the smallest relevant file first and treat code plus observed runtime behav
 
 ## Current Truth vs Planning
 
-- Current-state docs: `docs/product/`, `docs/architecture/`, `docs/operations/`, `docs/research/`.
-- If a current-state doc conflicts with runtime behavior, verify against `package.json`, `src/cli.ts`, `src/config.ts`, `src/install.ts`, `src/paths.ts`, `src/service.ts`, `src/state/store.ts`, and `src/telegram/ui.ts`.
-- For Codex app-server questions, separate:
-  - protocol availability, which should follow the live CLI plus generated schema
-  - current bridge adoption, which should follow repository code first
+- Current bridge behavior docs: `docs/product/`, `docs/architecture/`, `docs/operations/`.
+- API/protocol reference docs: `docs/research/`.
+- If a current-state doc conflicts with runtime behavior, trust the repository and verify against `package.json`, `src/cli.ts`, `src/config.ts`, `src/install.ts`, `src/paths.ts`, `src/service.ts`, `src/state/store.ts`, `src/telegram/ui.ts`, and `src/codex/app-server.ts`.
+- For Codex app-server questions, split them cleanly:
+  - bridge adoption and shipped Telegram UX follow repository code first
+  - protocol availability and exact request or notification shapes follow the live CLI plus generated schema
+- Never treat API availability as proof that the bridge already exposes that surface.
 - Planning and non-primary docs: `docs/roadmap/`, `docs/future/`, `docs/plans/`, `docs/archive/`.
 - In `docs/future/`, treat `v2-prd.md`, `v3-prd.md`, and `v2-engineering-evaluation*.md` as product/evaluation inputs, not shipped behavior.
 - Do not treat roadmap, future, plan, or archive docs as shipped behavior.
@@ -70,9 +82,11 @@ Read the smallest relevant file first and treat code plus observed runtime behav
 
 - Current Codex app-server usage guidance and source priority
   - `docs/research/codex-app-server-authoritative-reference.md`
+  - Use this for protocol facts and for the repo-vs-API split, not as a substitute for checking `src/`.
 
 - Per-method Codex app-server API quick reference
   - `docs/research/codex-app-server-api-quick-reference.md`
+  - Use this for method lookup after checking whether the bridge actually wires that method today.
 
 - Current bridge app-server adoption versus broader protocol surface
   - `docs/research/codex-app-server-authoritative-reference.md`

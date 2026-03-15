@@ -17,11 +17,21 @@ The bridge is not a second Codex environment, not a provider-management layer, a
 - project-aware session startup
 - compact structured runtime visibility in Telegram
 - separate final-answer delivery
-- on-demand `/inspect` task snapshots
+- on-demand `/inspect` task snapshots and `/where` session locators
 - multiple sessions with switching
 - one active session per chat
+- Telegram-driven interrupt of the active turn
+- bridge-owned Telegram interaction cards for approvals and structured user input when Codex emits server requests
+- model discovery and per-session model selection
+- review start, skills discovery and selection, and thread fork / rollback / compact / rename / metadata controls where the current CLI exposes stable support
+- plugin discovery plus install/uninstall where the current CLI exposes stable support
+- app discovery where the current CLI exposes stable support
+- MCP status, reload, and OAuth-login-link surfaces where the current CLI exposes stable support
+- account diagnostics and thread background-terminal cleanup where the current CLI exposes stable support
+- rich input submission for `text`, `localImage`, `skill`, and `mention`
+- Telegram photo upload adaptation into bridge-managed `localImage` input
 - one-line install plus local self-check
-- operator-managed full access / no-Telegram-approval runtime model
+- operator-managed full-access runtime with adapted Telegram UX instead of a raw terminal
 
 ## Out Of Scope
 
@@ -30,18 +40,22 @@ The bridge is not a second Codex environment, not a provider-management layer, a
 - Telegram-side execution policy beyond access identity
 - raw or token-level streaming of tool calls, patches, or reasoning
 - reasoning surfaces in the normal Telegram chat flow
-- Telegram-driven provider or model setup
-- Codex approval relay
-- Telegram approval UI or callback flow
+- Telegram-driven provider setup
+- collaboration-mode selection on the current host, because `collaborationMode/list` requires the experimental API capability in `codex-cli 0.114.0`
+- direct Telegram command support for schema-level remote URL `image` input
+- raw-terminal emulation or fake terminal widgets
+- client-managed dynamic tool execution via `item/tool/call`, because the live schema exposes only generic tool name plus arguments and does not give the bridge a stable Telegram-safe tool registry
+- client-managed ChatGPT token refresh via `account/chatgptAuthTokens/refresh`, because the bridge does not own ChatGPT access tokens or workspace ids and Telegram is not the provider-setup UX
+- `command/exec*`, `feedback/upload`, `fuzzyFileSearch*`, and `externalAgentConfig/*`
 - a first-class Telegram transport inside Codex core
 
 ## Runtime Assumption
 
-v1 assumes the server operator intentionally runs Codex in a full-access, no-Telegram-approval mode.
+v1 assumes the server operator intentionally runs Codex in a high-trust, full-access Codex environment.
 
 That means:
-- Telegram does not provide a second approval barrier.
-- The bridge does not wait for user confirmation before Codex proceeds.
+- Telegram is still the control plane into a high-trust runtime.
+- The bridge may relay explicit Codex server requests back to Telegram, but that relay is bridge UX, not a second sandbox or policy engine.
 - Execution risk is intentionally accepted by the server operator as part of the deployment model.
 
 This is a deliberate product boundary, not a missing feature.

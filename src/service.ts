@@ -1,3 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { access, mkdir, readdir, rm, stat } from "node:fs/promises";
+import { basename, extname, join, resolve } from "node:path";
+
 import { createLogger, type Logger } from "./logger.js";
 import { TurnDebugJournal, type DebugJournalWriter } from "./activity/debug-journal.js";
 import { ensureBridgeDirectories, getBridgePaths, getDebugRuntimeDir, type BridgePaths } from "./paths.js";
@@ -87,6 +91,8 @@ const HISTORY_TEXT_LIMIT = 220;
 const MAX_RECENT_ACTIVITY_ENTRIES = 20;
 const RUNTIME_CARD_THROTTLE_MS = 2000;
 const FAILED_EDIT_RETRY_MS = 5000;
+const TELEGRAM_IMAGE_CACHE_DIRNAME = "telegram-images";
+const TELEGRAM_IMAGE_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 interface PickerState {
   picker: ProjectPickerResult;
@@ -185,6 +191,12 @@ interface PendingInteractionTextMode {
   questionId: string;
 }
 
+interface PendingRichInputComposer {
+  sessionId: string;
+  inputs: UserInput[];
+  promptLabel: string;
+}
+
 interface QuestionnaireDraft {
   answers: Record<string, unknown>;
   awaitingQuestionId?: string | null;
@@ -230,6 +242,7 @@ export class BridgeService {
   private readonly pendingRenameSessionIds = new Map<string, string>();
   private readonly pendingThreadArchiveOps = new Map<string, PendingThreadArchiveOp[]>();
   private readonly pendingInteractionTextModes = new Map<string, PendingInteractionTextMode>();
+  private readonly pendingRichInputComposers = new Map<string, PendingRichInputComposer>();
   private readonly recentActivityBySessionId = new Map<string, RecentActivityEntry>();
   private activeTurn: ActiveTurnState | null = null;
   private nextPendingThreadArchiveOpId = 1;
@@ -398,6 +411,24 @@ export class BridgeService {
       }
 
       await this.handlePendingInteractionTextAnswer(chatId, pendingTextMode, text);
+      return;
+    }
+
+    const pendingRichInputComposer = this.pendingRichInputComposers.get(chatId);
+    if (pendingRichInputComposer) {
+      const command = parseCommand(text);
+      if (command?.name === "cancel") {
+        this.pendingRichInputComposers.delete(chatId);
+        await this.safeSendMessage(chatId, "已取消待发送的结构化输入。");
+        return;
+      }
+
+      await this.handlePendingRichInputPrompt(chatId, pendingRichInputComposer, text);
+      return;
+    }
+
+    if (Array.isArray(message.photo) && message.photo.length > 0) {
+      await this.handlePhotoMessage(chatId, message);
       return;
     }
 
@@ -1388,7 +1419,13 @@ export class BridgeService {
           return;
         }
 
-        await this.safeSendMessage(chatId, "当前没有可取消的路径输入。");
+        if (this.pendingRichInputComposers.has(chatId)) {
+          this.pendingRichInputComposers.delete(chatId);
+          await this.safeSendMessage(chatId, "已取消待发送的结构化输入。");
+          return;
+        }
+
+        await this.safeSendMessage(chatId, "当前没有可取消的输入。");
         return;
       }
 
@@ -1441,9 +1478,131 @@ export class BridgeService {
         return;
       }
 
+      case "model": {
+        await this.runGuardedCommand(chatId, "模型操作暂时不可用，请稍后重试。", async () => {
+          await this.handleModel(chatId, args);
+        });
+        return;
+      }
+
+      case "skills": {
+        await this.runGuardedCommand(chatId, "技能列表暂时不可用，请稍后重试。", async () => {
+          await this.handleSkills(chatId);
+        });
+        return;
+      }
+
+      case "skill": {
+        await this.runGuardedCommand(chatId, "结构化 skill 输入暂时不可用，请稍后重试。", async () => {
+          await this.handleSkill(chatId, args);
+        });
+        return;
+      }
+
+      case "plugins": {
+        await this.runGuardedCommand(chatId, "插件列表暂时不可用，请稍后重试。", async () => {
+          await this.handlePlugins(chatId);
+        });
+        return;
+      }
+
+      case "plugin": {
+        await this.runGuardedCommand(chatId, "当前无法管理插件，请稍后重试。", async () => {
+          await this.handlePlugin(chatId, args);
+        });
+        return;
+      }
+
+      case "apps": {
+        await this.runGuardedCommand(chatId, "当前无法读取 Apps 列表，请稍后重试。", async () => {
+          await this.handleApps(chatId);
+        });
+        return;
+      }
+
+      case "mcp": {
+        await this.runGuardedCommand(chatId, "当前无法读取 MCP 状态，请稍后重试。", async () => {
+          await this.handleMcp(chatId, args);
+        });
+        return;
+      }
+
+      case "account": {
+        await this.runGuardedCommand(chatId, "当前无法读取账号状态，请稍后重试。", async () => {
+          await this.handleAccount(chatId);
+        });
+        return;
+      }
+
+      case "review": {
+        await this.runGuardedCommand(chatId, "当前无法启动审查，请稍后重试。", async () => {
+          await this.handleReview(chatId, args);
+        });
+        return;
+      }
+
+      case "fork": {
+        await this.runGuardedCommand(chatId, "当前无法分叉这个会话，请稍后重试。", async () => {
+          await this.handleFork(chatId, args);
+        });
+        return;
+      }
+
+      case "rollback": {
+        await this.runGuardedCommand(chatId, "当前无法回滚这个会话，请稍后重试。", async () => {
+          await this.handleRollback(chatId, args);
+        });
+        return;
+      }
+
+      case "compact": {
+        await this.runGuardedCommand(chatId, "当前无法压缩这个线程，请稍后重试。", async () => {
+          await this.handleCompact(chatId);
+        });
+        return;
+      }
+
+      case "local_image": {
+        await this.runGuardedCommand(chatId, "本地图片输入暂时不可用，请稍后重试。", async () => {
+          await this.handleLocalImage(chatId, args);
+        });
+        return;
+      }
+
+      case "mention": {
+        await this.runGuardedCommand(chatId, "结构化引用输入暂时不可用，请稍后重试。", async () => {
+          await this.handleMention(chatId, args);
+        });
+        return;
+      }
+
+      case "thread": {
+        await this.runGuardedCommand(chatId, "当前无法更新线程设置，请稍后重试。", async () => {
+          await this.handleThreadCommand(chatId, args);
+        });
+        return;
+      }
+
       default: {
         await this.safeSendMessage(chatId, buildUnsupportedCommandText());
       }
+    }
+  }
+
+  private async runGuardedCommand(
+    chatId: string,
+    failureMessage: string,
+    operation: () => Promise<void>
+  ): Promise<void> {
+    try {
+      await operation();
+    } catch (error) {
+      await this.logger.warn("command failed", {
+        chatId,
+        failureMessage,
+        error: `${error}`
+      });
+      await this.safeSendMessage(chatId, failureMessage);
     }
   }
 
@@ -1962,6 +2121,860 @@ export class BridgeService {
     await this.safeSendHtmlMessage(chatId, buildProjectPinnedText(activeSession.projectName));
   }
 
+  private async handleModel(chatId: string, args: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession) {
+      await this.safeSendMessage(chatId, "当前没有活动会话。");
+      return;
+    }
+
+    const requestedModel = args.trim();
+    await this.ensureAppServerAvailable();
+    const models = await this.fetchAllModels();
+
+    if (!requestedModel) {
+      const selectedModel = activeSession.selectedModel;
+      const lines = ["可用模型"];
+      for (const model of models.slice(0, 12)) {
+        const marker = selectedModel
+          ? model.id === selectedModel ? "[当前] " : ""
+          : model.isDefault ? "[默认] " : "";
+        lines.push(`${marker}${model.id} | ${model.displayName}`);
+      }
+      lines.push("", "使用 /model <模型ID> 设置当前会话的模型。");
+      await this.safeSendMessage(chatId, lines.join("\n"));
+      return;
+    }
+
+    const matched = models.find((model) => model.id === requestedModel || model.model === requestedModel);
+    if (!matched) {
+      await this.safeSendMessage(chatId, "找不到这个模型，请先发送 /model 查看可用列表。");
+      return;
+    }
+
+    this.store.setSessionSelectedModel(activeSession.sessionId, matched.id);
+    await this.safeSendMessage(chatId, `已为当前会话设置模型：${matched.id}\n下次任务开始时生效。`);
+  }
+
+  private async handleSkills(chatId: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession) {
+      await this.safeSendMessage(chatId, "当前没有活动会话。");
+      return;
+    }
+
+    await this.ensureAppServerAvailable();
+    const result = await this.appServer?.listSkills({
+      cwds: [activeSession.projectPath],
+      forceReload: false
+    });
+    const entry = result?.data.find((candidate) => candidate.cwd === activeSession.projectPath) ?? result?.data[0];
+    if (!entry) {
+      await this.safeSendMessage(chatId, "当前项目没有可列出的技能。");
+      return;
+    }
+
+    const lines = ["当前项目可用技能"];
+    for (const skill of entry.skills.slice(0, 20)) {
+      const description = skill.interface?.shortDescription ?? skill.shortDescription ?? skill.description;
+      const marker = skill.enabled ? "[启用] " : "[禁用] ";
+      lines.push(`${marker}${skill.name} | ${truncatePlainText(description, 80)}`);
+    }
+    if (entry.errors.length > 0) {
+      lines.push("", `扫描警告：${truncatePlainText(entry.errors[0]?.message ?? "unknown error", 120)}`);
+    }
+    lines.push("", "使用 /skill <技能名> :: 任务说明 将 skill 作为结构化输入发送给 Codex。");
+    await this.safeSendMessage(chatId, lines.join("\n"));
+  }
+
+  private async handleSkill(chatId: string, args: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession) {
+      await this.safeSendMessage(chatId, "当前没有活动会话。");
+      return;
+    }
+
+    const parsed = splitStructuredInputCommand(args);
+    if (!parsed.value) {
+      await this.safeSendMessage(chatId, "用法：/skill <技能名> :: 任务说明");
+      return;
+    }
+
+    await this.ensureAppServerAvailable();
+    const result = await this.appServer?.listSkills({
+      cwds: [activeSession.projectPath],
+      forceReload: false
+    });
+    const entry = result?.data.find((candidate) => candidate.cwd === activeSession.projectPath) ?? result?.data[0];
+    const skill = entry?.skills.find((candidate) => candidate.name === parsed.value);
+    if (!skill) {
+      await this.safeSendMessage(chatId, "找不到这个技能，请先发送 /skills 查看当前项目的技能列表。");
+      return;
+    }
+
+    const input: UserInput = {
+      type: "skill",
+      name: skill.name,
+      path: skill.path
+    };
+    await this.submitOrQueueRichInput(chatId, activeSession, [input], parsed.prompt, `skill：${skill.name}`);
+  }
+
+  private async handlePlugins(chatId: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession) {
+      await this.safeSendMessage(chatId, "当前没有活动会话。");
+      return;
+    }
+
+    await this.ensureAppServerAvailable();
+    const result = await this.appServer?.listPlugins({
+      cwds: [activeSession.projectPath]
+    });
+    if (!result || result.marketplaces.length === 0) {
+      await this.safeSendMessage(chatId, "当前项目没有可列出的插件。");
+      return;
+    }
+
+    const lines = ["当前项目可用插件"];
+    const installExample = findFirstInstallablePlugin(result);
+
+    for (const marketplace of result.marketplaces.slice(0, 5)) {
+      lines.push(`市场：${marketplace.name}`);
+      for (const plugin of marketplace.plugins.slice(0, 8)) {
+        const flags = [
+          plugin.installed ? "[已安装]" : "[未安装]",
+          plugin.enabled ? "[启用]" : ""
+        ].join("");
+        const label = plugin.interface?.displayName ?? plugin.name;
+        const description = plugin.interface?.shortDescription;
+        lines.push(`${flags} ${plugin.id} | ${label}${description ? ` | ${truncatePlainText(description, 60)}` : ""}`);
+      }
+    }
+
+    lines.push("", "使用 /plugin install <市场>/<插件名> 安装插件。");
+    lines.push("使用 /plugin uninstall <插件ID> 卸载插件。");
+    if (installExample) {
+      lines.push(`例如：/plugin install ${installExample.marketplaceName}/${installExample.pluginName}`);
+    }
+    await this.safeSendMessage(chatId, lines.join("\n"));
+  }
+
+  private async handlePlugin(chatId: string, args: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession) {
+      await this.safeSendMessage(chatId, "当前没有活动会话。");
+      return;
+    }
+
+    const [subcommand = "", ...rest] = args.trim().split(/\s+/u);
+    await this.ensureAppServerAvailable();
+
+    if (subcommand === "install") {
+      const target = rest.join(" ").trim();
+      const parsedTarget = parsePluginInstallTarget(target);
+      if (!parsedTarget) {
+        await this.safeSendMessage(chatId, "用法：/plugin install <市场>/<插件名>");
+        return;
+      }
+
+      const result = await this.appServer?.listPlugins({
+        cwds: [activeSession.projectPath]
+      });
+      const marketplace = result?.marketplaces.find((entry) => entry.name === parsedTarget.marketplaceName);
+      const plugin = marketplace?.plugins.find((entry) => entry.name === parsedTarget.pluginName);
+      if (!marketplace || !plugin) {
+        await this.safeSendMessage(chatId, "找不到这个插件，请先发送 /plugins 查看当前可用列表。");
+        return;
+      }
+
+      const installResult = await this.appServer?.installPlugin({
+        marketplacePath: marketplace.path,
+        pluginName: plugin.name
+      });
+      const lines = [`已安装插件：${plugin.name}`];
+      if (installResult?.appsNeedingAuth.length) {
+        lines.push("", "这些 App 可能还需要额外授权：");
+        for (const app of installResult.appsNeedingAuth.slice(0, 5)) {
+          lines.push(`- ${app.name}${app.installUrl ? ` | ${app.installUrl}` : ""}`);
+        }
+      }
+      await this.safeSendMessage(chatId, lines.join("\n"));
+      return;
+    }
+
+    if (subcommand === "uninstall") {
+      const pluginId = rest.join(" ").trim();
+      if (!pluginId) {
+        await this.safeSendMessage(chatId, "用法：/plugin uninstall <插件ID>");
+        return;
+      }
+
+      await this.appServer?.uninstallPlugin(pluginId);
+      await this.safeSendMessage(chatId, `已卸载插件：${pluginId}`);
+      return;
+    }
+
+    await this.safeSendMessage(chatId, "用法：/plugin install <市场>/<插件名> 或 /plugin uninstall <插件ID>");
+  }
+
+  private async handleApps(chatId: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession) {
+      await this.safeSendMessage(chatId, "当前没有活动会话。");
+      return;
+    }
+
+    await this.ensureAppServerAvailable();
+    const apps = await this.fetchAllApps(activeSession.threadId ?? undefined);
+    if (apps.length === 0) {
+      await this.safeSendMessage(chatId, "当前没有可列出的 Apps。");
+      return;
+    }
+
+    const lines = ["当前可用 Apps"];
+    for (const app of apps.slice(0, 12)) {
+      const flags = [
+        app.isAccessible ? "[可访问]" : "[不可访问]",
+        app.isEnabled ? "[启用]" : "[未启用]"
+      ].join("");
+      lines.push(`${flags} ${app.name}${app.description ? ` | ${truncatePlainText(app.description, 70)}` : ""}`);
+      if (app.pluginDisplayNames.length > 0) {
+        lines.push(`来源插件：${app.pluginDisplayNames.join("、")}`);
+      }
+      if (app.installUrl) {
+        lines.push(`安装地址：${app.installUrl}`);
+      }
+    }
+
+    await this.safeSendMessage(chatId, lines.join("\n"));
+  }
+
+  private async handleMcp(chatId: string, args: string): Promise<void> {
+    const trimmed = args.trim();
+    const [subcommand = "", ...rest] = trimmed.split(/\s+/u);
+    await this.ensureAppServerAvailable();
+
+    if (!trimmed) {
+      const statuses = await this.fetchAllMcpServerStatuses();
+      if (statuses.length === 0) {
+        await this.safeSendMessage(chatId, "当前没有可列出的 MCP 服务器。");
+        return;
+      }
+
+      const lines = ["MCP 服务器状态"];
+      for (const status of statuses.slice(0, 12)) {
+        lines.push(
+          `${status.name} | ${formatMcpAuthStatus(status.authStatus)} | 工具 ${Object.keys(status.tools).length} | 资源 ${status.resources.length} | 模板 ${status.resourceTemplates.length}`
+        );
+      }
+      lines.push("", "使用 /mcp reload 重新加载配置，或 /mcp login <名称> 启动 OAuth 登录。");
+      await this.safeSendMessage(chatId, lines.join("\n"));
+      return;
+    }
+
+    if (subcommand === "reload") {
+      await this.appServer?.reloadMcpServers();
+      await this.safeSendMessage(chatId, "已重新加载 MCP 服务器配置。");
+      return;
+    }
+
+    if (subcommand === "login") {
+      const serverName = rest.join(" ").trim();
+      if (!serverName) {
+        await this.safeSendMessage(chatId, "用法：/mcp login <名称>");
+        return;
+      }
+
+      const result = await this.appServer?.loginToMcpServer({ name: serverName });
+      if (!result?.authorizationUrl) {
+        await this.safeSendMessage(chatId, "当前无法生成这个 MCP 服务器的登录链接。");
+        return;
+      }
+
+      await this.safeSendMessage(
+        chatId,
+        `已生成 MCP 登录链接：${serverName}\n${result.authorizationUrl}\n完成后重新发送 /mcp 查看最新状态。`
+      );
+      return;
+    }
+
+    await this.safeSendMessage(chatId, "用法：/mcp、/mcp reload 或 /mcp login <名称>");
+  }
+
+  private async handleAccount(chatId: string): Promise<void> {
+    await this.ensureAppServerAvailable();
+    const accountResult = this.appServer ? await this.appServer.readAccount(false) : null;
+    let rateLimitsResult: Awaited<ReturnType<CodexAppServerClient["readAccountRateLimits"]>> | null = null;
+    if (this.appServer) {
+      try {
+        rateLimitsResult = await this.appServer.readAccountRateLimits();
+      } catch {
+        rateLimitsResult = null;
+      }
+    }
+
+    const lines = ["当前 Codex 账号"];
+    if (!accountResult?.account) {
+      lines.push("账号：未登录");
+    } else if (accountResult.account.type === "apiKey") {
+      lines.push("类型：API Key");
+    } else {
+      lines.push("类型：ChatGPT");
+      lines.push(`邮箱：${accountResult.account.email}`);
+      lines.push(`计划：${accountResult.account.planType}`);
+    }
+    lines.push(`需要 OpenAI Auth：${accountResult?.requiresOpenaiAuth ? "是" : "否"}`);
+
+    const rateSummary = formatRateLimitSummary(rateLimitsResult?.rateLimits ?? null);
+    if (rateSummary) {
+      lines.push(rateSummary);
+    }
+
+    await this.safeSendMessage(chatId, lines.join("\n"));
+  }
+
+  private async handleReview(chatId: string, args: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession) {
+      await this.safeSendMessage(chatId, "当前没有活动会话。");
+      return;
+    }
+
+    if (activeSession.status === "running") {
+      await this.safeSendMessage(chatId, "当前项目仍在执行，请先等待完成或停止当前操作。");
+      return;
+    }
+
+    const parsed = parseReviewCommandArgs(args);
+    if (!parsed) {
+      await this.safeSendMessage(
+        chatId,
+        "用法：/review [detached] [branch <分支>|commit <SHA>|custom <说明>]"
+      );
+      return;
+    }
+
+    await this.ensureAppServerAvailable();
+    const threadId = await this.ensureSessionThread(activeSession);
+    const result = await this.appServer?.reviewStart({
+      threadId,
+      target: parsed.target,
+      ...(parsed.delivery ? { delivery: parsed.delivery } : {})
+    });
+    if (!result) {
+      throw new Error("review start returned no result");
+    }
+
+    let reviewSession = this.store.getSessionById(activeSession.sessionId) ?? activeSession;
+    if (result.reviewThreadId !== threadId) {
+      reviewSession = this.store.createSession({
+        telegramChatId: chatId,
+        projectName: activeSession.projectName,
+        projectPath: activeSession.projectPath,
+        displayName: `Review: ${activeSession.displayName}`,
+        selectedModel: activeSession.selectedModel
+      });
+      this.store.updateSessionThreadId(reviewSession.sessionId, result.reviewThreadId);
+      reviewSession = this.store.getSessionById(reviewSession.sessionId) ?? reviewSession;
+      await this.safeSendMessage(chatId, `已创建审查会话：${reviewSession.displayName}`);
+    }
+
+    await this.beginActiveTurn(chatId, reviewSession, result.reviewThreadId, result.turn.id, result.turn.status);
+  }
+
+  private async handleFork(chatId: string, args: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession || !activeSession.threadId) {
+      await this.safeSendMessage(chatId, "当前会话还没有可分叉的 Codex 线程，请先完成一次任务。");
+      return;
+    }
+
+    if (activeSession.status === "running") {
+      await this.safeSendMessage(chatId, "当前项目仍在执行，请先等待完成或停止当前操作。");
+      return;
+    }
+
+    await this.ensureAppServerAvailable();
+    const forked = await this.appServer?.forkThread({
+      threadId: activeSession.threadId,
+      ...(activeSession.selectedModel ? { model: activeSession.selectedModel } : {})
+    });
+    if (!forked) {
+      throw new Error("thread fork returned no result");
+    }
+
+    const lastForkTurn = forked.thread.turns.at(-1) ?? null;
+    const created = this.store.createSession({
+      telegramChatId: chatId,
+      projectName: activeSession.projectName,
+      projectPath: activeSession.projectPath,
+      displayName: args.trim() || `Fork: ${activeSession.displayName}`,
+      selectedModel: activeSession.selectedModel ?? forked.model,
+      threadId: forked.thread.id,
+      lastTurnId: lastForkTurn?.id ?? activeSession.lastTurnId,
+      lastTurnStatus: lastForkTurn?.status ?? activeSession.lastTurnStatus
+    });
+    await this.safeSendMessage(chatId, `已创建分叉会话：${created.displayName}`);
+  }
+
+  private async handleRollback(chatId: string, args: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession || !activeSession.threadId) {
+      await this.safeSendMessage(chatId, "当前会话还没有可回滚的 Codex 线程。");
+      return;
+    }
+
+    if (activeSession.status === "running") {
+      await this.safeSendMessage(chatId, "当前项目仍在执行，请先等待完成或停止当前操作。");
+      return;
+    }
+
+    const numTurns = Number.parseInt(args.trim(), 10);
+    if (!Number.isFinite(numTurns) || numTurns < 1) {
+      await this.safeSendMessage(chatId, "用法：/rollback <回滚的 turn 数量>");
+      return;
+    }
+
+    await this.ensureAppServerAvailable();
+    const result = await this.appServer?.rollbackThread(activeSession.threadId, numTurns);
+    const lastTurn = result?.thread.turns.at(-1) ?? null;
+    this.store.updateSessionStatus(activeSession.sessionId, "idle", {
+      lastTurnId: lastTurn?.id ?? null,
+      lastTurnStatus: lastTurn?.status ?? null
+    });
+    this.clearRecentActivity(activeSession.sessionId);
+    await this.safeSendMessage(
+      chatId,
+      `已回滚最近 ${numTurns} 个 turn。\n注意：这不会自动撤销代理已经写到本地文件的改动。`
+    );
+  }
+
+  private async handleCompact(chatId: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession || !activeSession.threadId) {
+      await this.safeSendMessage(chatId, "当前会话还没有可压缩的 Codex 线程。");
+      return;
+    }
+
+    if (activeSession.status === "running") {
+      await this.safeSendMessage(chatId, "当前项目仍在执行，请先等待完成或停止当前操作。");
+      return;
+    }
+
+    await this.ensureAppServerAvailable();
+    await this.appServer?.compactThread(activeSession.threadId);
+    await this.safeSendMessage(chatId, "已请求压缩当前线程。");
+  }
+
+  private async handleLocalImage(chatId: string, args: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession) {
+      await this.safeSendMessage(chatId, "当前没有活动会话。");
+      return;
+    }
+
+    const parsed = splitStructuredInputCommand(args);
+    if (!parsed.value) {
+      await this.safeSendMessage(chatId, "用法：/local_image <图片路径> :: 任务说明");
+      return;
+    }
+
+    const imagePath = resolve(activeSession.projectPath, parsed.value);
+    if (!await isReadableImagePath(imagePath)) {
+      await this.safeSendMessage(chatId, "这个本地图片路径不可用，请确认文件存在且是常见图片格式。");
+      return;
+    }
+
+    await this.submitOrQueueRichInput(chatId, activeSession, [{
+      type: "localImage",
+      path: imagePath
+    }], parsed.prompt, `本地图片：${basename(imagePath)}`);
+  }
+
+  private async handleMention(chatId: string, args: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession) {
+      await this.safeSendMessage(chatId, "当前没有活动会话。");
+      return;
+    }
+
+    const parsed = splitStructuredInputCommand(args);
+    if (!parsed.value) {
+      await this.safeSendMessage(chatId, "用法：/mention <path> :: 任务说明");
+      return;
+    }
+
+    const { name, path } = parseMentionValue(parsed.value);
+    await this.submitOrQueueRichInput(chatId, activeSession, [{
+      type: "mention",
+      name,
+      path
+    }], parsed.prompt, `引用：${name}`);
+  }
+
+  private async handleThreadCommand(chatId: string, args: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession || !activeSession.threadId) {
+      await this.safeSendMessage(chatId, "当前会话还没有 Codex 线程，请先完成一次任务。");
+      return;
+    }
+
+    if (activeSession.status === "running") {
+      await this.safeSendMessage(chatId, "当前项目仍在执行，请先等待完成或停止当前操作。");
+      return;
+    }
+
+    const trimmed = args.trim();
+    const [subcommand, ...rest] = trimmed.split(/\s+/u);
+    if (!subcommand) {
+      await this.safeSendMessage(
+        chatId,
+        "用法：/thread name <名称> 或 /thread meta branch=<分支> sha=<提交> origin=<URL> 或 /thread clean-terminals"
+      );
+      return;
+    }
+
+    await this.ensureAppServerAvailable();
+
+    if (subcommand === "name") {
+      const nextName = rest.join(" ").trim();
+      if (!nextName) {
+        await this.safeSendMessage(chatId, "用法：/thread name <名称>");
+        return;
+      }
+
+      await this.appServer?.setThreadName(activeSession.threadId, nextName);
+      this.store.renameSession(activeSession.sessionId, nextName);
+      await this.safeSendMessage(chatId, `已更新线程名称：${nextName}`);
+      return;
+    }
+
+    if (subcommand === "meta") {
+      const gitInfo = parseThreadMetadataTokens(rest);
+      if (!gitInfo) {
+        await this.safeSendMessage(chatId, "用法：/thread meta branch=<分支> sha=<提交> origin=<URL>");
+        return;
+      }
+
+      await this.appServer?.updateThreadMetadata({
+        threadId: activeSession.threadId,
+        gitInfo
+      });
+      const fragments = [
+        gitInfo.branch !== undefined ? `branch=${gitInfo.branch ?? "clear"}` : null,
+        gitInfo.sha !== undefined ? `sha=${gitInfo.sha ?? "clear"}` : null,
+        gitInfo.originUrl !== undefined ? `origin=${gitInfo.originUrl ?? "clear"}` : null
+      ].filter((value): value is string => Boolean(value));
+      await this.safeSendMessage(chatId, `已更新线程元数据：${fragments.join(", ")}`);
+      return;
+    }
+
+    if (subcommand === "clean-terminals") {
+      await this.appServer?.cleanBackgroundTerminals(activeSession.threadId);
+      await this.safeSendMessage(chatId, "已清理当前线程的后台终端。");
+      return;
+    }
+
+    await this.safeSendMessage(
+      chatId,
+      "用法：/thread name <名称> 或 /thread meta branch=<分支> sha=<提交> origin=<URL> 或 /thread clean-terminals"
+    );
+  }
+
+  private async handlePhotoMessage(chatId: string, message: TelegramMessage): Promise<void> {
+    if (!this.store || !this.api?.getFile || !this.api?.downloadFile) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession) {
+      await this.safeSendMessage(chatId, "请先发送 /new 选择项目。");
+      return;
+    }
+
+    const photo = message.photo?.at(-1);
+    if (!photo) {
+      return;
+    }
+
+    try {
+      const file = await this.api.getFile(photo.file_id);
+      if (!file.file_path) {
+        await this.safeSendMessage(chatId, "暂时无法读取这张图片，请稍后重试。");
+        return;
+      }
+
+      const localImagePath = await this.cacheTelegramPhoto(message.message_id, photo.file_id, file.file_path, file);
+      if (!localImagePath) {
+        await this.safeSendMessage(chatId, "暂时无法读取这张图片，请稍后重试。");
+        return;
+      }
+
+      await this.submitOrQueueRichInput(
+        chatId,
+        activeSession,
+        [{ type: "localImage", path: localImagePath }],
+        (message.caption ?? "").trim() || null,
+        "图片"
+      );
+    } catch {
+      await this.safeSendMessage(chatId, "暂时无法读取这张图片，请稍后重试。");
+    }
+  }
+
+  private async handlePendingRichInputPrompt(
+    chatId: string,
+    pending: PendingRichInputComposer,
+    text: string
+  ): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession || activeSession.sessionId !== pending.sessionId) {
+      this.pendingRichInputComposers.delete(chatId);
+      await this.safeSendMessage(chatId, "当前会话已经变化，请重新发送结构化输入。");
+      return;
+    }
+
+    const prompt = text.trim();
+    if (!prompt) {
+      await this.safeSendMessage(chatId, `请继续发送要和${pending.promptLabel}一起交给 Codex 的说明。`);
+      return;
+    }
+
+    this.pendingRichInputComposers.delete(chatId);
+    await this.submitRichInputs(chatId, activeSession, [
+      ...pending.inputs,
+      { type: "text", text: prompt }
+    ]);
+  }
+
+  private async submitOrQueueRichInput(
+    chatId: string,
+    session: SessionRow,
+    inputs: UserInput[],
+    prompt: string | null,
+    promptLabel: string
+  ): Promise<void> {
+    if (prompt) {
+      await this.submitRichInputs(chatId, session, [
+        ...inputs,
+        { type: "text", text: prompt }
+      ]);
+      return;
+    }
+
+    if (!this.canAcceptRichInputPrompt(chatId, session)) {
+      await this.safeSendMessage(chatId, "当前项目仍在执行，请等待完成或发送 /interrupt。");
+      return;
+    }
+
+    this.pendingRichInputComposers.set(chatId, {
+      sessionId: session.sessionId,
+      inputs,
+      promptLabel
+    });
+    await this.safeSendMessage(chatId, `已记录${promptLabel}，请继续发送任务说明，或发送 /cancel 取消。`);
+  }
+
+  private canAcceptRichInputPrompt(chatId: string, session: SessionRow): boolean {
+    if (session.status !== "running") {
+      return true;
+    }
+
+    const activeTurn = this.activeTurn;
+    if (!activeTurn || activeTurn.sessionId !== session.sessionId) {
+      return false;
+    }
+
+    return activeTurn.tracker.getStatus().turnStatus === "blocked" && !this.pendingInteractionTextModes.has(chatId);
+  }
+
+  private async submitRichInputs(chatId: string, session: SessionRow, input: UserInput[]): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    if (session.status === "running") {
+      const activeTurn = this.activeTurn;
+      const blockedStatus = activeTurn?.tracker.getStatus().turnStatus === "blocked";
+      if (
+        activeTurn &&
+        activeTurn.sessionId === session.sessionId &&
+        blockedStatus &&
+        !this.pendingInteractionTextModes.has(chatId)
+      ) {
+        try {
+          await this.ensureAppServerAvailable();
+          await this.appServer?.steerTurn({
+            threadId: activeTurn.threadId,
+            expectedTurnId: activeTurn.turnId,
+            input
+          });
+        } catch (error) {
+          await this.logger.warn("turn steer failed", {
+            chatId,
+            sessionId: session.sessionId,
+            threadId: activeTurn.threadId,
+            turnId: activeTurn.turnId,
+            error: `${error}`
+          });
+          await this.safeSendMessage(chatId, "Codex 服务暂时不可用，请稍后重试。");
+        }
+        return;
+      }
+
+      await this.safeSendMessage(chatId, "当前项目仍在执行，请等待完成或发送 /interrupt。");
+      return;
+    }
+
+    try {
+      await this.ensureAppServerAvailable();
+      const threadId = await this.ensureSessionThread(session);
+      const turn = await this.appServer?.startTurn({
+        threadId,
+        cwd: session.projectPath,
+        input,
+        ...(session.selectedModel ? { model: session.selectedModel } : {})
+      });
+      if (!turn) {
+        throw new Error("turn start returned no result");
+      }
+
+      await this.beginActiveTurn(chatId, session, threadId, turn.turn.id, turn.turn.status);
+    } catch (error) {
+      await this.logger.error("structured turn start failed", {
+        sessionId: session.sessionId,
+        error: `${error}`
+      });
+      this.store.updateSessionStatus(session.sessionId, "failed", {
+        failureReason: "turn_failed",
+        lastTurnId: session.lastTurnId,
+        lastTurnStatus: "failed"
+      });
+      await this.safeSendMessage(chatId, "Codex 服务暂时不可用，请稍后重试。");
+    }
+  }
+
+  private async fetchAllModels(): Promise<NonNullable<Awaited<ReturnType<CodexAppServerClient["listModels"]>>["data"]>> {
+    const models: NonNullable<Awaited<ReturnType<CodexAppServerClient["listModels"]>>["data"]> = [];
+    let cursor: string | null = null;
+
+    do {
+      const page: Awaited<ReturnType<CodexAppServerClient["listModels"]>> | undefined = await this.appServer?.listModels({
+        ...(cursor ? { cursor } : {}),
+        includeHidden: false,
+        limit: 50
+      });
+      if (!page) {
+        break;
+      }
+      models.push(...page.data);
+      cursor = page.nextCursor ?? null;
+    } while (cursor);
+
+    return models;
+  }
+
+  private async fetchAllApps(
+    threadId?: string
+  ): Promise<NonNullable<Awaited<ReturnType<CodexAppServerClient["listApps"]>>["data"]>> {
+    const apps: NonNullable<Awaited<ReturnType<CodexAppServerClient["listApps"]>>["data"]> = [];
+    let cursor: string | null = null;
+
+    do {
+      const page: Awaited<ReturnType<CodexAppServerClient["listApps"]>> | undefined = await this.appServer?.listApps({
+        ...(cursor ? { cursor } : {}),
+        ...(threadId ? { threadId } : {}),
+        limit: 50
+      });
+      if (!page) {
+        break;
+      }
+      apps.push(...page.data);
+      cursor = page.nextCursor ?? null;
+    } while (cursor);
+
+    return apps;
+  }
+
+  private async fetchAllMcpServerStatuses(): Promise<
+    NonNullable<Awaited<ReturnType<CodexAppServerClient["listMcpServerStatuses"]>>["data"]>
+  > {
+    const statuses: NonNullable<Awaited<ReturnType<CodexAppServerClient["listMcpServerStatuses"]>>["data"]> = [];
+    let cursor: string | null = null;
+
+    do {
+      const page: Awaited<ReturnType<CodexAppServerClient["listMcpServerStatuses"]>> | undefined =
+        await this.appServer?.listMcpServerStatuses({
+          ...(cursor ? { cursor } : {}),
+          limit: 50
+        });
+      if (!page) {
+        break;
+      }
+      statuses.push(...page.data);
+      cursor = page.nextCursor ?? null;
+    } while (cursor);
+
+    return statuses;
+  }
+
   private async handleInterrupt(chatId: string): Promise<void> {
     if (!this.store || !this.activeTurn) {
       await this.safeSendMessage(chatId, "当前没有正在执行的操作。");
@@ -1994,51 +3007,14 @@ export class BridgeService {
       const turn = await this.appServer?.startTurn({
         threadId,
         cwd: session.projectPath,
-        text
+        text,
+        ...(session.selectedModel ? { model: session.selectedModel } : {})
       });
 
       if (!turn) {
         throw new Error("turn start returned no result");
       }
-
-      this.activeTurn = {
-        sessionId: session.sessionId,
-        chatId,
-        threadId,
-        turnId: turn.turn.id,
-        finalMessage: null,
-        tracker: new ActivityTracker({
-          threadId,
-          turnId: turn.turn.id
-        }),
-        debugJournal: new TurnDebugJournal({
-          debugRootDir: getDebugRuntimeDir(this.paths.runtimeDir),
-          threadId,
-          turnId: turn.turn.id
-        }),
-        statusCard: createStatusCardMessageState(),
-        latestStatusProgressText: null,
-        latestPlanFingerprint: "",
-        latestAgentFingerprint: "",
-        subagentIdentityBackfillStates: new Map(),
-        errorCards: [],
-        nextErrorCardId: 1,
-        surfaceQueue: Promise.resolve()
-      };
-      const recentActivity: RecentActivityEntry = {
-        tracker: this.activeTurn.tracker,
-        debugFilePath: this.activeTurn.debugJournal.filePath,
-        statusCard: this.activeTurn.statusCard
-      };
-      this.setRecentActivity(session.sessionId, recentActivity);
-      this.store.updateSessionStatus(session.sessionId, "running", {
-        lastTurnId: turn.turn.id,
-        lastTurnStatus: turn.turn.status
-      });
-      await this.syncRuntimeCards(this.activeTurn, null, null, this.activeTurn.tracker.getStatus(), {
-        force: true,
-        reason: "turn_initialized"
-      });
+      await this.beginActiveTurn(chatId, session, threadId, turn.turn.id, turn.turn.status);
     } catch (error) {
       await this.logger.error("turn start failed", {
         sessionId: session.sessionId,
@@ -2053,6 +3029,58 @@ export class BridgeService {
     }
   }
 
+  private async beginActiveTurn(
+    chatId: string,
+    session: SessionRow,
+    threadId: string,
+    turnId: string,
+    turnStatus: string
+  ): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    this.activeTurn = {
+      sessionId: session.sessionId,
+      chatId,
+      threadId,
+      turnId,
+      finalMessage: null,
+      tracker: new ActivityTracker({
+        threadId,
+        turnId
+      }),
+      debugJournal: new TurnDebugJournal({
+        debugRootDir: getDebugRuntimeDir(this.paths.runtimeDir),
+        threadId,
+        turnId
+      }),
+      statusCard: createStatusCardMessageState(),
+      latestStatusProgressText: null,
+      latestPlanFingerprint: "",
+      latestAgentFingerprint: "",
+      subagentIdentityBackfillStates: new Map(),
+      errorCards: [],
+      nextErrorCardId: 1,
+      surfaceQueue: Promise.resolve()
+    };
+
+    const recentActivity: RecentActivityEntry = {
+      tracker: this.activeTurn.tracker,
+      debugFilePath: this.activeTurn.debugJournal.filePath,
+      statusCard: this.activeTurn.statusCard
+    };
+    this.setRecentActivity(session.sessionId, recentActivity);
+    this.store.updateSessionStatus(session.sessionId, "running", {
+      lastTurnId: turnId,
+      lastTurnStatus: turnStatus
+    });
+    await this.syncRuntimeCards(this.activeTurn, null, null, this.activeTurn.tracker.getStatus(), {
+      force: true,
+      reason: "turn_initialized"
+    });
+  }
+
   private async ensureSessionThread(session: SessionRow): Promise<string> {
     if (!this.store) {
       throw new Error("state store unavailable");
@@ -2063,7 +3091,10 @@ export class BridgeService {
     }
 
     if (!session.threadId) {
-      const started = await this.appServer.startThread(session.projectPath);
+      const started = await this.appServer.startThread({
+        cwd: session.projectPath,
+        ...(session.selectedModel ? { model: session.selectedModel } : {})
+      });
       this.store.updateSessionThreadId(session.sessionId, started.thread.id);
       return started.thread.id;
     }
@@ -2092,6 +3123,26 @@ export class BridgeService {
 
   private async handleAppServerServerRequest(request: JsonRpcServerRequest): Promise<void> {
     if (!this.store || !this.appServer) {
+      return;
+    }
+
+    const knownUnsupported = getKnownUnsupportedServerRequest(request);
+    if (knownUnsupported) {
+      await this.logger.warn("known unsupported app-server server request", {
+        method: request.method,
+        id: request.id,
+        detail: knownUnsupported.logDetail
+      });
+      if (this.activeTurn) {
+        await this.appendDebugJournal(this.activeTurn, "bridge/serverRequest/rejected", {
+          requestId: serializeJsonRpcRequestId(request.id),
+          requestMethod: request.method,
+          params: request.params,
+          reason: knownUnsupported.errorMessage
+        });
+        await this.safeSendMessage(this.activeTurn.chatId, knownUnsupported.userMessage);
+      }
+      await this.appServer.respondToServerRequestError(request.id, -32601, knownUnsupported.errorMessage);
       return;
     }
 
@@ -2168,8 +3219,66 @@ export class BridgeService {
     return await this.safeSendHtmlMessageResult(chatId, rendered.text, rendered.replyMarkup);
   }
 
+  private async handleServerRequestResolvedNotification(
+    notification: Extract<ReturnType<typeof classifyNotification>, { kind: "server_request_resolved" }>
+  ): Promise<void> {
+    if (!this.store || !notification.threadId || !notification.requestId) {
+      return;
+    }
+
+    const requestId = serializeJsonRpcRequestId(notification.requestId);
+    const pendingRows = this.store.listPendingInteractionsByRequest(notification.threadId, requestId);
+    for (const row of pendingRows) {
+      const interaction = parseStoredInteraction(row.promptJson);
+      const responseJson = row.responseJson ?? JSON.stringify({ resolvedBy: "serverRequest/resolved" });
+      this.store.markPendingInteractionAnswered(row.interactionId, responseJson);
+      this.clearPendingInteractionTextMode(row.interactionId);
+      await this.appendInteractionResolvedJournal(row, {
+        finalState: "answered",
+        responseJson,
+        resolutionSource: "server_response_success"
+      });
+
+      if (interaction) {
+        await this.renderStoredPendingInteraction(row.telegramChatId, this.store.getPendingInteraction(row.interactionId) ?? row, interaction);
+      }
+    }
+  }
+
+  private async handleGlobalRuntimeNotice(
+    notification: Extract<
+      ReturnType<typeof classifyNotification>,
+      { kind: "config_warning" | "deprecation_notice" | "model_rerouted" | "skills_changed" | "thread_compacted" }
+    >
+  ): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const message = formatGlobalRuntimeNotice(notification);
+    if (!message) {
+      return;
+    }
+
+    const bindings = this.store.listChatBindings();
+    for (const binding of bindings) {
+      const delivered = await this.safeSendMessage(binding.telegramChatId, message);
+      if (!delivered) {
+        this.store.createRuntimeNotice({
+          telegramChatId: binding.telegramChatId,
+          type: "app_server_notice",
+          message
+        });
+      }
+    }
+  }
+
   private async handleAppServerNotification(method: string, params: unknown): Promise<void> {
     const classified = classifyNotification(method, params);
+
+    if (classified.kind === "server_request_resolved") {
+      await this.handleServerRequestResolvedNotification(classified);
+    }
 
     if (classified.kind === "thread_archived" || classified.kind === "thread_unarchived") {
       if (this.activeTurn) {
@@ -2183,6 +3292,9 @@ export class BridgeService {
     }
 
     if (!this.activeTurn) {
+      if (isGlobalRuntimeNotice(classified)) {
+        await this.handleGlobalRuntimeNotice(classified);
+      }
       return;
     }
 
@@ -2275,6 +3387,61 @@ export class BridgeService {
 
       this.recentActivityBySessionId.delete(oldestSessionId);
     }
+  }
+
+  private clearRecentActivity(sessionId: string): void {
+    this.recentActivityBySessionId.delete(sessionId);
+  }
+
+  private async cacheTelegramPhoto(
+    messageId: number,
+    fileId: string,
+    filePath: string,
+    file?: { file_id: string; file_path?: string }
+  ): Promise<string | null> {
+    if (!this.api) {
+      return null;
+    }
+
+    const cacheDir = await this.ensureTelegramImageCacheDir();
+    try {
+      await this.pruneTelegramImageCache(cacheDir);
+    } catch (error) {
+      await this.logger.warn("telegram image cache cleanup failed", {
+        cacheDir,
+        error: `${error}`
+      });
+    }
+
+    const targetPath = join(cacheDir, `${messageId}-${randomUUID()}${getTelegramImageExtension(filePath)}`);
+    return await this.api.downloadFile(fileId, targetPath, file);
+  }
+
+  private async ensureTelegramImageCacheDir(): Promise<string> {
+    const cacheDir = join(this.paths.cacheDir, TELEGRAM_IMAGE_CACHE_DIRNAME);
+    await mkdir(cacheDir, { recursive: true });
+    return cacheDir;
+  }
+
+  private async pruneTelegramImageCache(cacheDir: string): Promise<void> {
+    const cutoffMs = Date.now() - TELEGRAM_IMAGE_CACHE_MAX_AGE_MS;
+    const entries = await readdir(cacheDir, { withFileTypes: true });
+
+    await Promise.all(entries.map(async (entry) => {
+      if (!entry.isFile()) {
+        return;
+      }
+
+      const entryPath = join(cacheDir, entry.name);
+      try {
+        const fileStats = await stat(entryPath);
+        if (fileStats.mtimeMs < cutoffMs) {
+          await rm(entryPath, { force: true });
+        }
+      } catch {
+        return;
+      }
+    }));
   }
 
   private async handleInspect(chatId: string): Promise<void> {
@@ -3710,6 +4877,221 @@ function summarizeTextPreview(text: string, limit = 160): string {
   return `${normalized.slice(0, limit)}...`;
 }
 
+function truncatePlainText(text: string, limit: number): string {
+  const normalized = text.replace(/\s+/gu, " ").trim();
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, limit)}...`;
+}
+
+function splitStructuredInputCommand(args: string): { value: string; prompt: string | null } {
+  const separatorIndex = args.indexOf("::");
+  if (separatorIndex === -1) {
+    return {
+      value: args.trim(),
+      prompt: null
+    };
+  }
+
+  return {
+    value: args.slice(0, separatorIndex).trim(),
+    prompt: args.slice(separatorIndex + 2).trim() || null
+  };
+}
+
+function parseReviewCommandArgs(args: string): {
+  delivery?: "inline" | "detached";
+  target:
+    | { type: "uncommittedChanges" }
+    | { type: "baseBranch"; branch: string }
+    | { type: "commit"; sha: string; title?: string | null }
+    | { type: "custom"; instructions: string };
+} | null {
+  const tokens = args.trim().split(/\s+/u).filter(Boolean);
+  let delivery: "inline" | "detached" | undefined;
+  let index = 0;
+
+  if (tokens[0] === "detached") {
+    delivery = "detached";
+    index += 1;
+  }
+
+  const kind = tokens[index];
+  if (!kind) {
+    return {
+      ...(delivery ? { delivery } : {}),
+      target: { type: "uncommittedChanges" }
+    };
+  }
+
+  if (kind === "branch" && tokens[index + 1]) {
+    return {
+      ...(delivery ? { delivery } : {}),
+      target: {
+        type: "baseBranch",
+        branch: tokens.slice(index + 1).join(" ")
+      }
+    };
+  }
+
+  if (kind === "commit" && tokens[index + 1]) {
+    return {
+      ...(delivery ? { delivery } : {}),
+      target: {
+        type: "commit",
+        sha: tokens[index + 1] ?? ""
+      }
+    };
+  }
+
+  if (kind === "custom" && tokens[index + 1]) {
+    return {
+      ...(delivery ? { delivery } : {}),
+      target: {
+        type: "custom",
+        instructions: tokens.slice(index + 1).join(" ")
+      }
+    };
+  }
+
+  return null;
+}
+
+function parseMentionValue(value: string): {
+  name: string;
+  path: string;
+} {
+  const separatorIndex = value.indexOf("|");
+  if (separatorIndex !== -1) {
+    const explicitName = value.slice(0, separatorIndex).trim();
+    const explicitPath = value.slice(separatorIndex + 1).trim();
+    if (explicitName && explicitPath) {
+      return {
+        name: explicitName,
+        path: explicitPath
+      };
+    }
+  }
+
+  return {
+    name: deriveMentionName(value),
+    path: value.trim()
+  };
+}
+
+function deriveMentionName(pathValue: string): string {
+  const trimmed = pathValue.trim();
+  if (/^[a-z]+:\/\//iu.test(trimmed)) {
+    const withoutScheme = trimmed.replace(/^[a-z]+:\/\//iu, "");
+    const tail = withoutScheme.split("/").filter(Boolean).at(-1);
+    return tail ?? trimmed;
+  }
+
+  const base = basename(trimmed);
+  return base || trimmed;
+}
+
+function parseThreadMetadataTokens(tokens: string[]): {
+  branch?: string | null;
+  sha?: string | null;
+  originUrl?: string | null;
+} | null {
+  const gitInfo: {
+    branch?: string | null;
+    sha?: string | null;
+    originUrl?: string | null;
+  } = {};
+
+  for (const token of tokens) {
+    const separatorIndex = token.indexOf("=");
+    if (separatorIndex === -1) {
+      return null;
+    }
+
+    const key = token.slice(0, separatorIndex).trim();
+    const rawValue = token.slice(separatorIndex + 1).trim();
+    const value = rawValue === "-" ? null : rawValue;
+    switch (key) {
+      case "branch":
+        gitInfo.branch = value;
+        break;
+      case "sha":
+        gitInfo.sha = value;
+        break;
+      case "origin":
+      case "originUrl":
+        gitInfo.originUrl = value;
+        break;
+      default:
+        return null;
+    }
+  }
+
+  return Object.keys(gitInfo).length > 0 ? gitInfo : null;
+}
+
+async function isReadableImagePath(imagePath: string): Promise<boolean> {
+  if (!/\.(png|jpe?g|gif|webp|bmp|svg|heic|heif)$/iu.test(imagePath)) {
+    return false;
+  }
+
+  try {
+    await access(imagePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getTelegramImageExtension(filePath: string): string {
+  const extension = extname(filePath).toLowerCase();
+  return /^\.[a-z0-9]{1,10}$/iu.test(extension) ? extension : ".jpg";
+}
+
+function isGlobalRuntimeNotice(
+  notification: ReturnType<typeof classifyNotification>
+): notification is Extract<
+  ReturnType<typeof classifyNotification>,
+  { kind: "config_warning" | "deprecation_notice" | "model_rerouted" | "skills_changed" | "thread_compacted" }
+> {
+  return notification.kind === "config_warning"
+    || notification.kind === "deprecation_notice"
+    || notification.kind === "model_rerouted"
+    || notification.kind === "skills_changed"
+    || notification.kind === "thread_compacted";
+}
+
+function formatGlobalRuntimeNotice(
+  notification: Extract<
+    ReturnType<typeof classifyNotification>,
+    { kind: "config_warning" | "deprecation_notice" | "model_rerouted" | "skills_changed" | "thread_compacted" }
+  >
+): string | null {
+  switch (notification.kind) {
+    case "config_warning":
+      return notification.summary
+        ? `Codex 配置警告：${notification.summary}${notification.detail ? `\n${notification.detail}` : ""}`
+        : null;
+    case "deprecation_notice":
+      return notification.summary
+        ? `Codex 弃用提示：${notification.summary}${notification.detail ? `\n${notification.detail}` : ""}`
+        : null;
+    case "model_rerouted":
+      if (!notification.fromModel || !notification.toModel) {
+        return null;
+      }
+      return `Codex 已调整模型：${notification.fromModel} -> ${notification.toModel}${notification.reason ? ` (${notification.reason})` : ""}`;
+    case "skills_changed":
+      return "Codex 技能列表已刷新。";
+    case "thread_compacted":
+      return "Codex 线程上下文已压缩。";
+    default:
+      return null;
+  }
+}
+
 function summarizeRuntimeCommands(commands: RuntimeCommandState[]): Array<Record<string, unknown>> {
   return commands.map((command) => ({
     itemId: command.itemId,
@@ -4189,9 +5571,14 @@ function buildInspectPayloadFromThreadHistory(
     recentFileChangeSummaries,
     recentMcpSummaries,
     recentWebSearches,
+    recentHookSummaries: [],
+    recentNoticeSummaries: [],
     planSnapshot,
     agentSnapshot: [],
     completedCommentary,
+    tokenUsage: null,
+    latestDiffSummary: null,
+    terminalInteractionSummary: null,
     pendingInteractions: []
   };
 
@@ -4816,9 +6203,14 @@ function buildPendingInteractionOnlyInspectSnapshot(
     recentFileChangeSummaries: [],
     recentMcpSummaries: [],
     recentWebSearches: [],
+    recentHookSummaries: [],
+    recentNoticeSummaries: [],
     planSnapshot: [],
     agentSnapshot: [],
     completedCommentary: [],
+    tokenUsage: null,
+    latestDiffSummary: null,
+    terminalInteractionSummary: null,
     pendingInteractions
   };
 }
@@ -5003,4 +6395,118 @@ function buildInspectPlainTextFallback(html: string): string {
   return plainText.length <= INSPECT_PLAIN_TEXT_FALLBACK_LIMIT
     ? plainText
     : `${plainText.slice(0, INSPECT_PLAIN_TEXT_FALLBACK_LIMIT)}…`;
+}
+
+function parsePluginInstallTarget(value: string): { marketplaceName: string; pluginName: string } | null {
+  const trimmed = value.trim();
+  const slashIndex = trimmed.indexOf("/");
+  if (slashIndex <= 0 || slashIndex === trimmed.length - 1) {
+    return null;
+  }
+
+  return {
+    marketplaceName: trimmed.slice(0, slashIndex),
+    pluginName: trimmed.slice(slashIndex + 1)
+  };
+}
+
+function findFirstInstallablePlugin(
+  result: Awaited<ReturnType<CodexAppServerClient["listPlugins"]>> | undefined
+): { marketplaceName: string; pluginName: string } | null {
+  if (!result) {
+    return null;
+  }
+
+  for (const marketplace of result.marketplaces) {
+    const plugin = marketplace.plugins.find((entry) => !entry.installed);
+    if (plugin) {
+      return {
+        marketplaceName: marketplace.name,
+        pluginName: plugin.name
+      };
+    }
+  }
+
+  return null;
+}
+
+function formatMcpAuthStatus(status: "unsupported" | "notLoggedIn" | "bearerToken" | "oAuth"): string {
+  switch (status) {
+    case "unsupported":
+      return "不支持认证";
+    case "notLoggedIn":
+      return "未登录";
+    case "bearerToken":
+      return "Bearer Token";
+    case "oAuth":
+      return "OAuth";
+    default:
+      return status;
+  }
+}
+
+function formatRateLimitSummary(rateLimits: {
+  limitName: string | null;
+  primary: {
+    usedPercent: number;
+    windowDurationMins: number | null;
+    resetsAt: number | null;
+  } | null;
+  credits: {
+    hasCredits: boolean;
+    unlimited: boolean;
+    balance: string | null;
+  } | null;
+  planType: string | null;
+} | null): string | null {
+  if (!rateLimits) {
+    return null;
+  }
+
+  const parts: string[] = [];
+  if (rateLimits.limitName) {
+    parts.push(`额度：${rateLimits.limitName}`);
+  }
+  if (rateLimits.planType) {
+    parts.push(`限额计划：${rateLimits.planType}`);
+  }
+  if (rateLimits.primary) {
+    const window = rateLimits.primary.windowDurationMins ? `${rateLimits.primary.windowDurationMins} 分钟` : "当前窗口";
+    parts.push(`主额度使用：${rateLimits.primary.usedPercent}%（${window}）`);
+  }
+  if (rateLimits.credits) {
+    parts.push(
+      rateLimits.credits.unlimited
+        ? "Credits：无限"
+        : `Credits：${rateLimits.credits.balance ?? (rateLimits.credits.hasCredits ? "可用" : "不可用")}`
+    );
+  }
+
+  return parts.length > 0 ? parts.join("\n") : null;
+}
+
+function getKnownUnsupportedServerRequest(request: JsonRpcServerRequest): {
+  errorMessage: string;
+  userMessage: string;
+  logDetail: string;
+} | null {
+  if (request.method === "item/tool/call") {
+    const tool = getString(request.params, "tool") ?? "unknown";
+    return {
+      errorMessage: "Dynamic tool calls are not supported by the Telegram bridge",
+      userMessage: `Codex 发起了动态工具调用（${tool}），但 Telegram bridge 当前没有稳定的客户端工具映射，已拒绝这次调用。`,
+      logDetail: `tool=${tool}`
+    };
+  }
+
+  if (request.method === "account/chatgptAuthTokens/refresh") {
+    const reason = getString(request.params, "reason") ?? "unknown";
+    return {
+      errorMessage: "ChatGPT auth token refresh is not supported by the Telegram bridge",
+      userMessage: `Codex 请求 ChatGPT 登录令牌刷新（原因：${reason}），但 bridge 不持有可刷新的 ChatGPT access token / account id，已拒绝这次请求。`,
+      logDetail: `reason=${reason}`
+    };
+  }
+
+  return null;
 }

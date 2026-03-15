@@ -24,6 +24,20 @@ export interface StreamSnapshot {
   activeStatusLine: string | null;
 }
 
+export interface TokenUsageSnapshot {
+  lastInputTokens: number;
+  lastCachedInputTokens: number;
+  lastOutputTokens: number;
+  lastReasoningOutputTokens: number;
+  lastTotalTokens: number;
+  totalInputTokens: number;
+  totalCachedInputTokens: number;
+  totalOutputTokens: number;
+  totalReasoningOutputTokens: number;
+  totalTokens: number;
+  modelContextWindow: number | null;
+}
+
 export type TurnStatus =
   | "idle"
   | "starting"
@@ -92,9 +106,14 @@ export interface InspectSnapshot extends ActivityStatus {
   recentFileChangeSummaries: string[];
   recentMcpSummaries: string[];
   recentWebSearches: string[];
+  recentHookSummaries: string[];
+  recentNoticeSummaries: string[];
   planSnapshot: string[];
   agentSnapshot: CollabAgentStateSnapshot[];
   completedCommentary: string[];
+  tokenUsage: TokenUsageSnapshot | null;
+  latestDiffSummary: string | null;
+  terminalInteractionSummary: string | null;
   pendingInteractions: PendingInteractionSummary[];
 }
 
@@ -135,14 +154,25 @@ interface ClassifiedNotificationBase {
   kind:
     | "thread_started"
     | "thread_name_updated"
+    | "thread_token_usage_updated"
+    | "thread_compacted"
     | "turn_started"
     | "turn_completed"
+    | "turn_diff_updated"
     | "thread_status_changed"
     | "thread_archived"
     | "thread_unarchived"
     | "item_started"
     | "item_completed"
     | "progress"
+    | "hook_started"
+    | "hook_completed"
+    | "terminal_interaction"
+    | "server_request_resolved"
+    | "config_warning"
+    | "deprecation_notice"
+    | "model_rerouted"
+    | "skills_changed"
     | "final_message_available"
     | "plan_updated"
     | "plan_delta"
@@ -169,6 +199,15 @@ export interface ThreadNameUpdatedNotification extends ClassifiedNotificationBas
   threadName: string | null;
 }
 
+export interface ThreadTokenUsageUpdatedNotification extends ClassifiedNotificationBase {
+  kind: "thread_token_usage_updated";
+  tokenUsage: TokenUsageSnapshot | null;
+}
+
+export interface ThreadCompactedNotification extends ClassifiedNotificationBase {
+  kind: "thread_compacted";
+}
+
 export interface TurnStartedNotification extends ClassifiedNotificationBase {
   kind: "turn_started";
 }
@@ -176,6 +215,11 @@ export interface TurnStartedNotification extends ClassifiedNotificationBase {
 export interface TurnCompletedNotification extends ClassifiedNotificationBase {
   kind: "turn_completed";
   status: string;
+}
+
+export interface TurnDiffUpdatedNotification extends ClassifiedNotificationBase {
+  kind: "turn_diff_updated";
+  diff: string | null;
 }
 
 export interface ThreadStatusChangedNotification extends ClassifiedNotificationBase {
@@ -215,6 +259,62 @@ export interface ProgressNotification extends ClassifiedNotificationBase {
   kind: "progress";
   itemId: string | null;
   message: string | null;
+}
+
+export interface HookRunSummary {
+  id: string | null;
+  eventName: string | null;
+  executionMode: string | null;
+  handlerType: string | null;
+  scope: string | null;
+  status: string | null;
+  statusMessage: string | null;
+  durationMs: number | null;
+  sourcePath: string | null;
+  entries: Array<{
+    kind: string | null;
+    text: string | null;
+  }>;
+}
+
+export interface HookNotification extends ClassifiedNotificationBase {
+  kind: "hook_started" | "hook_completed";
+  run: HookRunSummary;
+}
+
+export interface TerminalInteractionNotification extends ClassifiedNotificationBase {
+  kind: "terminal_interaction";
+  itemId: string | null;
+  processId: string | null;
+  stdin: string | null;
+}
+
+export interface ServerRequestResolvedNotification extends ClassifiedNotificationBase {
+  kind: "server_request_resolved";
+  requestId: string | null;
+}
+
+export interface ConfigWarningNotification extends ClassifiedNotificationBase {
+  kind: "config_warning";
+  summary: string | null;
+  detail: string | null;
+}
+
+export interface DeprecationNoticeNotification extends ClassifiedNotificationBase {
+  kind: "deprecation_notice";
+  summary: string | null;
+  detail: string | null;
+}
+
+export interface ModelReroutedNotification extends ClassifiedNotificationBase {
+  kind: "model_rerouted";
+  fromModel: string | null;
+  toModel: string | null;
+  reason: string | null;
+}
+
+export interface SkillsChangedNotification extends ClassifiedNotificationBase {
+  kind: "skills_changed";
 }
 
 export interface FinalMessageAvailableNotification extends ClassifiedNotificationBase {
@@ -268,14 +368,24 @@ export interface OtherNotification extends ClassifiedNotificationBase {
 export type ClassifiedNotification =
   | ThreadStartedNotification
   | ThreadNameUpdatedNotification
+  | ThreadTokenUsageUpdatedNotification
+  | ThreadCompactedNotification
   | TurnStartedNotification
   | TurnCompletedNotification
+  | TurnDiffUpdatedNotification
   | ThreadStatusChangedNotification
   | ThreadArchivedNotification
   | ThreadUnarchivedNotification
   | ItemStartedNotification
   | ItemCompletedNotification
   | ProgressNotification
+  | HookNotification
+  | TerminalInteractionNotification
+  | ServerRequestResolvedNotification
+  | ConfigWarningNotification
+  | DeprecationNoticeNotification
+  | ModelReroutedNotification
+  | SkillsChangedNotification
   | FinalMessageAvailableNotification
   | PlanUpdatedNotification
   | PlanDeltaNotification

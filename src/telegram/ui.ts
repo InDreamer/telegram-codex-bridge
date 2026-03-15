@@ -367,6 +367,9 @@ export function buildWhereText(session: SessionRow | null): string {
   lines.push(formatHtmlField("Bridge 会话 ID：", session.sessionId));
   lines.push(formatHtmlField("Codex 线程 ID：", session.threadId ?? "尚未创建（首次发送任务后生成）"));
   lines.push(formatHtmlField("最近 Turn ID：", session.lastTurnId ?? "暂无"));
+  if (session.selectedModel) {
+    lines.push(formatHtmlField("模型：", session.selectedModel));
+  }
 
   const lastTurnSummary = formatLastTurnSummary(session);
   if (lastTurnSummary) {
@@ -813,6 +816,34 @@ export function buildInspectText(
     lines.push(...toolLines);
   }
 
+  const hookLines = formatInspectSummarySection(snapshot.recentHookSummaries);
+  if (hookLines.length > 0) {
+    lines.push("", formatHtmlHeading("最近 Hook"));
+    lines.push(...hookLines);
+  }
+
+  const noticeLines = formatInspectSummarySection(
+    [
+      ...snapshot.recentNoticeSummaries,
+      snapshot.terminalInteractionSummary
+    ].filter((value): value is string => Boolean(value))
+  );
+  if (noticeLines.length > 0) {
+    lines.push("", formatHtmlHeading("提示与告警"));
+    lines.push(...noticeLines);
+  }
+
+  const tokenUsageLines = formatTokenUsageSection(snapshot.tokenUsage);
+  if (tokenUsageLines.length > 0) {
+    lines.push("", formatHtmlHeading("Token 用量"));
+    lines.push(...tokenUsageLines);
+  }
+
+  if (snapshot.latestDiffSummary) {
+    lines.push("", formatHtmlHeading("最近差异"));
+    lines.push(formatHtmlListItem(snapshot.latestDiffSummary));
+  }
+
   const planLines = formatInspectSummarySection(snapshot.planSnapshot);
   if (planLines.length > 0) {
     lines.push("", formatHtmlHeading("当前计划"));
@@ -966,6 +997,22 @@ function formatPendingInteractionSection(snapshot: InspectSnapshot["pendingInter
     const suffix = interaction.awaitingText ? "，等待文字回答" : "";
     return `${index + 1}. ${escapeHtml(interaction.interactionKind)} / ${escapeHtml(interaction.requestMethod)} / ${escapeHtml(summarizePendingInteractionState(interaction.state))}${suffix}`;
   });
+}
+
+function formatTokenUsageSection(tokenUsage: InspectSnapshot["tokenUsage"]): string[] {
+  if (!tokenUsage) {
+    return [];
+  }
+
+  const lines = [
+    formatHtmlListItem(`本次：${tokenUsage.lastTotalTokens}（输入 ${tokenUsage.lastInputTokens}，输出 ${tokenUsage.lastOutputTokens}，缓存 ${tokenUsage.lastCachedInputTokens}，推理 ${tokenUsage.lastReasoningOutputTokens}）`),
+    formatHtmlListItem(`累计：${tokenUsage.totalTokens}（输入 ${tokenUsage.totalInputTokens}，输出 ${tokenUsage.totalOutputTokens}，缓存 ${tokenUsage.totalCachedInputTokens}，推理 ${tokenUsage.totalReasoningOutputTokens}）`)
+  ];
+  if (tokenUsage.modelContextWindow !== null) {
+    lines.push(formatHtmlListItem(`上下文窗口：${tokenUsage.modelContextWindow}`));
+  }
+
+  return lines;
 }
 
 function chunkButtons<T>(values: T[], size: number): T[][] {

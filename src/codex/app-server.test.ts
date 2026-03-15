@@ -11,7 +11,7 @@ const testLogger: Logger = {
 };
 
 test("buildThreadStartParams requests full-access sandbox", () => {
-  assert.deepEqual(buildThreadStartParams("/tmp/project"), {
+  assert.deepEqual(buildThreadStartParams({ cwd: "/tmp/project" }), {
     cwd: "/tmp/project",
     approvalPolicy: "never",
     sandbox: "danger-full-access"
@@ -185,4 +185,135 @@ test("steerTurn sends expectedTurnId and structured input", async () => {
       input: [{ type: "text", text: "continue" }]
     }
   });
+});
+
+test("phase6 plugin and app requests send the current schema-backed params", async () => {
+  const client = new CodexAppServerClient("codex", "/tmp/app-server.log", testLogger);
+  const captured: Array<{ method: string; params: unknown }> = [];
+
+  (client as any).request = async (method: string, params: unknown) => {
+    captured.push({ method, params });
+    if (method === "plugin/list") {
+      return { marketplaces: [] };
+    }
+    if (method === "plugin/install") {
+      return { appsNeedingAuth: [] };
+    }
+    if (method === "app/list") {
+      return { data: [], nextCursor: null };
+    }
+    return {};
+  };
+
+  await client.listPlugins({ cwds: ["/tmp/project-one"] });
+  await client.installPlugin({
+    marketplacePath: "/marketplaces/repo",
+    pluginName: "deploy"
+  });
+  await client.listApps({
+    threadId: "thread-1",
+    forceRefetch: true,
+    limit: 10
+  });
+
+  assert.deepEqual(captured, [
+    {
+      method: "plugin/list",
+      params: {
+        cwds: ["/tmp/project-one"]
+      }
+    },
+    {
+      method: "plugin/install",
+      params: {
+        marketplacePath: "/marketplaces/repo",
+        pluginName: "deploy"
+      }
+    },
+    {
+      method: "app/list",
+      params: {
+        threadId: "thread-1",
+        forceRefetch: true,
+        limit: 10
+      }
+    }
+  ]);
+});
+
+test("phase6 mcp account and background-terminal requests use the expected methods", async () => {
+  const client = new CodexAppServerClient("codex", "/tmp/app-server.log", testLogger);
+  const captured: Array<{ method: string; params: unknown }> = [];
+
+  (client as any).request = async (method: string, params: unknown) => {
+    captured.push({ method, params });
+    if (method === "mcpServerStatus/list") {
+      return { data: [], nextCursor: null };
+    }
+    if (method === "mcpServer/oauth/login") {
+      return { authorizationUrl: "https://auth.example/mcp" };
+    }
+    if (method === "account/read") {
+      return {
+        account: { type: "chatgpt", email: "me@example.com", planType: "plus" },
+        requiresOpenaiAuth: false
+      };
+    }
+    if (method === "account/rateLimits/read") {
+      return {
+        rateLimits: {
+          limitId: "codex",
+          limitName: "Codex",
+          primary: null,
+          secondary: null,
+          credits: null,
+          planType: "plus"
+        },
+        rateLimitsByLimitId: null
+      };
+    }
+    return {};
+  };
+
+  await client.listMcpServerStatuses({ limit: 20 });
+  await client.reloadMcpServers();
+  await client.loginToMcpServer({ name: "github" });
+  await client.readAccount(false);
+  await client.readAccountRateLimits();
+  await client.cleanBackgroundTerminals("thread-1");
+
+  assert.deepEqual(captured, [
+    {
+      method: "mcpServerStatus/list",
+      params: {
+        limit: 20
+      }
+    },
+    {
+      method: "config/mcpServer/reload",
+      params: undefined
+    },
+    {
+      method: "mcpServer/oauth/login",
+      params: {
+        name: "github"
+      }
+    },
+    {
+      method: "account/read",
+      params: {
+        refreshToken: false
+      }
+    },
+    {
+      method: "account/rateLimits/read",
+      params: undefined
+    },
+    {
+      method: "thread/backgroundTerminals/clean",
+      params: {
+        threadId: "thread-1"
+      }
+    }
+  ]);
 });

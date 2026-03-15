@@ -48,6 +48,7 @@ interface ThreadStartParams {
   cwd: string;
   approvalPolicy: "never";
   sandbox: "danger-full-access";
+  model?: string;
 }
 
 interface TurnStartParams {
@@ -58,6 +59,7 @@ interface TurnStartParams {
     type: "dangerFullAccess";
   };
   input: UserInput[];
+  model?: string;
 }
 
 export type UserInput =
@@ -95,6 +97,140 @@ export interface ThreadStartResult {
   thread: { id: string };
 }
 
+export interface ModelListResult {
+  data: Array<{
+    id: string;
+    model: string;
+    displayName: string;
+    description: string;
+    hidden: boolean;
+    isDefault: boolean;
+    inputModalities?: string[];
+    supportsPersonality?: boolean;
+  }>;
+  nextCursor?: string | null;
+}
+
+export interface SkillListResult {
+  data: Array<{
+    cwd: string;
+    skills: Array<{
+      name: string;
+      description: string;
+      path: string;
+      scope: string;
+      enabled: boolean;
+      shortDescription?: string | null;
+      interface?: {
+        displayName?: string | null;
+        shortDescription?: string | null;
+      } | null;
+    }>;
+    errors: Array<{
+      path: string;
+      message: string;
+    }>;
+  }>;
+}
+
+export interface PluginListResult {
+  marketplaces: Array<{
+    name: string;
+    path: string;
+    plugins: Array<{
+      id: string;
+      name: string;
+      installed: boolean;
+      enabled: boolean;
+      source?: {
+        type: string;
+        path?: string;
+      } | null;
+      interface?: {
+        displayName?: string | null;
+        shortDescription?: string | null;
+      } | null;
+    }>;
+  }>;
+}
+
+export interface PluginInstallResult {
+  appsNeedingAuth: Array<{
+    id: string;
+    name: string;
+    description: string | null;
+    installUrl: string | null;
+  }>;
+}
+
+export interface AppListResult {
+  data: Array<{
+    id: string;
+    name: string;
+    description: string | null;
+    installUrl: string | null;
+    isAccessible: boolean;
+    isEnabled: boolean;
+    pluginDisplayNames: string[];
+  }>;
+  nextCursor?: string | null;
+}
+
+export interface McpServerStatusListResult {
+  data: Array<{
+    name: string;
+    tools: Record<string, unknown>;
+    resources: unknown[];
+    resourceTemplates: unknown[];
+    authStatus: "unsupported" | "notLoggedIn" | "bearerToken" | "oAuth";
+  }>;
+  nextCursor?: string | null;
+}
+
+export interface McpServerOauthLoginResult {
+  authorizationUrl: string;
+}
+
+export interface AccountReadResult {
+  account:
+    | {
+        type: "apiKey";
+      }
+    | {
+        type: "chatgpt";
+        email: string;
+        planType: string;
+      }
+    | null;
+  requiresOpenaiAuth: boolean;
+}
+
+export interface RateLimitSnapshotResult {
+  limitId: string | null;
+  limitName: string | null;
+  primary: {
+    usedPercent: number;
+    windowDurationMins: number | null;
+    resetsAt: number | null;
+  } | null;
+  secondary: {
+    usedPercent: number;
+    windowDurationMins: number | null;
+    resetsAt: number | null;
+  } | null;
+  credits: {
+    hasCredits: boolean;
+    unlimited: boolean;
+    balance: string | null;
+  } | null;
+  planType: string | null;
+}
+
+export interface AccountRateLimitsReadResult {
+  rateLimits: RateLimitSnapshotResult;
+  rateLimitsByLimitId: Record<string, RateLimitSnapshotResult> | null;
+}
+
 export interface ThreadResumeResult {
   thread: {
     id: string;
@@ -113,6 +249,36 @@ export interface TurnStartResult {
   turn: {
     id: string;
     status: string;
+  };
+}
+
+export interface ReviewStartResult {
+  reviewThreadId: string;
+  turn: {
+    id: string;
+    status: string;
+  };
+}
+
+export interface ThreadForkResult {
+  thread: {
+    id: string;
+    turns: Array<{
+      id: string;
+      status: string;
+    }>;
+  };
+  cwd: string;
+  model: string;
+}
+
+export interface ThreadRollbackResult {
+  thread: {
+    id: string;
+    turns: Array<{
+      id: string;
+      status: string;
+    }>;
   };
 }
 
@@ -142,11 +308,15 @@ export interface ThreadReadResult {
   };
 }
 
-export function buildThreadStartParams(cwd: string): ThreadStartParams {
+export function buildThreadStartParams(options: {
+  cwd: string;
+  model?: string;
+}): ThreadStartParams {
   return {
-    cwd,
+    cwd: options.cwd,
     approvalPolicy: "never",
-    sandbox: "danger-full-access"
+    sandbox: "danger-full-access",
+    ...(options.model ? { model: options.model } : {})
   };
 }
 
@@ -155,6 +325,7 @@ export function buildTurnStartParams(options: {
   cwd: string;
   text?: string;
   input?: UserInput[];
+  model?: string;
 }): TurnStartParams {
   const input = options.input ?? (options.text ? [{ type: "text", text: options.text }] : []);
   return {
@@ -162,7 +333,8 @@ export function buildTurnStartParams(options: {
     cwd: options.cwd,
     approvalPolicy: "never",
     sandboxPolicy: { type: "dangerFullAccess" },
-    input
+    input,
+    ...(options.model ? { model: options.model } : {})
   };
 }
 
@@ -243,8 +415,11 @@ export class CodexAppServerClient {
     this.initialized = true;
   }
 
-  async startThread(cwd: string): Promise<ThreadStartResult> {
-    return await this.request<ThreadStartResult>("thread/start", buildThreadStartParams(cwd));
+  async startThread(options: {
+    cwd: string;
+    model?: string;
+  }): Promise<ThreadStartResult> {
+    return await this.request<ThreadStartResult>("thread/start", buildThreadStartParams(options));
   }
 
   async resumeThread(threadId: string): Promise<ThreadResumeResult> {
@@ -295,13 +470,180 @@ export class CodexAppServerClient {
     });
   }
 
+  async listModels(options?: {
+    cursor?: string;
+    includeHidden?: boolean;
+    limit?: number;
+  }): Promise<ModelListResult> {
+    const params: Record<string, unknown> = {};
+    if (options?.cursor !== undefined) {
+      params.cursor = options.cursor;
+    }
+    if (options?.includeHidden !== undefined) {
+      params.includeHidden = options.includeHidden;
+    }
+    if (options?.limit !== undefined) {
+      params.limit = options.limit;
+    }
+
+    return await this.request<ModelListResult>("model/list", params);
+  }
+
+  async listSkills(options: {
+    cwds: string[];
+    forceReload?: boolean;
+  }): Promise<SkillListResult> {
+    return await this.request<SkillListResult>("skills/list", {
+      cwds: options.cwds,
+      forceReload: options.forceReload ?? false
+    });
+  }
+
+  async listPlugins(options?: {
+    cwds?: string[];
+  }): Promise<PluginListResult> {
+    return await this.request<PluginListResult>("plugin/list", {
+      ...(options?.cwds ? { cwds: options.cwds } : {})
+    });
+  }
+
+  async installPlugin(options: {
+    marketplacePath: string;
+    pluginName: string;
+  }): Promise<PluginInstallResult> {
+    return await this.request<PluginInstallResult>("plugin/install", options);
+  }
+
+  async uninstallPlugin(pluginId: string): Promise<void> {
+    await this.request("plugin/uninstall", { pluginId });
+  }
+
+  async listApps(options?: {
+    cursor?: string;
+    limit?: number;
+    threadId?: string;
+    forceRefetch?: boolean;
+  }): Promise<AppListResult> {
+    const params: Record<string, unknown> = {};
+    if (options?.cursor !== undefined) {
+      params.cursor = options.cursor;
+    }
+    if (options?.limit !== undefined) {
+      params.limit = options.limit;
+    }
+    if (options?.threadId !== undefined) {
+      params.threadId = options.threadId;
+    }
+    if (options?.forceRefetch !== undefined) {
+      params.forceRefetch = options.forceRefetch;
+    }
+
+    return await this.request<AppListResult>("app/list", params);
+  }
+
+  async listMcpServerStatuses(options?: {
+    cursor?: string;
+    limit?: number;
+  }): Promise<McpServerStatusListResult> {
+    const params: Record<string, unknown> = {};
+    if (options?.cursor !== undefined) {
+      params.cursor = options.cursor;
+    }
+    if (options?.limit !== undefined) {
+      params.limit = options.limit;
+    }
+
+    return await this.request<McpServerStatusListResult>("mcpServerStatus/list", params);
+  }
+
+  async reloadMcpServers(): Promise<void> {
+    await this.request("config/mcpServer/reload", undefined);
+  }
+
+  async loginToMcpServer(options: {
+    name: string;
+    scopes?: string[];
+  }): Promise<McpServerOauthLoginResult> {
+    return await this.request<McpServerOauthLoginResult>("mcpServer/oauth/login", {
+      name: options.name,
+      ...(options.scopes ? { scopes: options.scopes } : {})
+    });
+  }
+
+  async readAccount(refreshToken = false): Promise<AccountReadResult> {
+    return await this.request<AccountReadResult>("account/read", {
+      refreshToken
+    });
+  }
+
+  async readAccountRateLimits(): Promise<AccountRateLimitsReadResult> {
+    return await this.request<AccountRateLimitsReadResult>("account/rateLimits/read", undefined);
+  }
+
+  async cleanBackgroundTerminals(threadId: string): Promise<void> {
+    await this.request("thread/backgroundTerminals/clean", { threadId });
+  }
+
   async startTurn(options: {
     threadId: string;
     cwd: string;
     text?: string;
     input?: UserInput[];
+    model?: string;
   }): Promise<TurnStartResult> {
     return await this.request<TurnStartResult>("turn/start", buildTurnStartParams(options));
+  }
+
+  async reviewStart(options: {
+    threadId: string;
+    target:
+      | { type: "uncommittedChanges" }
+      | { type: "baseBranch"; branch: string }
+      | { type: "commit"; sha: string; title?: string | null }
+      | { type: "custom"; instructions: string };
+    delivery?: "inline" | "detached";
+  }): Promise<ReviewStartResult> {
+    return await this.request<ReviewStartResult>("review/start", {
+      threadId: options.threadId,
+      target: options.target,
+      ...(options.delivery ? { delivery: options.delivery } : {})
+    });
+  }
+
+  async forkThread(options: {
+    threadId: string;
+    model?: string;
+  }): Promise<ThreadForkResult> {
+    return await this.request<ThreadForkResult>("thread/fork", {
+      threadId: options.threadId,
+      ...(options.model ? { model: options.model } : {})
+    });
+  }
+
+  async rollbackThread(threadId: string, numTurns: number): Promise<ThreadRollbackResult> {
+    return await this.request<ThreadRollbackResult>("thread/rollback", {
+      threadId,
+      numTurns
+    });
+  }
+
+  async compactThread(threadId: string): Promise<void> {
+    await this.request("thread/compact/start", { threadId });
+  }
+
+  async setThreadName(threadId: string, name: string): Promise<void> {
+    await this.request("thread/name/set", { threadId, name });
+  }
+
+  async updateThreadMetadata(options: {
+    threadId: string;
+    gitInfo: {
+      branch?: string | null;
+      sha?: string | null;
+      originUrl?: string | null;
+    };
+  }): Promise<ThreadReadResult> {
+    return await this.request<ThreadReadResult>("thread/metadata/update", options);
   }
 
   async interruptTurn(threadId: string, turnId: string): Promise<void> {

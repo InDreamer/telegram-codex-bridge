@@ -37,7 +37,8 @@ Integration assumptions:
 - one JSON-RPC request id namespace per bridge process
 - thread id is the durable foreign key from bridge session to Codex conversation
 - Telegram may receive bridge-owned runtime cards before turn completion, but the final answer is still sent only after completion
-- v1 does not depend on approval-request surfaces
+- the bridge uses a persisted interaction broker for current server-request surfaces such as approvals, structured user input, elicitation, and blocked-turn continuation
+- the bridge now also uses stable long-tail client requests where Telegram has a clear adapted UX, including plugin/app discovery, MCP admin discovery plus reload/login-link, account diagnostics, and background-terminal cleanup
 
 ## Runtime Surface Reduction And Final-Answer Rule
 
@@ -61,6 +62,9 @@ It should:
 - keep raw `item/agentMessage/delta` traffic out of the normal Telegram chat flow
 - retain richer structured command detail for `/inspect` and the on-disk debug journal
 - write bridge-owned interaction audit records into the same per-turn debug journal when pending interactions are created or reach a terminal state
+- explicitly reject known-but-unsupported specialized server requests such as `item/tool/call` and `account/chatgptAuthTokens/refresh`, emit a compact Telegram notice when a turn is active, and record the rejection in the debug journal instead of pretending those surfaces are supported
+- reduce stable runtime-parity signals such as token usage, diff summaries, hook summaries, terminal-interaction summaries, and selected runtime notices into `/inspect` or bridge-owned notices instead of dumping raw protocol frames
+- use `serverRequest/resolved` to close matching pending interaction cards when the server resolves them independently
 - capture the final assistant message emitted before `turn/completed`
 - send the final assistant message as a separate Telegram message after turn completion
 - render the final assistant message with Telegram HTML derived from a safe Markdown subset rather than sending raw Markdown literals
@@ -130,6 +134,7 @@ Important fields:
 - `session_id`
 - `telegram_chat_id`
 - `thread_id`
+- `selected_model`
 - `display_name`
 - `project_name`
 - `project_path`
@@ -176,6 +181,17 @@ Allowed `source` values:
 - `pin`
 - `scan`
 - `last_success`
+
+### `runtime_notice`
+
+Bridge-owned deferred notices when Telegram delivery fails or when restart recovery needs a user-visible follow-up.
+
+Important fields:
+- `key`
+- `telegram_chat_id`
+- `type`
+- `message`
+- `created_at`
 
 ### `project_scan_cache`
 
@@ -284,11 +300,11 @@ Readiness / preflight rules:
 - the bridge must not enter the Telegram polling loop unless readiness is `ready` or `awaiting_authorization`
 
 If SQLite open or integrity check fails:
-1. rename the broken DB to `bridge.db.corrupt.<timestamp>`
-2. create a fresh database
-3. set readiness to `bridge_unhealthy`
-4. log the event
-5. force the user to re-establish authorization locally
+1. fail closed without replacing the database
+2. write a classified failure marker under state root
+3. log the failure with stage and classification
+4. stop bridge startup before the Telegram polling loop
+5. require manual inspection instead of destructive auto-recovery
 
 ## Session Concurrency
 

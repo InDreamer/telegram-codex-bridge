@@ -17,6 +17,11 @@ Use this document when you want:
 When this document and the live generated schema disagree:
 - trust the live generated schema
 
+Truth-source rule for this repo:
+- bridge adoption notes in this file must follow repository code first
+- exact protocol fields and method shapes must follow the live CLI/schema first
+- do not infer shipped bridge support from schema presence alone
+
 ## Fast Start
 
 Get the current truth source first:
@@ -150,7 +155,7 @@ Handshake order:
   - `turnIndex`
   - `turnId`
 - Repo status:
-  - not used today
+  - used today via `/fork`
 
 ### `thread/archive`
 
@@ -178,7 +183,7 @@ Handshake order:
   - `threadId`
   - `name`
 - Repo status:
-  - not used today
+  - used today via `/thread name`
 
 ### `thread/metadata/update`
 
@@ -187,18 +192,19 @@ Handshake order:
 - Required params:
   - `threadId`
 - High-value params:
-  - `metadata`
+  - `gitInfo`
 - Repo status:
-  - not used today
+  - used today via `/thread meta`
 
 ### `thread/rollback`
 
 - Params schema: `v2/ThreadRollbackParams.json`
 - Response schema: `v2/ThreadRollbackResponse.json`
 - Required params:
-  - inspect current schema before use
+  - `threadId`
+  - `numTurns`
 - Repo status:
-  - not used today
+  - used today via `/rollback`
 
 ### `thread/compact/start`
 
@@ -207,7 +213,7 @@ Handshake order:
 - Required params:
   - `threadId`
 - Repo status:
-  - not used today
+  - used today via `/compact`
 
 ### `thread/backgroundTerminals/clean`
 
@@ -216,7 +222,7 @@ Handshake order:
 - Required params:
   - inspect current schema before use
 - Repo status:
-  - not used today
+  - used today via `/thread clean-terminals`
 
 ### `turn/start`
 
@@ -242,6 +248,8 @@ Handshake order:
   - `mention`
 - Repo status:
   - used today
+  - current Telegram bridge input UX actively emits `text`, `localImage`, `skill`, and `mention`
+  - schema-level remote URL `image` exists, but the bridge does not expose a direct Telegram command for it today
 
 ### `turn/steer`
 
@@ -254,7 +262,7 @@ Handshake order:
 - Gotcha:
   - the precondition field is `expectedTurnId`, not `turnId`
 - Repo status:
-  - not used today
+  - used today for blocked-turn text and structured-input continuation
 
 ### `turn/interrupt`
 
@@ -275,7 +283,7 @@ Handshake order:
 - Key response fields:
   - `data`
 - Repo status:
-  - not used today
+  - used today via `/model`
 
 ### `experimentalFeature/list`
 
@@ -343,6 +351,9 @@ Account, config, and environment:
 - `externalAgentConfig/detect`
 - `externalAgentConfig/import`
 - `collaborationMode/list`
+
+Current-host note:
+- live `codex-cli 0.114.0` rejects `collaborationMode/list` unless the app-server is started with the experimental API capability, so treat collaboration-mode selection as unavailable for the current bridge
 
 MCP and related:
 - `mcpServer/oauth/login`
@@ -592,11 +603,29 @@ Used today by the bridge:
 - `thread/start`
 - `thread/resume`
 - `thread/read`
+- `thread/fork`
 - `thread/archive`
 - `thread/unarchive`
+- `thread/name/set`
+- `thread/metadata/update`
+- `thread/rollback`
+- `thread/compact/start`
+- `thread/backgroundTerminals/clean`
 - `turn/start`
 - `turn/steer`
 - `turn/interrupt`
+- `model/list`
+- `skills/list`
+- `review/start`
+- `plugin/list`
+- `plugin/install`
+- `plugin/uninstall`
+- `app/list`
+- `mcpServerStatus/list`
+- `config/mcpServer/reload`
+- `mcpServer/oauth/login`
+- `account/read`
+- `account/rateLimits/read`
 - approval and user-input request handling for:
   - `item/commandExecution/requestApproval`
   - `item/fileChange/requestApproval`
@@ -605,20 +634,42 @@ Used today by the bridge:
   - `mcpServer/elicitation/request`
   - `applyPatchApproval`
   - `execCommandApproval`
+- richer `UserInput` variants:
+  - `localImage`
+  - `skill`
+  - `mention`
+- Telegram photo uploads are adapted bridge-side into `localImage`
 - selected lifecycle and item notifications
+- selected runtime-parity notifications:
+  - `thread/tokenUsage/updated`
+  - `turn/diff/updated`
+  - `hook/started`
+  - `hook/completed`
+  - `item/commandExecution/terminalInteraction`
+  - `serverRequest/resolved`
+  - `configWarning`
+  - `deprecationNotice`
+  - `model/rerouted`
+  - `skills/changed`
+  - `thread/compacted`
 - legacy compatibility events such as `codex/event/task_complete`
 
 Not used today by the bridge, but present in current schema:
-- thread naming and other advanced thread-control APIs
 - realtime APIs
 - `command/exec`
-- review, skills, plugin, app, and MCP admin surfaces
+- `collaborationMode/list` on the current host because it requires experimental API capability
 - `item/tool/call`
 - `account/chatgptAuthTokens/refresh`
+- remote skills APIs
+- `externalAgentConfig/*`
+- `feedback/upload`
+- `fuzzyFileSearch*`
 
 Important distinction:
 - these adoption notes describe what the current bridge implementation actually uses
 - they do not describe everything the current Codex protocol supports
+- schema-level remote URL `image` is available in the protocol, but not yet surfaced as a direct Telegram command in this bridge
+- `item/tool/call` and `account/chatgptAuthTokens/refresh` remain intentionally unimplemented; the bridge now rejects them explicitly instead of pretending they map cleanly to Telegram
 
 ## LLM Gotchas
 

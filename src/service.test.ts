@@ -4740,3 +4740,1052 @@ test("blocked running turns route plain text into turn steer when no interaction
     await cleanup();
   }
 });
+
+test("model command lists models, persists the selected model, and uses it on the next turn", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+  const startThreadCalls: unknown[] = [];
+  const startTurnCalls: unknown[] = [];
+
+  try {
+    authorizeNumericChatWithSession(store, "1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        sent.push(text);
+        return createFakeTelegramMessage(1200 + sent.length, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) =>
+        createFakeTelegramMessage(messageId, text)
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      listModels: async () => ({
+        data: [
+          { id: "gpt-5", model: "gpt-5", displayName: "GPT-5", isDefault: true },
+          { id: "o3", model: "o3", displayName: "o3", isDefault: false }
+        ],
+        nextCursor: null
+      }),
+      startThread: async (payload: unknown) => {
+        startThreadCalls.push(payload);
+        return { thread: { id: "thread-model" } };
+      },
+      startTurn: async (payload: unknown) => {
+        startTurnCalls.push(payload);
+        return { turn: { id: "turn-model", status: "inProgress" } };
+      },
+      resumeThread: async () => ({ thread: { id: "thread-model", turns: [] } })
+    };
+
+    await (service as any).routeCommand("1", "model", "");
+    assert.match(sent[0] ?? "", /可用模型/u);
+    assert.match(sent[0] ?? "", /\[默认\] gpt-5 \| GPT-5/u);
+
+    await (service as any).routeCommand("1", "model", "o3");
+    assert.equal(store.getActiveSession("1")?.selectedModel, "o3");
+
+    await (service as any).handleNormalText("1", "Use the selected model");
+
+    assert.deepEqual(startThreadCalls, [{
+      cwd: "/tmp/project-one",
+      model: "o3"
+    }]);
+    assert.deepEqual(startTurnCalls, [{
+      threadId: "thread-model",
+      cwd: "/tmp/project-one",
+      text: "Use the selected model",
+      model: "o3"
+    }]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("skills command lists available skills and skill selection can queue prompt follow-up input", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+  const startTurnCalls: unknown[] = [];
+
+  try {
+    authorizeNumericChatWithSession(store, "1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        sent.push(text);
+        return createFakeTelegramMessage(1220 + sent.length, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) =>
+        createFakeTelegramMessage(messageId, text)
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      listSkills: async () => ({
+        data: [{
+          cwd: "/tmp/project-one",
+          errors: [],
+          skills: [{
+            name: "deploy",
+            path: "/skills/deploy",
+            enabled: true,
+            shortDescription: "Deploy the current project"
+          }]
+        }]
+      }),
+      startThread: async () => ({ thread: { id: "thread-skill" } }),
+      startTurn: async (payload: unknown) => {
+        startTurnCalls.push(payload);
+        return { turn: { id: "turn-skill", status: "inProgress" } };
+      },
+      resumeThread: async () => ({ thread: { id: "thread-skill", turns: [] } })
+    };
+
+    await (service as any).routeCommand("1", "skills", "");
+    assert.match(sent[0] ?? "", /当前项目可用技能/u);
+    assert.match(sent[0] ?? "", /\[启用\] deploy \| Deploy the current project/u);
+
+    await (service as any).routeCommand("1", "skill", "deploy");
+    assert.match(sent.at(-1) ?? "", /已记录skill：deploy/u);
+
+    await (service as any).handleMessage(createIncomingUserMessage(1, 1, 1301, "ship it"));
+
+    assert.deepEqual(startTurnCalls, [{
+      threadId: "thread-skill",
+      cwd: "/tmp/project-one",
+      input: [
+        { type: "skill", name: "deploy", path: "/skills/deploy" },
+        { type: "text", text: "ship it" }
+      ]
+    }]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("phase6 plugin commands list, install, and uninstall repo-scoped plugins", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+  const installCalls: unknown[] = [];
+  const uninstallCalls: string[] = [];
+
+  try {
+    authorizeNumericChatWithSession(store, "1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        sent.push(text);
+        return createFakeTelegramMessage(1600 + sent.length, text);
+      }
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      listPlugins: async () => ({
+        marketplaces: [{
+          name: "repo-market",
+          path: "/marketplaces/repo",
+          plugins: [
+            {
+              id: "repo.logs",
+              name: "logs",
+              installed: true,
+              enabled: true,
+              source: { type: "local", path: "/plugins/logs" },
+              interface: {
+                displayName: "Logs",
+                shortDescription: "Inspect runtime logs"
+              }
+            },
+            {
+              id: "repo.deploy",
+              name: "deploy",
+              installed: false,
+              enabled: false,
+              source: { type: "local", path: "/plugins/deploy" },
+              interface: {
+                displayName: "Deploy",
+                shortDescription: "Deploy the current project"
+              }
+            }
+          ]
+        }]
+      }),
+      installPlugin: async (payload: unknown) => {
+        installCalls.push(payload);
+        return {
+          appsNeedingAuth: [{
+            id: "slack",
+            name: "Slack",
+            description: "Connect Slack notifications",
+            installUrl: "https://apps.example/slack"
+          }]
+        };
+      },
+      uninstallPlugin: async (pluginId: string) => {
+        uninstallCalls.push(pluginId);
+      }
+    };
+
+    await (service as any).routeCommand("1", "plugins", "");
+    assert.match(sent[0] ?? "", /当前项目可用插件/u);
+    assert.match(sent[0] ?? "", /\[已安装\]\[启用\] repo\.logs \| Logs/u);
+    assert.match(sent[0] ?? "", /repo-market\/deploy/u);
+
+    await (service as any).routeCommand("1", "plugin", "install repo-market/deploy");
+    assert.deepEqual(installCalls, [{
+      marketplacePath: "/marketplaces/repo",
+      pluginName: "deploy"
+    }]);
+    assert.match(sent[1] ?? "", /已安装插件：deploy/u);
+    assert.match(sent[1] ?? "", /Slack/u);
+    assert.match(sent[1] ?? "", /https:\/\/apps\.example\/slack/u);
+
+    await (service as any).routeCommand("1", "plugin", "uninstall repo.logs");
+    assert.deepEqual(uninstallCalls, ["repo.logs"]);
+    assert.match(sent[2] ?? "", /已卸载插件：repo\.logs/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("phase6 apps mcp account and background-terminal commands surface admin state", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+  const cleanCalls: string[] = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.updateSessionThreadId(session.sessionId, "thread-1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        sent.push(text);
+        return createFakeTelegramMessage(1700 + sent.length, text);
+      }
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      listApps: async () => ({
+        data: [{
+          id: "app.slack",
+          name: "Slack",
+          description: "Team chat notifications",
+          logoUrl: null,
+          logoUrlDark: null,
+          distributionChannel: "plugin",
+          branding: null,
+          appMetadata: null,
+          labels: null,
+          installUrl: "https://apps.example/slack",
+          isAccessible: true,
+          isEnabled: false,
+          pluginDisplayNames: ["Deploy Plugin"]
+        }],
+        nextCursor: null
+      }),
+      listMcpServerStatuses: async () => ({
+        data: [{
+          name: "github",
+          tools: {
+            search_code: {},
+            open_pr: {}
+          },
+          resources: [],
+          resourceTemplates: [],
+          authStatus: "oAuth"
+        }],
+        nextCursor: null
+      }),
+      reloadMcpServers: async () => {},
+      loginToMcpServer: async () => ({
+        authorizationUrl: "https://auth.example/github"
+      }),
+      readAccount: async () => ({
+        account: {
+          type: "chatgpt",
+          email: "me@example.com",
+          planType: "plus"
+        },
+        requiresOpenaiAuth: false
+      }),
+      readAccountRateLimits: async () => ({
+        rateLimits: {
+          limitId: "codex",
+          limitName: "Codex",
+          primary: {
+            usedPercent: 25,
+            windowDurationMins: 60,
+            resetsAt: 1_762_000_000
+          },
+          secondary: null,
+          credits: {
+            hasCredits: true,
+            unlimited: false,
+            balance: "12.5"
+          },
+          planType: "plus"
+        },
+        rateLimitsByLimitId: null
+      }),
+      cleanBackgroundTerminals: async (threadId: string) => {
+        cleanCalls.push(threadId);
+      }
+    };
+
+    await (service as any).routeCommand("1", "apps", "");
+    assert.match(sent[0] ?? "", /当前可用 Apps/u);
+    assert.match(sent[0] ?? "", /Slack/u);
+    assert.match(sent[0] ?? "", /Deploy Plugin/u);
+
+    await (service as any).routeCommand("1", "mcp", "");
+    assert.match(sent[1] ?? "", /MCP 服务器状态/u);
+    assert.match(sent[1] ?? "", /github/u);
+    assert.match(sent[1] ?? "", /工具 2/u);
+
+    await (service as any).routeCommand("1", "mcp", "reload");
+    assert.match(sent[2] ?? "", /已重新加载 MCP 服务器配置/u);
+
+    await (service as any).routeCommand("1", "mcp", "login github");
+    assert.match(sent[3] ?? "", /https:\/\/auth\.example\/github/u);
+
+    await (service as any).routeCommand("1", "account", "");
+    assert.match(sent[4] ?? "", /当前 Codex 账号/u);
+    assert.match(sent[4] ?? "", /ChatGPT/u);
+    assert.match(sent[4] ?? "", /me@example\.com/u);
+    assert.match(sent[4] ?? "", /plus/u);
+    assert.match(sent[4] ?? "", /25%/u);
+
+    await (service as any).routeCommand("1", "thread", "clean-terminals");
+    assert.deepEqual(cleanCalls, ["thread-1"]);
+    assert.match(sent[5] ?? "", /已清理当前线程的后台终端/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("review command starts review mode and creates a dedicated review session when the server forks a thread", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+  const startThreadCalls: unknown[] = [];
+  const reviewCalls: unknown[] = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.setSessionSelectedModel(session.sessionId, "gpt-5");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        sent.push(text);
+        return createFakeTelegramMessage(1250 + sent.length, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) =>
+        createFakeTelegramMessage(messageId, text)
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      startThread: async (payload: unknown) => {
+        startThreadCalls.push(payload);
+        return { thread: { id: "thread-review-source" } };
+      },
+      reviewStart: async (payload: unknown) => {
+        reviewCalls.push(payload);
+        return {
+          reviewThreadId: "thread-review-new",
+          turn: { id: "turn-review", status: "inProgress" }
+        };
+      },
+      resumeThread: async () => ({ thread: { id: "thread-review-source", turns: [] } })
+    };
+
+    await (service as any).routeCommand("1", "review", "detached branch main");
+
+    assert.deepEqual(startThreadCalls, [{
+      cwd: "/tmp/project-one",
+      model: "gpt-5"
+    }]);
+    assert.deepEqual(reviewCalls, [{
+      threadId: "thread-review-source",
+      target: { type: "baseBranch", branch: "main" },
+      delivery: "detached"
+    }]);
+    assert.match(sent[0] ?? "", /已创建审查会话/u);
+
+    const reviewSession = store.getActiveSession("1");
+    assert.ok(reviewSession);
+    assert.notEqual(reviewSession?.sessionId, session.sessionId);
+    assert.equal(reviewSession?.threadId, "thread-review-new");
+    assert.equal(reviewSession?.selectedModel, "gpt-5");
+    assert.equal(reviewSession?.status, "running");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("fork command creates a new active session and carries over the selected model", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ text: string; parseMode?: string }> = [];
+  const forkCalls: unknown[] = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.updateSessionThreadId(session.sessionId, "thread-fork-source");
+    store.setSessionSelectedModel(session.sessionId, "gpt-5");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        sent.push({ text, parseMode: options?.parseMode });
+        return createFakeTelegramMessage(1280 + sent.length, text);
+      }
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      forkThread: async (payload: unknown) => {
+        forkCalls.push(payload);
+        return {
+          thread: {
+            id: "thread-forked",
+            turns: [{ id: "turn-forked-head", status: "completed" }]
+          },
+          model: "fallback-model"
+        };
+      }
+    };
+
+    await (service as any).routeCommand("1", "fork", "Fork Session");
+
+    assert.deepEqual(forkCalls, [{
+      threadId: "thread-fork-source",
+      model: "gpt-5"
+    }]);
+    assert.match(sent[0]?.text ?? "", /已创建分叉会话：Fork Session/u);
+
+    const forked = store.getActiveSession("1");
+    assert.ok(forked);
+    assert.notEqual(forked?.sessionId, session.sessionId);
+    assert.equal(forked?.displayName, "Fork Session");
+    assert.equal(forked?.threadId, "thread-forked");
+    assert.equal(forked?.selectedModel, "gpt-5");
+    assert.equal(forked?.lastTurnId, "turn-forked-head");
+    assert.equal(forked?.lastTurnStatus, "completed");
+
+    await (service as any).routeCommand("1", "where", "");
+
+    assert.equal(sent[1]?.parseMode, "HTML");
+    assert.match(sent[1]?.text ?? "", /<b>Codex 线程 ID：<\/b> thread-forked/u);
+    assert.match(sent[1]?.text ?? "", /<b>最近 Turn ID：<\/b> turn-forked-head/u);
+    assert.match(sent[1]?.text ?? "", /<b>上次结果：<\/b> 上次已完成/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("rollback compact and thread metadata commands call the app-server and update local session state", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+  const rollbackCalls: unknown[] = [];
+  const compactCalls: string[] = [];
+  const threadNameCalls: unknown[] = [];
+  const threadMetadataCalls: unknown[] = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.updateSessionThreadId(session.sessionId, "thread-controls");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        sent.push(text);
+        return createFakeTelegramMessage(1310 + sent.length, text);
+      }
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      rollbackThread: async (threadId: string, numTurns: number) => {
+        rollbackCalls.push({ threadId, numTurns });
+        return {
+          thread: {
+            id: threadId,
+            turns: [{ id: "turn-after-rollback", status: "completed" }]
+          }
+        };
+      },
+      compactThread: async (threadId: string) => {
+        compactCalls.push(threadId);
+      },
+      setThreadName: async (threadId: string, name: string) => {
+        threadNameCalls.push({ threadId, name });
+      },
+      updateThreadMetadata: async (payload: unknown) => {
+        threadMetadataCalls.push(payload);
+      }
+    };
+
+    await (service as any).routeCommand("1", "rollback", "2");
+    await (service as any).routeCommand("1", "compact", "");
+    await (service as any).routeCommand("1", "thread", "name Release Prep");
+    await (service as any).routeCommand("1", "thread", "meta branch=main sha=abc123 origin=https://example.com/repo.git");
+
+    assert.deepEqual(rollbackCalls, [{ threadId: "thread-controls", numTurns: 2 }]);
+    assert.deepEqual(compactCalls, ["thread-controls"]);
+    assert.deepEqual(threadNameCalls, [{ threadId: "thread-controls", name: "Release Prep" }]);
+    assert.deepEqual(threadMetadataCalls, [{
+      threadId: "thread-controls",
+      gitInfo: {
+        branch: "main",
+        sha: "abc123",
+        originUrl: "https://example.com/repo.git"
+      }
+    }]);
+    assert.equal(store.getSessionById(session.sessionId)?.displayName, "Release Prep");
+    assert.equal(store.getSessionById(session.sessionId)?.lastTurnId, "turn-after-rollback");
+    assert.equal(store.getSessionById(session.sessionId)?.lastTurnStatus, "completed");
+    assert.match(sent[0] ?? "", /已回滚最近 2 个 turn/u);
+    assert.match(sent[1] ?? "", /已请求压缩当前线程/u);
+    assert.match(sent[2] ?? "", /已更新线程名称：Release Prep/u);
+    assert.match(sent[3] ?? "", /已更新线程元数据：branch=main, sha=abc123, origin=https:\/\/example\.com\/repo\.git/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("rollback clears cached activity so inspect renders the rolled-back thread head", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ text: string; parseMode?: string }> = [];
+  let readCalls = 0;
+
+  try {
+    const session = authorizeChatWithSession(store, "chat-1");
+    store.updateSessionThreadId(session.sessionId, "thread-rollback-history");
+    store.updateSessionStatus(session.sessionId, "idle", {
+      lastTurnId: "turn-stale-cache",
+      lastTurnStatus: "completed"
+    });
+
+    const tracker = new ActivityTracker({
+      threadId: "thread-rollback-history",
+      turnId: "turn-stale-cache"
+    });
+    tracker.apply(classifyNotification("turn/started", {
+      threadId: "thread-rollback-history",
+      turnId: "turn-stale-cache"
+    }), "2026-03-10T10:00:00.000Z");
+    tracker.apply(classifyNotification("item/started", {
+      threadId: "thread-rollback-history",
+      turnId: "turn-stale-cache",
+      item: { id: "cmd-stale", type: "commandExecution", title: "echo stale" }
+    }), "2026-03-10T10:00:01.000Z");
+    tracker.apply(classifyNotification("item/commandExecution/outputDelta", {
+      threadId: "thread-rollback-history",
+      turnId: "turn-stale-cache",
+      itemId: "cmd-stale",
+      delta: "stale cached output"
+    }), "2026-03-10T10:00:02.000Z");
+    tracker.apply(classifyNotification("item/completed", {
+      threadId: "thread-rollback-history",
+      turnId: "turn-stale-cache",
+      item: { id: "cmd-stale", type: "commandExecution" }
+    }), "2026-03-10T10:00:03.000Z");
+    tracker.apply(classifyNotification("turn/completed", {
+      threadId: "thread-rollback-history",
+      turn: { id: "turn-stale-cache", status: "completed" }
+    }), "2026-03-10T10:00:04.000Z");
+    (service as any).setRecentActivity(session.sessionId, {
+      tracker,
+      debugFilePath: null,
+      statusCard: null
+    });
+
+    (service as any).appServer = {
+      isRunning: true,
+      rollbackThread: async () => ({
+        thread: {
+          id: "thread-rollback-history",
+          turns: [{ id: "turn-after-rollback", status: "completed" }]
+        }
+      }),
+      readThread: async (threadId: string, includeTurns: boolean) => {
+        readCalls += 1;
+        assert.equal(threadId, "thread-rollback-history");
+        assert.equal(includeTurns, true);
+        return {
+          thread: {
+            id: threadId,
+            turns: [
+              {
+                id: "turn-after-rollback",
+                status: "completed",
+                items: [
+                  {
+                    id: "cmd-fresh",
+                    type: "commandExecution",
+                    command: "echo fresh",
+                    cwd: "/tmp/project-one",
+                    status: "completed",
+                    exitCode: 0,
+                    durationMs: 10,
+                    aggregatedOutput: "fresh history output",
+                    commandActions: []
+                  }
+                ]
+              }
+            ]
+          }
+        };
+      }
+    };
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        sent.push({ text, parseMode: options?.parseMode });
+        return createFakeTelegramMessage(1320 + sent.length, text);
+      }
+    };
+
+    await (service as any).routeCommand("chat-1", "rollback", "1");
+    await (service as any).routeCommand("chat-1", "inspect", "");
+
+    assert.equal(readCalls, 1);
+    assert.match(sent[0]?.text ?? "", /已回滚最近 1 个 turn/u);
+    assert.equal(sent[1]?.parseMode, "HTML");
+    assert.match(sent[1]?.text ?? "", /\$ echo fresh/u);
+    assert.doesNotMatch(sent[1]?.text ?? "", /stale cached output/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("local image command sends a real localImage input with prompt text", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const projectRoot = await mkdtemp(join(tmpdir(), "ctb-local-image-test-"));
+  const startTurnCalls: unknown[] = [];
+
+  try {
+    authorizeChat(store, "chat-local-image");
+    const session = store.createSession({
+      telegramChatId: "chat-local-image",
+      projectName: "Image Project",
+      projectPath: projectRoot
+    });
+    await writeFile(join(projectRoot, "diagram.png"), "fake-png", "utf8");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) =>
+        createFakeTelegramMessage(1340 + text.length, text),
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) =>
+        createFakeTelegramMessage(messageId, text)
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      startThread: async () => ({ thread: { id: "thread-local-image" } }),
+      startTurn: async (payload: unknown) => {
+        startTurnCalls.push(payload);
+        return { turn: { id: "turn-local-image", status: "inProgress" } };
+      },
+      resumeThread: async () => ({ thread: { id: "thread-local-image", turns: [] } })
+    };
+
+    await (service as any).routeCommand("chat-local-image", "local_image", "diagram.png :: explain the image");
+
+    assert.deepEqual(startTurnCalls, [{
+      threadId: "thread-local-image",
+      cwd: projectRoot,
+      input: [
+        { type: "localImage", path: join(projectRoot, "diagram.png") },
+        { type: "text", text: "explain the image" }
+      ]
+    }]);
+    assert.equal(store.getSessionById(session.sessionId)?.status, "running");
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+    await cleanup();
+  }
+});
+
+test("mention command sends a structured mention input with the provided display name", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const startTurnCalls: unknown[] = [];
+
+  try {
+    authorizeNumericChatWithSession(store, "1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) =>
+        createFakeTelegramMessage(1370 + text.length, text),
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) =>
+        createFakeTelegramMessage(messageId, text)
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      startThread: async () => ({ thread: { id: "thread-mention" } }),
+      startTurn: async (payload: unknown) => {
+        startTurnCalls.push(payload);
+        return { turn: { id: "turn-mention", status: "inProgress" } };
+      },
+      resumeThread: async () => ({ thread: { id: "thread-mention", turns: [] } })
+    };
+
+    await (service as any).routeCommand("1", "mention", "Docs | app://docs/reference :: use this context");
+
+    assert.deepEqual(startTurnCalls, [{
+      threadId: "thread-mention",
+      cwd: "/tmp/project-one",
+      input: [
+        { type: "mention", name: "Docs", path: "app://docs/reference" },
+        { type: "text", text: "use this context" }
+      ]
+    }]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("telegram photo messages queue a local image input and keep the bot token out of turn payloads", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+  const startTurnCalls: unknown[] = [];
+
+  try {
+    authorizeNumericChatWithSession(store, "1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        sent.push(text);
+        return createFakeTelegramMessage(1400 + sent.length, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) =>
+        createFakeTelegramMessage(messageId, text),
+      getFile: async (fileId: string) => ({ file_id: fileId, file_path: `photos/${fileId}.png` }),
+      downloadFile: async (_fileId: string, outputPath: string) => {
+        await writeFile(outputPath, "fake-photo-bytes", "utf8");
+        return outputPath;
+      }
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      startThread: async () => ({ thread: { id: "thread-photo" } }),
+      startTurn: async (payload: unknown) => {
+        startTurnCalls.push(payload);
+        return { turn: { id: "turn-photo", status: "inProgress" } };
+      },
+      resumeThread: async () => ({ thread: { id: "thread-photo", turns: [] } })
+    };
+
+    await (service as any).handleMessage({
+      message_id: 1401,
+      from: {
+        id: 1,
+        is_bot: false,
+        first_name: "Tester"
+      },
+      chat: {
+        id: 1,
+        type: "private"
+      },
+      date: 0,
+      photo: [
+        { file_id: "photo-small", file_unique_id: "u1", width: 10, height: 10 },
+        { file_id: "photo-large", file_unique_id: "u2", width: 20, height: 20 }
+      ]
+    });
+
+    assert.match(sent.at(-1) ?? "", /已记录图片/u);
+
+    await (service as any).handleMessage(createIncomingUserMessage(1, 1, 1402, "describe this screenshot"));
+
+    assert.equal(startTurnCalls.length, 1);
+    const startTurnPayload = startTurnCalls[0] as {
+      threadId: string;
+      cwd: string;
+      input: Array<{ type: string; path?: string; text?: string }>;
+    };
+    assert.equal(startTurnPayload.threadId, "thread-photo");
+    assert.equal(startTurnPayload.cwd, "/tmp/project-one");
+    assert.equal(startTurnPayload.input[0]?.type, "localImage");
+    assert.match(startTurnPayload.input[0]?.path ?? "", /telegram-images\/1401-/u);
+    assert.equal(await readFile(startTurnPayload.input[0]?.path ?? "", "utf8"), "fake-photo-bytes");
+    assert.deepEqual(startTurnPayload.input[1], { type: "text", text: "describe this screenshot" });
+    assert.doesNotMatch(JSON.stringify(startTurnPayload), /test-token/u);
+    assert.doesNotMatch(JSON.stringify(startTurnPayload), /api\.telegram\.org\/file\/bot/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("telegram photo captions start a turn immediately with a local image input", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const startTurnCalls: unknown[] = [];
+
+  try {
+    authorizeNumericChatWithSession(store, "1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) =>
+        createFakeTelegramMessage(1410 + text.length, text),
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) =>
+        createFakeTelegramMessage(messageId, text),
+      getFile: async (fileId: string) => ({ file_id: fileId, file_path: `photos/${fileId}.jpg` }),
+      downloadFile: async (_fileId: string, outputPath: string) => {
+        await writeFile(outputPath, "caption-photo", "utf8");
+        return outputPath;
+      }
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      startThread: async () => ({ thread: { id: "thread-photo-caption" } }),
+      startTurn: async (payload: unknown) => {
+        startTurnCalls.push(payload);
+        return { turn: { id: "turn-photo-caption", status: "inProgress" } };
+      },
+      resumeThread: async () => ({ thread: { id: "thread-photo-caption", turns: [] } })
+    };
+
+    await (service as any).handleMessage({
+      message_id: 1411,
+      from: {
+        id: 1,
+        is_bot: false,
+        first_name: "Tester"
+      },
+      chat: {
+        id: 1,
+        type: "private"
+      },
+      date: 0,
+      caption: "summarize this screenshot",
+      photo: [
+        { file_id: "photo-caption", file_unique_id: "u3", width: 20, height: 20 }
+      ]
+    });
+
+    assert.equal(startTurnCalls.length, 1);
+    const startTurnPayload = startTurnCalls[0] as {
+      input: Array<{ type: string; path?: string; text?: string }>;
+    };
+    assert.equal(startTurnPayload.input[0]?.type, "localImage");
+    assert.match(startTurnPayload.input[0]?.path ?? "", /telegram-images\/1411-/u);
+    assert.deepEqual(startTurnPayload.input[1], { type: "text", text: "summarize this screenshot" });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("telegram photo download failures do not leave a pending rich input behind", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+  const startTurnCalls: unknown[] = [];
+
+  try {
+    authorizeNumericChatWithSession(store, "1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        sent.push(text);
+        return createFakeTelegramMessage(1420 + sent.length, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) =>
+        createFakeTelegramMessage(messageId, text),
+      getFile: async (fileId: string) => ({ file_id: fileId, file_path: `photos/${fileId}.png` }),
+      downloadFile: async () => {
+        throw new Error("download failed");
+      }
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      startThread: async () => ({ thread: { id: "thread-photo-fail" } }),
+      startTurn: async (payload: unknown) => {
+        startTurnCalls.push(payload);
+        return { turn: { id: "turn-photo-fail", status: "inProgress" } };
+      },
+      resumeThread: async () => ({ thread: { id: "thread-photo-fail", turns: [] } })
+    };
+
+    await (service as any).handleMessage({
+      message_id: 1421,
+      from: {
+        id: 1,
+        is_bot: false,
+        first_name: "Tester"
+      },
+      chat: {
+        id: 1,
+        type: "private"
+      },
+      date: 0,
+      photo: [
+        { file_id: "photo-fail", file_unique_id: "u4", width: 20, height: 20 }
+      ]
+    });
+
+    assert.equal(startTurnCalls.length, 0);
+    assert.equal((service as any).pendingRichInputComposers.size, 0);
+    assert.match(sent.at(-1) ?? "", /暂时无法读取这张图片/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("serverRequest resolved notification matches string request ids and closes pending cards", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const edited: Array<{ messageId: number; text: string }> = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.setActiveSession("1", session.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => createFakeTelegramMessage(1450 + text.length, text),
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) => {
+        edited.push({ messageId, text });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      answerCallbackQuery: async () => {}
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      startThread: async () => ({ thread: { id: "thread-resolved" } }),
+      startTurn: async () => ({ turn: { id: "turn-resolved", status: "inProgress" } }),
+      resumeThread: async () => ({ thread: { id: "thread-resolved", turns: [] } }),
+      respondToServerRequest: async () => {},
+      respondToServerRequestError: async () => {}
+    };
+
+    await (service as any).startRealTurn("1", session, "Need approval");
+    await (service as any).handleAppServerServerRequest({
+      id: "server-resolved",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        threadId: "thread-resolved",
+        turnId: "turn-resolved",
+        itemId: "item-resolved",
+        command: "pnpm test",
+        availableDecisions: ["accept", "decline"]
+      }
+    });
+
+    const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
+    assert.ok(pending);
+
+    await (service as any).handleAppServerNotification("serverRequest/resolved", {
+      threadId: "thread-resolved",
+      requestId: "server-resolved"
+    });
+
+    assert.equal(store.getPendingInteraction(pending?.interactionId ?? "", "1")?.state, "answered");
+    assert.match(edited.at(-1)?.text ?? "", /已处理/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("phase6 known unsupported server requests are rejected with explicit telegram notices", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+  const requestErrors: Array<{ id: string; code: number; message: string }> = [];
+
+  try {
+    authorizeNumericChatWithSession(store, "1");
+    const session = createSession(store, "1");
+    store.setActiveSession("1", session.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        sent.push(text);
+        return createFakeTelegramMessage(1800 + sent.length, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) =>
+        createFakeTelegramMessage(messageId, text)
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      startThread: async () => ({ thread: { id: "thread-phase6" } }),
+      startTurn: async () => ({ turn: { id: "turn-phase6", status: "inProgress" } }),
+      resumeThread: async () => ({ thread: { id: "thread-phase6", turns: [] } }),
+      respondToServerRequest: async () => {},
+      respondToServerRequestError: async (id: string, code: number, message: string) => {
+        requestErrors.push({ id, code, message });
+      }
+    };
+
+    await (service as any).startRealTurn("1", session, "Need phase6 surface");
+
+    await (service as any).handleAppServerServerRequest({
+      id: "tool-call-1",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-phase6",
+        turnId: "turn-phase6",
+        callId: "call-1",
+        tool: "view_image",
+        arguments: {
+          path: "/tmp/diagram.png"
+        }
+      }
+    });
+
+    await (service as any).handleAppServerServerRequest({
+      id: "auth-refresh-1",
+      method: "account/chatgptAuthTokens/refresh",
+      params: {
+        reason: "unauthorized",
+        previousAccountId: "acct-1"
+      }
+    });
+
+    assert.equal(store.listPendingInteractionsByChat("1").length, 0);
+    assert.deepEqual(requestErrors, [
+      {
+        id: "tool-call-1",
+        code: -32601,
+        message: "Dynamic tool calls are not supported by the Telegram bridge"
+      },
+      {
+        id: "auth-refresh-1",
+        code: -32601,
+        message: "ChatGPT auth token refresh is not supported by the Telegram bridge"
+      }
+    ]);
+    assert.match(sent.join("\n"), /动态工具调用/u);
+    assert.match(sent.join("\n"), /ChatGPT 登录令牌刷新/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("global runtime notices persist as app-server notices when Telegram delivery fails", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+
+  try {
+    authorizeNumericChatWithSession(store, "1");
+
+    (service as any).api = {
+      sendMessage: async () => {
+        throw new Error("telegram unavailable");
+      }
+    };
+
+    await (service as any).handleAppServerNotification("configWarning", {
+      summary: "bad config",
+      details: "line 4"
+    });
+
+    const notices = store.listRuntimeNotices("1");
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0]?.type, "app_server_notice");
+    assert.match(notices[0]?.message ?? "", /Codex 配置警告：bad config/u);
+    assert.match(notices[0]?.message ?? "", /line 4/u);
+  } finally {
+    await cleanup();
+  }
+});

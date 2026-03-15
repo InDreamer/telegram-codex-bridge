@@ -1100,3 +1100,145 @@ test("markRunningSessionsFailedWithNotices also fails unresolved pending interac
     await cleanup();
   }
 });
+
+test("selected model persists on sessions and survives reopen", async () => {
+  const { paths, store, cleanup } = await openStore();
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-model",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one",
+      selectedModel: "gpt-5"
+    });
+
+    assert.equal(store.getSessionById(session.sessionId)?.selectedModel, "gpt-5");
+
+    store.setSessionSelectedModel(session.sessionId, "gpt-5-codex");
+    assert.equal(store.getSessionById(session.sessionId)?.selectedModel, "gpt-5-codex");
+
+    store.close();
+    const reopened = await BridgeStateStore.open(paths, testLogger);
+    try {
+      assert.equal(reopened.getSessionById(session.sessionId)?.selectedModel, "gpt-5-codex");
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+test("createSession persists seeded thread and last-turn metadata", async () => {
+  const { paths, store, cleanup } = await openStore();
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-seeded-session",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one",
+      threadId: "thread-seeded",
+      lastTurnId: "turn-seeded",
+      lastTurnStatus: "completed"
+    });
+
+    assert.equal(store.getSessionById(session.sessionId)?.threadId, "thread-seeded");
+    assert.equal(store.getSessionById(session.sessionId)?.lastTurnId, "turn-seeded");
+    assert.equal(store.getSessionById(session.sessionId)?.lastTurnStatus, "completed");
+
+    store.close();
+    const reopened = await BridgeStateStore.open(paths, testLogger);
+    try {
+      assert.equal(reopened.getSessionById(session.sessionId)?.threadId, "thread-seeded");
+      assert.equal(reopened.getSessionById(session.sessionId)?.lastTurnId, "turn-seeded");
+      assert.equal(reopened.getSessionById(session.sessionId)?.lastTurnStatus, "completed");
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+test("open migrates legacy session rows to include selected model column", async () => {
+  const { paths, cleanup } = await seedLegacyStore();
+  let store: BridgeStateStore | null = null;
+
+  try {
+    store = await BridgeStateStore.open(paths, testLogger);
+    assert.equal(store.getSessionById("session-legacy")?.selectedModel, null);
+
+    store.setSessionSelectedModel("session-legacy", "gpt-5");
+    assert.equal(store.getSessionById("session-legacy")?.selectedModel, "gpt-5");
+  } finally {
+    store?.close();
+    await cleanup();
+  }
+});
+
+test("listPendingInteractionsByRequest returns only unresolved rows for the exact stored request id", async () => {
+  const { store, cleanup } = await openStore();
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-request-id",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    store.updateSessionThreadId(session.sessionId, "thread-request-id");
+
+    const pending = store.createPendingInteraction({
+      telegramChatId: "chat-request-id",
+      sessionId: session.sessionId,
+      threadId: "thread-request-id",
+      turnId: "turn-1",
+      requestId: "\"server-1\"",
+      requestMethod: "item/commandExecution/requestApproval",
+      interactionKind: "approval",
+      promptJson: JSON.stringify({ kind: "approval", title: "Need approval" })
+    });
+    const awaitingText = store.createPendingInteraction({
+      telegramChatId: "chat-request-id",
+      sessionId: session.sessionId,
+      threadId: "thread-request-id",
+      turnId: "turn-1",
+      requestId: "\"server-1\"",
+      requestMethod: "item/tool/requestUserInput",
+      interactionKind: "questionnaire",
+      promptJson: JSON.stringify({ kind: "questionnaire", title: "Need input" })
+    });
+    const answered = store.createPendingInteraction({
+      telegramChatId: "chat-request-id",
+      sessionId: session.sessionId,
+      threadId: "thread-request-id",
+      turnId: "turn-1",
+      requestId: "\"server-1\"",
+      requestMethod: "item/tool/requestUserInput",
+      interactionKind: "questionnaire",
+      promptJson: JSON.stringify({ kind: "questionnaire", title: "Answered" })
+    });
+    const otherRequest = store.createPendingInteraction({
+      telegramChatId: "chat-request-id",
+      sessionId: session.sessionId,
+      threadId: "thread-request-id",
+      turnId: "turn-1",
+      requestId: "\"server-2\"",
+      requestMethod: "item/tool/requestUserInput",
+      interactionKind: "questionnaire",
+      promptJson: JSON.stringify({ kind: "questionnaire", title: "Other request" })
+    });
+
+    store.markPendingInteractionAwaitingText(awaitingText.interactionId, JSON.stringify({ awaitingQuestionId: "q1" }));
+    store.markPendingInteractionAnswered(answered.interactionId, JSON.stringify({ decision: "accept" }));
+
+    const matching = store.listPendingInteractionsByRequest("thread-request-id", "\"server-1\"");
+    assert.deepEqual(
+      matching.map((row) => row.interactionId).sort(),
+      [awaitingText.interactionId, pending.interactionId].sort()
+    );
+    assert.equal(matching.some((row) => row.interactionId === answered.interactionId), false);
+    assert.equal(matching.some((row) => row.interactionId === otherRequest.interactionId), false);
+  } finally {
+    await cleanup();
+  }
+});
