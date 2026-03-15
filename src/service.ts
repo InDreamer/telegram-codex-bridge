@@ -71,6 +71,8 @@ import {
   type NormalizedQuestionnaireInteraction
 } from "./interactions/normalize.js";
 import { buildProjectPicker, refreshProjectPicker, validateManualProjectPath } from "./project/discovery.js";
+import { asRecord, asRecord as getRecord, getString, getNumber, getArray } from "./util/untyped.js";
+import { normalizeWhitespace, truncateText, normalizeAndTruncate, normalizeNullableText } from "./util/text.js";
 
 interface RecentActivityEntry {
   tracker: ActivityTracker;
@@ -969,42 +971,8 @@ export class BridgeService {
       return;
     }
 
-    if (interaction.kind === "approval") {
-      const resolved = buildInteractionDecisionResolution(interaction, "cancel");
-      const success = resolved
-        ? await this.submitPendingInteractionResponse(chatId, row, interaction, resolved.payload, {
-          state: "canceled",
-          errorReason: "user_canceled_interaction"
-        })
-        : await this.failPendingInteraction(chatId, row, interaction, "user_canceled_interaction", {
-          state: "canceled"
-        });
-      await this.safeAnswerCallbackQuery(callbackQueryId, success ? undefined : "暂时无法处理这个交互，请稍后再试。");
-      return;
-    }
-
-    if (interaction.kind === "elicitation") {
-      const success = await this.submitPendingInteractionResponse(chatId, row, interaction, { action: "cancel" }, {
-        state: "canceled",
-        errorReason: "user_canceled_interaction"
-      });
-      await this.safeAnswerCallbackQuery(callbackQueryId, success ? undefined : "暂时无法处理这个交互，请稍后再试。");
-      return;
-    }
-
-    if (interaction.kind === "questionnaire" && interaction.submission === "mcp_elicitation_form") {
-      const success = await this.submitPendingInteractionResponse(chatId, row, interaction, { action: "cancel" }, {
-        state: "canceled",
-        errorReason: "user_canceled_interaction"
-      });
-      await this.safeAnswerCallbackQuery(callbackQueryId, success ? undefined : "暂时无法处理这个交互，请稍后再试。");
-      return;
-    }
-
-    const failed = await this.failPendingInteraction(chatId, row, interaction, "user_canceled_interaction", {
-      state: "canceled"
-    });
-    await this.safeAnswerCallbackQuery(callbackQueryId, failed ? undefined : "暂时无法处理这个交互，请稍后再试。");
+    const success = await this.cancelInteraction(chatId, row, interaction, "user_canceled_interaction");
+    await this.safeAnswerCallbackQuery(callbackQueryId, success ? undefined : "暂时无法处理这个交互，请稍后再试。");
   }
 
   private async cancelPendingTextInteraction(chatId: string, interactionId: string): Promise<void> {
@@ -1026,33 +994,37 @@ export class BridgeService {
       return;
     }
 
+    await this.cancelInteraction(chatId, row, interaction, "user_canceled_text_mode");
+  }
+
+  private async cancelInteraction(
+    chatId: string,
+    row: PendingInteractionRow,
+    interaction: NormalizedInteraction,
+    errorReason: string
+  ): Promise<boolean> {
     if (interaction.kind === "approval") {
       const resolved = buildInteractionDecisionResolution(interaction, "cancel");
-      if (resolved) {
-        await this.submitPendingInteractionResponse(chatId, row, interaction, resolved.payload, {
+      return resolved
+        ? await this.submitPendingInteractionResponse(chatId, row, interaction, resolved.payload, {
           state: "canceled",
-          errorReason: "user_canceled_text_mode"
-        });
-      } else {
-        await this.failPendingInteraction(chatId, row, interaction, "user_canceled_text_mode", {
+          errorReason
+        })
+        : await this.failPendingInteraction(chatId, row, interaction, errorReason, {
           state: "canceled"
         });
-      }
-    } else if (interaction.kind === "elicitation") {
-      await this.submitPendingInteractionResponse(chatId, row, interaction, { action: "cancel" }, {
+    }
+
+    if (interaction.kind === "elicitation" || (interaction.kind === "questionnaire" && interaction.submission === "mcp_elicitation_form")) {
+      return await this.submitPendingInteractionResponse(chatId, row, interaction, { action: "cancel" }, {
         state: "canceled",
-        errorReason: "user_canceled_text_mode"
-      });
-    } else if (interaction.kind === "questionnaire" && interaction.submission === "mcp_elicitation_form") {
-      await this.submitPendingInteractionResponse(chatId, row, interaction, { action: "cancel" }, {
-        state: "canceled",
-        errorReason: "user_canceled_text_mode"
-      });
-    } else {
-      await this.failPendingInteraction(chatId, row, interaction, "user_canceled_text_mode", {
-        state: "canceled"
+        errorReason
       });
     }
+
+    return await this.failPendingInteraction(chatId, row, interaction, errorReason, {
+      state: "canceled"
+    });
   }
 
   private async handlePendingInteractionTextAnswer(
@@ -2911,68 +2883,41 @@ export class BridgeService {
     }
   }
 
-  private async fetchAllModels(): Promise<NonNullable<Awaited<ReturnType<CodexAppServerClient["listModels"]>>["data"]>> {
-    const models: NonNullable<Awaited<ReturnType<CodexAppServerClient["listModels"]>>["data"]> = [];
+  private async fetchAllPaginated<T>(
+    fetcher: (options: { cursor?: string; limit: number }) => Promise<{ data: T[]; nextCursor?: string | null } | undefined> | undefined
+  ): Promise<T[]> {
+    const results: T[] = [];
     let cursor: string | null = null;
 
     do {
-      const page: Awaited<ReturnType<CodexAppServerClient["listModels"]>> | undefined = await this.appServer?.listModels({
+      const page = await fetcher({
         ...(cursor ? { cursor } : {}),
-        includeHidden: false,
         limit: 50
       });
       if (!page) {
         break;
       }
-      models.push(...page.data);
+      results.push(...page.data);
       cursor = page.nextCursor ?? null;
     } while (cursor);
 
-    return models;
+    return results;
+  }
+
+  private async fetchAllModels(): Promise<NonNullable<Awaited<ReturnType<CodexAppServerClient["listModels"]>>["data"]>> {
+    return this.fetchAllPaginated((opts) => this.appServer?.listModels({ ...opts, includeHidden: false }));
   }
 
   private async fetchAllApps(
     threadId?: string
   ): Promise<NonNullable<Awaited<ReturnType<CodexAppServerClient["listApps"]>>["data"]>> {
-    const apps: NonNullable<Awaited<ReturnType<CodexAppServerClient["listApps"]>>["data"]> = [];
-    let cursor: string | null = null;
-
-    do {
-      const page: Awaited<ReturnType<CodexAppServerClient["listApps"]>> | undefined = await this.appServer?.listApps({
-        ...(cursor ? { cursor } : {}),
-        ...(threadId ? { threadId } : {}),
-        limit: 50
-      });
-      if (!page) {
-        break;
-      }
-      apps.push(...page.data);
-      cursor = page.nextCursor ?? null;
-    } while (cursor);
-
-    return apps;
+    return this.fetchAllPaginated((opts) => this.appServer?.listApps({ ...opts, ...(threadId ? { threadId } : {}) }));
   }
 
   private async fetchAllMcpServerStatuses(): Promise<
     NonNullable<Awaited<ReturnType<CodexAppServerClient["listMcpServerStatuses"]>>["data"]>
   > {
-    const statuses: NonNullable<Awaited<ReturnType<CodexAppServerClient["listMcpServerStatuses"]>>["data"]> = [];
-    let cursor: string | null = null;
-
-    do {
-      const page: Awaited<ReturnType<CodexAppServerClient["listMcpServerStatuses"]>> | undefined =
-        await this.appServer?.listMcpServerStatuses({
-          ...(cursor ? { cursor } : {}),
-          limit: 50
-        });
-      if (!page) {
-        break;
-      }
-      statuses.push(...page.data);
-      cursor = page.nextCursor ?? null;
-    } while (cursor);
-
-    return statuses;
+    return this.fetchAllPaginated((opts) => this.appServer?.listMcpServerStatuses(opts));
   }
 
   private async handleInterrupt(chatId: string): Promise<void> {
@@ -3240,7 +3185,7 @@ export class BridgeService {
       });
 
       if (interaction) {
-        await this.renderStoredPendingInteraction(row.telegramChatId, this.store.getPendingInteraction(row.interactionId) ?? row, interaction);
+        await this.renderStoredPendingInteraction(row.telegramChatId, { ...row, state: "answered", responseJson, resolvedAt: new Date().toISOString() }, interaction);
       }
     }
   }
@@ -3404,14 +3349,12 @@ export class BridgeService {
     }
 
     const cacheDir = await this.ensureTelegramImageCacheDir();
-    try {
-      await this.pruneTelegramImageCache(cacheDir);
-    } catch (error) {
+    void this.pruneTelegramImageCache(cacheDir).catch(async (error) => {
       await this.logger.warn("telegram image cache cleanup failed", {
         cacheDir,
         error: `${error}`
       });
-    }
+    });
 
     const targetPath = join(cacheDir, `${messageId}-${randomUUID()}${getTelegramImageExtension(filePath)}`);
     return await this.api.downloadFile(fileId, targetPath, file);
@@ -3662,35 +3605,52 @@ export class BridgeService {
       return false;
     }
 
-    let changed = false;
-    for (const agent of agentEntries) {
+    const readThread = appServer.readThread.bind(appServer);
+
+    const candidates = agentEntries.filter((agent) => {
       if (agent.labelSource === "nickname") {
-        continue;
+        return false;
       }
-
       const backfillState = activeTurn.subagentIdentityBackfillStates.get(agent.threadId);
-      if (backfillState === "pending" || backfillState === "resolved" || backfillState === "exhausted") {
-        continue;
-      }
+      return backfillState !== "pending" && backfillState !== "resolved" && backfillState !== "exhausted";
+    });
 
+    if (candidates.length === 0) {
+      return false;
+    }
+
+    for (const agent of candidates) {
       activeTurn.subagentIdentityBackfillStates.set(agent.threadId, "pending");
-      await this.logger.info("subagent identity backfill requested", {
-        sessionId: activeTurn.sessionId,
-        chatId: activeTurn.chatId,
-        threadId: activeTurn.threadId,
-        turnId: activeTurn.turnId,
-        subagentThreadId: agent.threadId
-      });
+    }
 
-      try {
-        const result = await appServer.readThread(agent.threadId, false) as {
+    const fetchResults = await Promise.allSettled(
+      candidates.map(async (agent) => {
+        await this.logger.info("subagent identity backfill requested", {
+          sessionId: activeTurn.sessionId,
+          chatId: activeTurn.chatId,
+          threadId: activeTurn.threadId,
+          turnId: activeTurn.turnId,
+          subagentThreadId: agent.threadId
+        });
+        const result = await readThread(agent.threadId, false) as {
           thread?: {
             agentNickname?: string | null;
             agentRole?: string | null;
             name?: string | null;
           };
         };
-        const thread = result.thread;
+        return { agent, thread: result.thread ?? null };
+      })
+    );
+
+    let changed = false;
+    for (const entry of fetchResults) {
+      if (entry.status === "rejected") {
+        continue;
+      }
+      const { agent, thread } = entry.value;
+
+      try {
         const applied = thread
           ? activeTurn.tracker.applyResolvedSubagentIdentity(agent.threadId, {
             agentNickname: getString(thread, "agentNickname"),
@@ -3701,7 +3661,7 @@ export class BridgeService {
         await this.logSubagentIdentityEvents(activeTurn, activeTurn.tracker.drainSubagentIdentityEvents());
 
         const resolvedLabel = activeTurn.tracker.getInspectSnapshot().agentSnapshot
-          .find((entry) => entry.threadId === agent.threadId);
+          .find((e) => e.threadId === agent.threadId);
 
         if (applied && resolvedLabel && resolvedLabel.labelSource !== "fallback") {
           changed = true;
@@ -3736,12 +3696,21 @@ export class BridgeService {
           subagentThreadId: agent.threadId,
           error: `${error}`
         });
-        await this.logger.info("subagent identity backfill exhausted", {
+      }
+    }
+
+    // Handle fetch-level failures for agents whose promises rejected.
+    for (const [index, entry] of fetchResults.entries()) {
+      if (entry.status === "rejected") {
+        const agent = candidates[index]!;
+        activeTurn.subagentIdentityBackfillStates.set(agent.threadId, "exhausted");
+        await this.logger.warn("subagent identity backfill failed", {
           sessionId: activeTurn.sessionId,
           chatId: activeTurn.chatId,
           threadId: activeTurn.threadId,
           turnId: activeTurn.turnId,
-          subagentThreadId: agent.threadId
+          subagentThreadId: agent.threadId,
+          error: `${entry.reason}`
         });
       }
     }
@@ -4870,20 +4839,11 @@ function summarizeActivityStatus(status: ActivityStatus): Record<string, unknown
 }
 
 function summarizeTextPreview(text: string, limit = 160): string {
-  const normalized = text.replace(/\s+/gu, " ").trim();
-  if (normalized.length <= limit) {
-    return normalized;
-  }
-  return `${normalized.slice(0, limit)}...`;
+  return normalizeAndTruncate(text, limit, "...") ?? "";
 }
 
 function truncatePlainText(text: string, limit: number): string {
-  const normalized = text.replace(/\s+/gu, " ").trim();
-  if (normalized.length <= limit) {
-    return normalized;
-  }
-
-  return `${normalized.slice(0, limit)}...`;
+  return normalizeAndTruncate(text, limit, "...") ?? "";
 }
 
 function splitStructuredInputCommand(args: string): { value: string; prompt: string | null } {
@@ -6136,13 +6096,6 @@ function buildInteractionDecisionResolution(
   }
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  return value as Record<string, unknown>;
-}
-
 function parseJsonRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value === "string") {
     try {
@@ -6216,8 +6169,7 @@ function buildPendingInteractionOnlyInspectSnapshot(
 }
 
 function cleanRuntimeErrorMessage(message: string | null | undefined): string {
-  const normalized = `${message ?? "unknown error"}`.replace(/\s+/gu, " ").trim();
-  return normalized.length > 0 ? normalized.slice(0, 240) : "unknown error";
+  return normalizeAndTruncate(`${message ?? "unknown error"}`, 240) ?? "unknown error";
 }
 
 async function extractFinalAnswerFromHistory(
@@ -6300,18 +6252,7 @@ function shouldRetryInspectFromHistory(activeSession: SessionRow, snapshot: Insp
 }
 
 function truncateHistoryText(value: string | null): string | null {
-  if (!value) {
-    return null;
-  }
-
-  const normalized = value.replace(/\s+/gu, " ").trim();
-  if (normalized.length === 0) {
-    return null;
-  }
-
-  return normalized.length <= HISTORY_TEXT_LIMIT
-    ? normalized
-    : `${normalized.slice(0, HISTORY_TEXT_LIMIT)}…`;
+  return normalizeAndTruncate(value, HISTORY_TEXT_LIMIT);
 }
 
 function pushHistorySummary(target: string[], value: string): void {
@@ -6357,30 +6298,6 @@ function formatHistoryCommandState(status: string | null): string {
     default:
       return "Unknown";
   }
-}
-
-function getRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-
-  return value as Record<string, unknown>;
-}
-
-function getString(value: unknown, key: string): string | null {
-  const record = getRecord(value);
-  const candidate = record?.[key];
-  return typeof candidate === "string" ? candidate : null;
-}
-
-function getNumber(value: unknown, key: string): number | null {
-  const record = getRecord(value);
-  const candidate = record?.[key];
-  return typeof candidate === "number" ? candidate : null;
-}
-
-function getArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
 }
 
 function buildInspectPlainTextFallback(html: string): string {

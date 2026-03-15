@@ -1,3 +1,5 @@
+import { asRecord, getString, getBoolean, getArray, getNullableArray, getStringArray, getRequiredString } from "../util/untyped.js";
+
 export const SKIP_QUESTION_OPTION_VALUE = "__skip__";
 
 type ApprovalDecisionKind =
@@ -724,49 +726,6 @@ function extractMultiSelectValues(record: Record<string, unknown>): string[] {
   return getArray(items, "anyOf")
     .map((entry) => getRequiredString(asRecord(entry), "const"))
     .filter((value): value is string => value !== null);
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  return value as Record<string, unknown>;
-}
-
-function getRequiredString(record: Record<string, unknown> | null, key: string): string | null {
-  const value = getString(record, key);
-  return value && value.trim().length > 0 ? value : null;
-}
-
-function getString(record: Record<string, unknown> | null, key: string): string | null {
-  const value = record?.[key];
-  return typeof value === "string" ? value : null;
-}
-
-function getBoolean(record: Record<string, unknown> | null, key: string): boolean {
-  return record?.[key] === true;
-}
-
-function getArray(record: Record<string, unknown> | null, key: string): unknown[] {
-  const value = record?.[key];
-  return Array.isArray(value) ? value : [];
-}
-
-function getNullableArray(record: Record<string, unknown> | null, key: string): unknown[] | null {
-  const value = record?.[key];
-  if (value === null || value === undefined) {
-    return null;
-  }
-  return Array.isArray(value) ? value : null;
-}
-
-function getStringArray(record: Record<string, unknown> | null, key: string): string[] {
-  const value = record?.[key];
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.filter((entry): entry is string => typeof entry === "string");
 }
 
 function summarizeLegacyFileChanges(record: Record<string, unknown> | null): string | null {

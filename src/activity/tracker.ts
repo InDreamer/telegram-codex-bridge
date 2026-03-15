@@ -14,6 +14,8 @@ import type {
   TokenUsageSnapshot,
   TurnStatus
 } from "./types.js";
+import { normalizeWhitespace, truncateText, normalizeNullableText } from "../util/text.js";
+import { isBlockedProgress, BLOCKED_PROGRESS_APPROVAL, BLOCKED_PROGRESS_USER_INPUT } from "../util/blocked-progress.js";
 
 const DEFAULT_TIMELINE_LIMIT = 100;
 const SUMMARY_LIMIT = 5;
@@ -215,9 +217,9 @@ export class ActivityTracker {
           this.setHighValueEvent("blocked", `Blocked: ${blockedReason ?? "thread blocked"}`);
           this.pushStatusUpdate(
             blockedReason === "waitingOnApproval"
-              ? "Waiting for approval"
+              ? BLOCKED_PROGRESS_APPROVAL
               : blockedReason === "waitingOnUserInput"
-                ? "Waiting for user input"
+                ? BLOCKED_PROGRESS_USER_INPUT
                 : "Thread blocked"
           );
           this.pushStreamBlock({
@@ -295,7 +297,7 @@ export class ActivityTracker {
         const summary = `${completedLabel} completed`;
         this.pushTransition(receivedAt, "item", summary);
         if (completedItemType === "agentMessage" && notification.itemPhase === "commentary") {
-          const commentaryText = normalizeCommentaryText(notification.itemText);
+          const commentaryText = normalizeNullableText(notification.itemText);
           if (commentaryText) {
             this.pushUniqueSummary(this.completedCommentary, commentaryText);
           }
@@ -640,10 +642,10 @@ export class ActivityTracker {
 
   private deriveActiveStatusLine(): string | null {
     if (this.state.threadBlockedReason === "waitingOnApproval") {
-      return "Waiting for approval";
+      return BLOCKED_PROGRESS_APPROVAL;
     }
     if (this.state.threadBlockedReason === "waitingOnUserInput") {
-      return "Waiting for user input";
+      return BLOCKED_PROGRESS_USER_INPUT;
     }
     if (this.state.activeItemLabel) {
       return this.state.activeItemLabel;
@@ -717,8 +719,8 @@ export class ActivityTracker {
         }
         if (blockedReason) {
           subagent.latestOperationalProgress = blockedReason === "waitingOnApproval"
-            ? "Waiting for approval"
-            : "Waiting for user input";
+            ? BLOCKED_PROGRESS_APPROVAL
+            : BLOCKED_PROGRESS_USER_INPUT;
         }
         subagent.lastActivityAt = receivedAt;
         return;
@@ -741,7 +743,7 @@ export class ActivityTracker {
         this.syncCollabAgentStates(notification.collabAgentStates);
         const completedItemType = mapActiveItemType(notification.itemType);
         if (completedItemType === "agentMessage" && notification.itemPhase === "commentary") {
-          const commentaryText = normalizeCommentaryText(notification.itemText);
+          const commentaryText = normalizeNullableText(notification.itemText);
           if (commentaryText) {
             subagent.latestCommentary = commentaryText;
           }
@@ -923,20 +925,20 @@ export class ActivityTracker {
   } {
     if (subagent.agentNickname) {
       return {
-        text: truncateSubagentDisplayText(subagent.agentNickname, SUBAGENT_LABEL_DISPLAY_LIMIT),
+        text: truncateText(subagent.agentNickname, SUBAGENT_LABEL_DISPLAY_LIMIT),
         source: "nickname"
       };
     }
 
     if (subagent.threadName) {
       return {
-        text: truncateSubagentDisplayText(subagent.threadName, SUBAGENT_LABEL_DISPLAY_LIMIT),
+        text: truncateText(subagent.threadName, SUBAGENT_LABEL_DISPLAY_LIMIT),
         source: "threadName"
       };
     }
 
     return {
-      text: truncateSubagentDisplayText(subagent.fallbackLabel, SUBAGENT_LABEL_DISPLAY_LIMIT),
+      text: truncateText(subagent.fallbackLabel, SUBAGENT_LABEL_DISPLAY_LIMIT),
       source: "fallback"
     };
   }
@@ -1156,11 +1158,20 @@ function summarizeUnifiedDiff(diff: string | null): string | null {
     return null;
   }
 
-  const files = diff.split(/\n(?=diff --git )/u).filter((chunk) => chunk.includes("diff --git "));
-  const additions = (diff.match(/^\+/gmu) ?? []).length;
-  const deletions = (diff.match(/^-/gmu) ?? []).length;
+  let fileCount = 0;
+  let additions = 0;
+  let deletions = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      fileCount++;
+    } else if (line.startsWith("+")) {
+      additions++;
+    } else if (line.startsWith("-")) {
+      deletions++;
+    }
+  }
   const summaryParts = [
-    files.length > 0 ? `${files.length} 个文件` : null,
+    fileCount > 0 ? `${fileCount} 个文件` : null,
     additions > 0 ? `+${additions}` : null,
     deletions > 0 ? `-${deletions}` : null
   ].filter((value): value is string => Boolean(value));
@@ -1242,10 +1253,6 @@ function mapCompletionStatus(status: string): TurnStatus {
     default:
       return "unknown";
   }
-}
-
-function isBlockedProgress(progress: string | null): boolean {
-  return progress === "Waiting for approval" || progress === "Waiting for user input";
 }
 
 function mapActiveItemType(itemType: string | null): ActiveItemType | null {
@@ -1330,10 +1337,7 @@ function isTerminalStatus(status: TurnStatus): boolean {
 }
 
 function cleanSummary(value: string): string {
-  return value
-    .replace(/\s+/gu, " ")
-    .trim()
-    .slice(0, 240);
+  return normalizeWhitespace(value).slice(0, 240);
 }
 
 function summarizeCommandOutput(text: string): { command: string; detail: string | null } {
@@ -1381,35 +1385,17 @@ function summarizePlanEntries(entries: string[]): string | null {
   return cleanSummary(activeEntry ?? entries.at(-1) ?? entries[0] ?? "");
 }
 
-function normalizeCommentaryText(text: string | null): string | null {
-  if (!text) {
-    return null;
-  }
-
-  const normalized = text.replace(/\s+/gu, " ").trim();
-  return normalized.length > 0 ? normalized : null;
-}
-
-function normalizeSubagentIdentityText(text: string | null): string | null {
-  if (!text) {
-    return null;
-  }
-
-  const normalized = text.replace(/\s+/gu, " ").trim();
-  return normalized.length > 0 ? normalized : null;
-}
-
 function normalizeSubagentIdentity(identity: SubagentIdentityUpdate): SubagentIdentityUpdate {
   const normalized: SubagentIdentityUpdate = {};
 
   if (identity.agentNickname !== undefined) {
-    normalized.agentNickname = normalizeSubagentIdentityText(identity.agentNickname);
+    normalized.agentNickname = normalizeNullableText(identity.agentNickname);
   }
   if (identity.agentRole !== undefined) {
-    normalized.agentRole = normalizeSubagentIdentityText(identity.agentRole);
+    normalized.agentRole = normalizeNullableText(identity.agentRole);
   }
   if (identity.threadName !== undefined) {
-    normalized.threadName = normalizeSubagentIdentityText(identity.threadName);
+    normalized.threadName = normalizeNullableText(identity.threadName);
   }
 
   return normalized;
@@ -1425,14 +1411,14 @@ function getIdentityEventLabel(identity: SubagentIdentityUpdate): {
 } | null {
   if (identity.agentNickname) {
     return {
-      text: truncateSubagentDisplayText(identity.agentNickname, SUBAGENT_LABEL_DISPLAY_LIMIT),
+      text: truncateText(identity.agentNickname, SUBAGENT_LABEL_DISPLAY_LIMIT),
       source: "nickname"
     };
   }
 
   if (identity.threadName) {
     return {
-      text: truncateSubagentDisplayText(identity.threadName, SUBAGENT_LABEL_DISPLAY_LIMIT),
+      text: truncateText(identity.threadName, SUBAGENT_LABEL_DISPLAY_LIMIT),
       source: "threadName"
     };
   }
@@ -1458,14 +1444,6 @@ function mergeSubagentIdentityValue(
   }
 
   return { value: nextValue, changed: true };
-}
-
-function truncateSubagentDisplayText(text: string, limit: number): string {
-  if (text.length <= limit) {
-    return text;
-  }
-
-  return `${text.slice(0, limit)}…`;
 }
 
 function computeDurationSec(startIso: string, endIso: string): number | null {

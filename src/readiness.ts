@@ -11,6 +11,7 @@ import { commandExists, runCommand, type CommandResult } from "./process.js";
 import type { BridgeConfig } from "./config.js";
 import type { BridgeStateStore } from "./state/store.js";
 import type { ReadinessDetails, ReadinessSnapshot } from "./types.js";
+import { normalizeWhitespace } from "./util/text.js";
 
 const NODE_ENGINE_FALLBACK = ">=25.0.0";
 const MIN_CODEX_VERSION = [0, 114, 0] as const;
@@ -119,7 +120,7 @@ function buildSnapshot(
 }
 
 function normalizeIssue(message: string): string {
-  return message.trim().replace(/\s+/gu, " ");
+  return normalizeWhitespace(message);
 }
 
 function finalizeFailure(

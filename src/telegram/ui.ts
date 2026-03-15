@@ -7,6 +7,8 @@ import type {
 } from "../types.js";
 import type { ActivityStatus, CollabAgentStateSnapshot, InspectSnapshot, StreamBlock, StreamSnapshot } from "../activity/types.js";
 import type { TelegramInlineKeyboardMarkup } from "./api.js";
+import { truncateText } from "../util/text.js";
+import { BLOCKED_PROGRESS_APPROVAL, BLOCKED_PROGRESS_USER_INPUT } from "../util/blocked-progress.js";
 
 interface RuntimeCardContext {
   sessionName?: string | null;
@@ -469,14 +471,14 @@ export function buildRuntimeStatusCard(
 
   if (options.progressText) {
     lines.push("<b>Progress:</b>");
-    lines.push(renderInlineMarkdown(truncateRuntimeCardText(options.progressText, 240)));
+    lines.push(renderInlineMarkdown(truncateText(options.progressText, 240)));
   }
 
   if (options.planExpanded && options.planEntries && options.planEntries.length > 0) {
     lines.push("", "<b>Current Plan:</b>");
 
     for (const [index, entry] of options.planEntries.slice(0, 10).entries()) {
-      lines.push(`${index + 1}. ${renderInlineMarkdown(truncateRuntimeCardText(entry, 200))}`);
+      lines.push(`${index + 1}. ${renderInlineMarkdown(truncateText(entry, 200))}`);
     }
 
     if (options.planEntries.length > 10) {
@@ -544,10 +546,10 @@ export function buildRuntimeErrorCard(
 ): string {
   const lines: string[] = [formatHtmlHeading("Error")];
   pushHtmlRuntimeCardContext(lines, options);
-  lines.push(formatHtmlField("Title:", truncateRuntimeCardText(options.title, 200)));
+  lines.push(formatHtmlField("Title:", truncateText(options.title, 200)));
 
   if (options.detail) {
-    lines.push(formatHtmlField("Detail:", truncateRuntimeCardText(options.detail, 240)));
+    lines.push(formatHtmlField("Detail:", truncateText(options.detail, 240)));
   }
 
   return lines.join("\n");
@@ -895,21 +897,13 @@ function pushHtmlRuntimeCardContext(lines: string[], context: RuntimeCardContext
   }
 }
 
-function truncateRuntimeCardText(text: string, limit: number): string {
-  if (text.length <= limit) {
-    return text;
-  }
-
-  return `${text.slice(0, limit)}…`;
-}
-
 function buildCollapsedPlanButtonLabel(entries: string[]): string {
   const currentEntry = selectCurrentPlanEntry(entries);
   if (!currentEntry) {
     return "查看当前计划";
   }
 
-  return `当前计划：${truncateRuntimeCardText(stripPlanEntryStatus(currentEntry), 40)}`;
+  return `当前计划：${truncateText(stripPlanEntryStatus(currentEntry), 40)}`;
 }
 
 function buildCollapsedAgentButtonLabel(entries: CollabAgentStateSnapshot[]): string {
@@ -922,7 +916,7 @@ function renderAgentRuntimeLine(entry: CollabAgentStateSnapshot, index: number):
     return prefix;
   }
 
-  return `${prefix}: ${renderInlineMarkdown(truncateRuntimeCardText(entry.progress, 160))}`;
+  return `${prefix}: ${renderInlineMarkdown(truncateText(entry.progress, 160))}`;
 }
 
 function selectCurrentPlanEntry(entries: string[]): string | null {
@@ -966,11 +960,11 @@ function buildDetailedRuntimeCommandLines(
   lines.push(`${detailPrefix}${formatHtmlField("状态：", formatInspectCommandState(command.state))}`);
 
   if (command.latestSummary) {
-    lines.push(`${detailPrefix}${formatHtmlField("结果：", truncateRuntimeCardText(command.latestSummary, 220))}`);
+    lines.push(`${detailPrefix}${formatHtmlField("结果：", truncateText(command.latestSummary, 220))}`);
   }
 
   if (command.cwd) {
-    lines.push(`${detailPrefix}${formatHtmlField("目录：", truncateRuntimeCardText(command.cwd, 220))}`);
+    lines.push(`${detailPrefix}${formatHtmlField("目录：", truncateText(command.cwd, 220))}`);
   }
 
   if (typeof command.exitCode === "number") {
@@ -1045,10 +1039,10 @@ export function summarizePendingInteractionState(state: PendingInteractionState)
 function formatRuntimeCommandText(commandText: string): string {
   const trimmed = commandText.trim();
   if (trimmed.startsWith("$")) {
-    return truncateRuntimeCardText(trimmed, 220);
+    return truncateText(trimmed, 220);
   }
 
-  return truncateRuntimeCardText(`$ ${trimmed}`, 220);
+  return truncateText(`$ ${trimmed}`, 220);
 }
 
 function formatSessionState(session: SessionRow): string {
@@ -1285,11 +1279,11 @@ function formatBlockedReason(reason: ActivityStatus["threadBlockedReason"]): str
 
 function describeCurrentStep(status: ActivityStatus): string {
   if (status.threadBlockedReason === "waitingOnApproval") {
-    return "Waiting for approval";
+    return BLOCKED_PROGRESS_APPROVAL;
   }
 
   if (status.threadBlockedReason === "waitingOnUserInput") {
-    return "Waiting for user input";
+    return BLOCKED_PROGRESS_USER_INPUT;
   }
 
   switch (status.activeItemType) {
@@ -2233,11 +2227,4 @@ export function buildStreamStatusFooter(statusLine: string | null): string {
     return "";
   }
   return `\n<b>▸</b> ${escapeHtml(truncateText(statusLine, STREAM_BLOCK_TEXT_LIMIT))}`;
-}
-
-function truncateText(text: string, limit: number): string {
-  if (text.length <= limit) {
-    return text;
-  }
-  return `${text.slice(0, limit)}…`;
 }

@@ -1868,11 +1868,24 @@ export class BridgeStateStore {
         options.errorReason ?? null
       );
 
-    const saved = this.getPendingInteraction(interactionId, options.telegramChatId);
-    if (!saved) {
-      throw new Error(`persisted pending interaction missing after save: ${interactionId}`);
-    }
-    return saved;
+    return {
+      interactionId,
+      telegramChatId: options.telegramChatId,
+      sessionId: options.sessionId,
+      threadId: options.threadId,
+      turnId: options.turnId,
+      requestId: options.requestId,
+      requestMethod: options.requestMethod,
+      interactionKind: options.interactionKind,
+      state: options.state ?? "pending",
+      promptJson: options.promptJson,
+      responseJson: options.responseJson ?? null,
+      telegramMessageId: options.telegramMessageId ?? null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      resolvedAt: null,
+      errorReason: options.errorReason ?? null
+    } as PendingInteractionRow;
   }
 
   getPendingInteraction(interactionId: string, telegramChatId?: string): PendingInteractionRow | null {

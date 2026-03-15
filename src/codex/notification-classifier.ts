@@ -1,3 +1,4 @@
+import { getObject, getString, getNumber, getNumberString, getStringArray } from "../util/untyped.js";
 import type {
   AgentMessageDeltaNotification,
   CommandOutputNotification,
@@ -527,38 +528,4 @@ function getThreadStatusActiveFlags(params: unknown): string[] {
     getObject(directStatus)?.activeFlags ??
     getObject(threadStatus)?.activeFlags
   );
-}
-
-function getObject(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-
-  return value as Record<string, unknown>;
-}
-
-function getString(value: unknown, key: string): string | null {
-  const objectValue = getObject(value);
-  const candidate = objectValue?.[key];
-  return typeof candidate === "string" ? candidate : null;
-}
-
-function getNumberString(value: unknown, key: string): string | null {
-  const objectValue = getObject(value);
-  const candidate = objectValue?.[key];
-  return typeof candidate === "number" ? `${candidate}` : null;
-}
-
-function getNumber(value: unknown, key: string): number | null {
-  const objectValue = getObject(value);
-  const candidate = objectValue?.[key];
-  return typeof candidate === "number" ? candidate : null;
-}
-
-function getStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.filter((entry): entry is string => typeof entry === "string");
 }
