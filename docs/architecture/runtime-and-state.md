@@ -65,6 +65,8 @@ It should:
 - explicitly reject known-but-unsupported specialized server requests such as `item/tool/call` and `account/chatgptAuthTokens/refresh`, emit a compact Telegram notice when a turn is active, and record the rejection in the debug journal instead of pretending those surfaces are supported
 - reduce stable runtime-parity signals such as token usage, diff summaries, hook summaries, terminal-interaction summaries, and selected runtime notices into `/inspect` or bridge-owned notices instead of dumping raw protocol frames
 - use `serverRequest/resolved` to close matching pending interaction cards when the server resolves them independently
+- when the active root turn reaches a terminal state, expire every unresolved interaction for that Telegram session, including subagent-thread requests
+- if the app-server child exits mid-turn, fail every unresolved interaction for that Telegram session and clear any pending free-text interaction mode before reconnecting
 - capture the final assistant message emitted before `turn/completed`
 - send the final assistant message as a separate Telegram message after turn completion
 - render the final assistant message with Telegram HTML derived from a safe Markdown subset rather than sending raw Markdown literals
@@ -275,9 +277,10 @@ Allowed `state` values:
 - `failed`
 
 Behavior notes:
-- `request_id` is stored as a string so JSON-RPC numeric and string ids can round-trip safely
+- `request_id` is stored as serialized JSON-RPC id text so numeric and string ids round-trip exactly
 - `/inspect` only shows unresolved pending interactions, which means `pending` and `awaiting_text`
 - `canceled` is reserved for explicit user cancellation, not timeout or bridge failure cleanup
+- terminal turn cleanup is session-scoped, not root-thread-scoped, so subagent interactions do not survive after the parent turn ends
 
 ## Recovery Model
 

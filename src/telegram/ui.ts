@@ -37,10 +37,18 @@ export type ParsedCallbackData =
   | { kind: "final_open"; answerId: string }
   | { kind: "final_close"; answerId: string }
   | { kind: "final_page"; answerId: string; page: number }
-  | { kind: "interaction_decision"; interactionId: string; decisionKey: string }
-  | { kind: "interaction_question"; interactionId: string; questionId: string; optionIndex: number }
-  | { kind: "interaction_text"; interactionId: string; questionId: string }
+  | { kind: "interaction_decision"; interactionId: string; decisionKey: string | null; decisionIndex: number | null }
+  | {
+      kind: "interaction_question";
+      interactionId: string;
+      questionId: string | null;
+      questionIndex: number | null;
+      optionIndex: number;
+    }
+  | { kind: "interaction_text"; interactionId: string; questionId: string | null; questionIndex: number | null }
   | { kind: "interaction_cancel"; interactionId: string };
+
+const TELEGRAM_CALLBACK_DATA_LIMIT_BYTES = 64;
 
 export function parseCommand(text: string): { name: string; args: string } | null {
   const trimmed = text.trim();
@@ -112,35 +120,127 @@ export function encodeFinalAnswerPageCallback(answerId: string, page: number): s
   return `v1:final:page:${answerId}:${page}`;
 }
 
-export function encodeInteractionDecisionCallback(interactionId: string, decisionKey: string): string {
-  return `v3:ix:decision:${interactionId}:${decisionKey}`;
+function encodeInteractionToken(interactionId: string): string {
+  return Buffer.from(interactionId, "utf8").toString("base64url");
 }
 
-export function encodeInteractionQuestionCallback(
-  interactionId: string,
-  questionId: string,
-  optionIndex: number
-): string {
-  return `v3:ix:question:${interactionId}:${questionId}:${optionIndex}`;
+function decodeInteractionToken(token: string): string | null {
+  try {
+    const interactionId = Buffer.from(token, "base64url").toString("utf8");
+    return interactionId.length > 0 ? interactionId : null;
+  } catch {
+    return null;
+  }
 }
 
-export function encodeInteractionTextCallback(interactionId: string, questionId: string): string {
-  return `v3:ix:text:${interactionId}:${questionId}`;
+function encodeInteractionIndex(index: number): string {
+  if (!Number.isSafeInteger(index) || index < 0) {
+    throw new Error(`interaction callback index must be a non-negative safe integer: ${index}`);
+  }
+
+  return index.toString(36);
+}
+
+function decodeInteractionIndex(value: string): number | null {
+  if (!/^[0-9a-z]+$/iu.test(value)) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(value, 36);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function ensureTelegramCallbackDataLimit(data: string): string {
+  if (Buffer.byteLength(data, "utf8") > TELEGRAM_CALLBACK_DATA_LIMIT_BYTES) {
+    throw new Error(`Telegram callback_data exceeds ${TELEGRAM_CALLBACK_DATA_LIMIT_BYTES} bytes: ${data}`);
+  }
+
+  return data;
+}
+
+export function encodeInteractionDecisionCallback(interactionId: string, decisionIndex: number): string {
+  return ensureTelegramCallbackDataLimit(
+    `v3:ix:d:${encodeInteractionToken(interactionId)}:${encodeInteractionIndex(decisionIndex)}`
+  );
+}
+
+export function encodeInteractionQuestionCallback(interactionId: string, questionIndex: number, optionIndex: number): string {
+  return ensureTelegramCallbackDataLimit(
+    `v3:ix:q:${encodeInteractionToken(interactionId)}:${encodeInteractionIndex(questionIndex)}:${encodeInteractionIndex(optionIndex)}`
+  );
+}
+
+export function encodeInteractionTextCallback(interactionId: string, questionIndex: number): string {
+  return ensureTelegramCallbackDataLimit(
+    `v3:ix:t:${encodeInteractionToken(interactionId)}:${encodeInteractionIndex(questionIndex)}`
+  );
 }
 
 export function encodeInteractionCancelCallback(interactionId: string): string {
-  return `v3:ix:cancel:${interactionId}`;
+  return ensureTelegramCallbackDataLimit(`v3:ix:c:${encodeInteractionToken(interactionId)}`);
 }
 
 export function parseCallbackData(data: string): ParsedCallbackData | null {
   const parts = data.split(":");
   if (parts[0] !== "v1") {
     if (parts[0] === "v3" && parts[1] === "ix") {
+      if (parts[2] === "d" && parts[3] && parts[4]) {
+        const interactionId = decodeInteractionToken(parts[3]);
+        const decisionIndex = decodeInteractionIndex(parts[4]);
+        if (interactionId && decisionIndex !== null) {
+          return {
+            kind: "interaction_decision",
+            interactionId,
+            decisionKey: null,
+            decisionIndex
+          };
+        }
+      }
+
+      if (parts[2] === "q" && parts[3] && parts[4] && parts[5]) {
+        const interactionId = decodeInteractionToken(parts[3]);
+        const questionIndex = decodeInteractionIndex(parts[4]);
+        const optionIndex = decodeInteractionIndex(parts[5]);
+        if (interactionId && questionIndex !== null && optionIndex !== null) {
+          return {
+            kind: "interaction_question",
+            interactionId,
+            questionId: null,
+            questionIndex,
+            optionIndex
+          };
+        }
+      }
+
+      if (parts[2] === "t" && parts[3] && parts[4]) {
+        const interactionId = decodeInteractionToken(parts[3]);
+        const questionIndex = decodeInteractionIndex(parts[4]);
+        if (interactionId && questionIndex !== null) {
+          return {
+            kind: "interaction_text",
+            interactionId,
+            questionId: null,
+            questionIndex
+          };
+        }
+      }
+
+      if (parts[2] === "c" && parts[3]) {
+        const interactionId = decodeInteractionToken(parts[3]);
+        if (interactionId) {
+          return {
+            kind: "interaction_cancel",
+            interactionId
+          };
+        }
+      }
+
       if (parts[2] === "decision" && parts[3] && parts[4]) {
         return {
           kind: "interaction_decision",
           interactionId: parts[3],
-          decisionKey: parts[4]
+          decisionKey: parts[4],
+          decisionIndex: null
         };
       }
 
@@ -151,6 +251,7 @@ export function parseCallbackData(data: string): ParsedCallbackData | null {
             kind: "interaction_question",
             interactionId: parts[3],
             questionId: parts[4],
+            questionIndex: null,
             optionIndex
           };
         }
@@ -160,7 +261,8 @@ export function parseCallbackData(data: string): ParsedCallbackData | null {
         return {
           kind: "interaction_text",
           interactionId: parts[3],
-          questionId: parts[4]
+          questionId: parts[4],
+          questionIndex: null
         };
       }
 
@@ -577,9 +679,9 @@ export function buildInteractionApprovalCard(options: {
     lines.push(formatHtmlField("说明：", options.detail));
   }
 
-  const actionRow = options.actions.map((action) => ({
+  const actionRow = options.actions.map((action, index) => ({
     text: action.text,
-    callback_data: encodeInteractionDecisionCallback(options.interactionId, action.decisionKey)
+    callback_data: encodeInteractionDecisionCallback(options.interactionId, index)
   }));
 
   return {
@@ -625,7 +727,7 @@ export function buildInteractionQuestionCard(options: {
       text: lines.join("\n"),
       replyMarkup: {
         inline_keyboard: [
-          [{ text: "发送文字回答", callback_data: encodeInteractionTextCallback(options.interactionId, options.questionId) }],
+          [{ text: "发送文字回答", callback_data: encodeInteractionTextCallback(options.interactionId, options.questionIndex - 1) }],
           [{ text: "取消本次交互", callback_data: encodeInteractionCancelCallback(options.interactionId) }]
         ]
       }
@@ -638,7 +740,7 @@ export function buildInteractionQuestionCard(options: {
 
   const optionButtons = options.options.map((option, index) => ({
     text: option.label,
-    callback_data: encodeInteractionQuestionCallback(options.interactionId, options.questionId, index)
+    callback_data: encodeInteractionQuestionCallback(options.interactionId, options.questionIndex - 1, index)
   }));
   const rows: TelegramInlineKeyboardMarkup["inline_keyboard"] = chunkButtons(optionButtons, 2);
 
@@ -646,7 +748,7 @@ export function buildInteractionQuestionCard(options: {
     rows.push([
       {
         text: "其他",
-        callback_data: encodeInteractionTextCallback(options.interactionId, options.questionId)
+        callback_data: encodeInteractionTextCallback(options.interactionId, options.questionIndex - 1)
       }
     ]);
   }

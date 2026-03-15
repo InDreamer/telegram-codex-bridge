@@ -123,7 +123,7 @@ test("classifies runtime parity notifications with structured summaries", () => 
   if (resolved.kind !== "server_request_resolved") {
     throw new Error("expected server request resolved notification");
   }
-  assert.equal(resolved.requestId, "7");
+  assert.equal(resolved.requestId, 7);
 
   const warning = classifyNotification("configWarning", {
     summary: "bad config",

@@ -2109,6 +2109,23 @@ export class BridgeStateStore {
       .run(timestamp, timestamp, reason, interactionId);
   }
 
+  markPendingInteractionExpired(interactionId: string, reason: string): void {
+    const timestamp = nowIso();
+    this.db
+      .prepare(
+        `
+          UPDATE pending_interaction
+          SET
+            state = 'expired',
+            updated_at = ?,
+            resolved_at = COALESCE(resolved_at, ?),
+            error_reason = COALESCE(error_reason, ?)
+          WHERE interaction_id = ?
+        `
+      )
+      .run(timestamp, timestamp, reason, interactionId);
+  }
+
   expirePendingInteractionsForTurn(threadId: string, turnId: string, reason: string): number {
     const timestamp = nowIso();
     const info = this.db

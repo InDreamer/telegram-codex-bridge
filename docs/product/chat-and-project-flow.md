@@ -411,13 +411,16 @@ Versioned callback formats:
 - `v1:final:open:{answer_id}`
 - `v1:final:close:{answer_id}`
 - `v1:final:page:{answer_id}:{page}`
-- `v3:ix:decision:{interaction_id}:{decision_key}`
-- `v3:ix:question:{interaction_id}:{question_id}:{option_index}`
-- `v3:ix:text:{interaction_id}:{question_id}`
-- `v3:ix:cancel:{interaction_id}`
+- `v3:ix:d:{interaction_token}:{decision_index}`
+- `v3:ix:q:{interaction_token}:{question_index}:{option_index}`
+- `v3:ix:t:{interaction_token}:{question_index}`
+- `v3:ix:c:{interaction_token}`
 
 Rules:
 - `project_key` is a stable short hash of the project path, never the raw path
+- `interaction_token` is a bridge-owned compact token for the persisted interaction id, not a raw protocol id
+- decision and question selectors are compact bridge-local indexes, not raw `decision_key` or `question_id` values
+- interaction callback payloads must stay within Telegram's 64-byte `callback_data` limit
 - duplicate clicks must be idempotent and return `这个操作已处理。`
 - stale callbacks must return `这个按钮已过期，请重新操作。`
 - session switching and pinning are text commands (`/use <n>` and `/pin`), not callback actions
@@ -467,8 +470,9 @@ While a turn is running:
 - reply with `当前项目仍在执行，请等待完成或发送 /interrupt。`
 
 Blocked-turn continuation and rich input rules:
-- if the active turn is blocked on user input and no interaction is already waiting for free-text answer mode, plain text becomes `turn/steer`
-- the same blocked-turn continuation path also accepts queued `skill`, `localImage`, `mention`, and Telegram photo inputs
+- if the active turn is blocked and the session has no unresolved interaction cards, plain text becomes `turn/steer`
+- if any interaction card for the active session is still `pending` or `awaiting_text`, the user must answer or cancel that interaction before unrelated text or rich input can continue the turn
+- the same blocked-turn continuation path also accepts queued `skill`, `localImage`, `mention`, and Telegram photo inputs, but only after unresolved interaction cards are cleared
 - Telegram photo messages are downloaded bridge-side and submitted as `localImage` input
 - a photo caption is used as the prompt immediately; without a caption, the bridge queues the image and waits for the next text message
 - Telegram remains an adapted UX, not a raw terminal surface

@@ -1,5 +1,6 @@
 import type { FailureReason } from "../types.js";
 import type { PendingInteractionSummary } from "../types.js";
+import type { JsonRpcRequestId } from "../codex/app-server.js";
 
 export type StreamBlockKind =
   | "commentary"
@@ -291,7 +292,7 @@ export interface TerminalInteractionNotification extends ClassifiedNotificationB
 
 export interface ServerRequestResolvedNotification extends ClassifiedNotificationBase {
   kind: "server_request_resolved";
-  requestId: string | null;
+  requestId: JsonRpcRequestId | null;
 }
 
 export interface ConfigWarningNotification extends ClassifiedNotificationBase {

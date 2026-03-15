@@ -1051,6 +1051,52 @@ test("pending interactions persist canceled terminal state and exclude it from u
   }
 });
 
+test("markPendingInteractionExpired persists expired terminal state", async () => {
+  const { paths, store, cleanup } = await openStore();
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    store.updateSessionThreadId(session.sessionId, "thread-1");
+
+    const created = store.createPendingInteraction({
+      telegramChatId: "chat-1",
+      sessionId: session.sessionId,
+      threadId: "thread-1",
+      turnId: "turn-expired",
+      requestId: JSON.stringify("server-expired"),
+      requestMethod: "item/tool/requestUserInput",
+      interactionKind: "questionnaire",
+      promptJson: JSON.stringify({
+        kind: "questionnaire",
+        title: "Need answers"
+      })
+    });
+
+    store.markPendingInteractionExpired(created.interactionId, "turn_completed");
+
+    const expired = store.getPendingInteraction(created.interactionId, "chat-1");
+    assert.equal(expired?.state, "expired");
+    assert.equal(expired?.errorReason, "turn_completed");
+    assert.ok(expired?.resolvedAt);
+
+    store.close();
+    const reopened = await BridgeStateStore.open(paths, testLogger);
+    try {
+      const reloaded = reopened.getPendingInteraction(created.interactionId, "chat-1");
+      assert.equal(reloaded?.state, "expired");
+      assert.equal(reloaded?.errorReason, "turn_completed");
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
 test("markRunningSessionsFailedWithNotices also fails unresolved pending interactions", async () => {
   const { store, cleanup } = await openStore();
 

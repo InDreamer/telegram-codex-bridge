@@ -47,6 +47,7 @@ import {
   renderFinalAnswerHtmlChunks,
   parseCallbackData,
   parseCommand,
+  type ParsedCallbackData,
   type RuntimeCommandEntryView
 } from "./telegram/ui.js";
 import { buildHelpText, syncTelegramCommands } from "./telegram/commands.js";
@@ -212,6 +213,7 @@ type PendingInteractionTerminalState = Extract<
 type InteractionResolutionSource =
   | "server_response_success"
   | "server_response_error"
+  | "app_server_exit"
   | "telegram_delivery_failed"
   | "turn_expired"
   | "bridge_restart_recovery";
@@ -540,8 +542,7 @@ export class BridgeService {
           callbackQuery.id,
           chatId,
           message.message_id,
-          parsed.interactionId,
-          parsed.decisionKey
+          parsed
         );
         return;
       }
@@ -551,9 +552,7 @@ export class BridgeService {
           callbackQuery.id,
           chatId,
           message.message_id,
-          parsed.interactionId,
-          parsed.questionId,
-          parsed.optionIndex
+          parsed
         );
         return;
       }
@@ -563,8 +562,7 @@ export class BridgeService {
           callbackQuery.id,
           chatId,
           message.message_id,
-          parsed.interactionId,
-          parsed.questionId
+          parsed
         );
         return;
       }
@@ -794,10 +792,14 @@ export class BridgeService {
     callbackQueryId: string,
     chatId: string,
     messageId: number,
-    interactionId: string,
-    decisionKey: string
+    parsed: Extract<ParsedCallbackData, { kind: "interaction_decision" }>
   ): Promise<void> {
-    const loaded = await this.loadPendingInteractionForCallback(chatId, messageId, interactionId, callbackQueryId);
+    const loaded = await this.loadPendingInteractionForCallback(
+      chatId,
+      messageId,
+      parsed.interactionId,
+      callbackQueryId
+    );
     if (!loaded) {
       return;
     }
@@ -809,6 +811,12 @@ export class BridgeService {
         callbackQueryId,
         isPendingInteractionHandled(row) ? "这个操作已处理。" : "这个按钮已过期，请重新操作。"
       );
+      return;
+    }
+
+    const decisionKey = resolveInteractionDecisionKey(interaction, parsed);
+    if (!decisionKey) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
       return;
     }
 
@@ -831,11 +839,14 @@ export class BridgeService {
     callbackQueryId: string,
     chatId: string,
     messageId: number,
-    interactionId: string,
-    questionId: string,
-    optionIndex: number
+    parsed: Extract<ParsedCallbackData, { kind: "interaction_question" }>
   ): Promise<void> {
-    const loaded = await this.loadPendingInteractionForCallback(chatId, messageId, interactionId, callbackQueryId);
+    const loaded = await this.loadPendingInteractionForCallback(
+      chatId,
+      messageId,
+      parsed.interactionId,
+      callbackQueryId
+    );
     if (!loaded) {
       return;
     }
@@ -855,16 +866,23 @@ export class BridgeService {
       return;
     }
 
+    const questionId = resolveInteractionQuestionId(interaction, parsed);
+    if (!questionId) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
     const draft = parseQuestionnaireDraft(row.responseJson);
     const currentQuestion = getCurrentQuestion(interaction, draft);
-    if (!currentQuestion || currentQuestion.id !== questionId || !currentQuestion.options?.[optionIndex]) {
+    const selectedOption = currentQuestion?.options?.[parsed.optionIndex];
+    if (!currentQuestion || currentQuestion.id !== questionId || !selectedOption) {
       await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
       return;
     }
 
     const parsedAnswer = parseQuestionAnswerInput(
       currentQuestion,
-      currentQuestion.options[optionIndex].value,
+      selectedOption.value,
       "option"
     );
     if (!parsedAnswer.ok) {
@@ -901,10 +919,14 @@ export class BridgeService {
     callbackQueryId: string,
     chatId: string,
     messageId: number,
-    interactionId: string,
-    questionId: string
+    parsed: Extract<ParsedCallbackData, { kind: "interaction_text" }>
   ): Promise<void> {
-    const loaded = await this.loadPendingInteractionForCallback(chatId, messageId, interactionId, callbackQueryId);
+    const loaded = await this.loadPendingInteractionForCallback(
+      chatId,
+      messageId,
+      parsed.interactionId,
+      callbackQueryId
+    );
     if (!loaded) {
       return;
     }
@@ -920,6 +942,12 @@ export class BridgeService {
     }
 
     if (interaction.kind !== "questionnaire") {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    const questionId = resolveInteractionQuestionId(interaction, parsed);
+    if (!questionId) {
       await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
       return;
     }
@@ -1251,41 +1279,104 @@ export class BridgeService {
     }
   }
 
-  private async expirePendingInteractionsForTurn(
+  private listActionablePendingInteractionsForSession(chatId: string, sessionId: string): PendingInteractionRow[] {
+    if (!this.store) {
+      return [];
+    }
+
+    return this.store
+      .listPendingInteractionsByChat(chatId, ["pending", "awaiting_text"])
+      .filter((interaction) => interaction.sessionId === sessionId && isPendingInteractionActionable(interaction));
+  }
+
+  private getBlockedTurnSteerAvailability(
     chatId: string,
-    threadId: string,
-    turnId: string,
+    session: SessionRow
+  ):
+    | { kind: "available"; activeTurn: ActiveTurnState }
+    | { kind: "interaction_pending" }
+    | { kind: "busy" } {
+    if (session.status !== "running") {
+      return { kind: "busy" };
+    }
+
+    const activeTurn = this.activeTurn;
+    if (!activeTurn || activeTurn.sessionId !== session.sessionId) {
+      return { kind: "busy" };
+    }
+
+    if (activeTurn.tracker.getStatus().turnStatus !== "blocked") {
+      return { kind: "busy" };
+    }
+
+    if (this.listActionablePendingInteractionsForSession(chatId, session.sessionId).length > 0) {
+      return { kind: "interaction_pending" };
+    }
+
+    return { kind: "available", activeTurn };
+  }
+
+  private async sendPendingInteractionBlockNotice(chatId: string): Promise<void> {
+    await this.safeSendMessage(chatId, "当前正在等待你处理交互卡片，请先在卡片中回答或取消。");
+  }
+
+  private async updatePendingInteractionTerminalState(
+    row: PendingInteractionRow,
+    state: Extract<PendingInteractionState, "failed" | "expired">,
     reason: string
+  ): Promise<PendingInteractionRow | null> {
+    if (!this.store) {
+      return null;
+    }
+
+    if (state === "failed") {
+      this.store.markPendingInteractionFailed(row.interactionId, reason);
+    } else {
+      this.store.markPendingInteractionExpired(row.interactionId, reason);
+    }
+
+    return this.store.getPendingInteraction(row.interactionId, row.telegramChatId);
+  }
+
+  private async resolveActionablePendingInteractionsForSession(
+    chatId: string,
+    sessionId: string,
+    options: {
+      state: Extract<PendingInteractionState, "failed" | "expired">;
+      reason: string;
+      resolutionSource: InteractionResolutionSource;
+    }
   ): Promise<void> {
     if (!this.store) {
       return;
     }
 
-    const pending = this.store
-      .listPendingInteractionsByTurn(threadId, turnId)
-      .filter((interaction) => isPendingInteractionActionable(interaction));
-
+    const pending = this.listActionablePendingInteractionsForSession(chatId, sessionId);
     if (pending.length === 0) {
       return;
     }
 
-    this.store.expirePendingInteractionsForTurn(threadId, turnId, reason);
     for (const interactionRow of pending) {
+      const updatedRow = await this.updatePendingInteractionTerminalState(
+        interactionRow,
+        options.state,
+        options.reason
+      );
       this.clearPendingInteractionTextMode(interactionRow.interactionId);
       await this.appendInteractionResolvedJournal(interactionRow, {
-        finalState: "expired",
-        errorReason: reason,
-        resolutionSource: "turn_expired"
+        finalState: options.state,
+        errorReason: options.reason,
+        resolutionSource: options.resolutionSource
       });
-      const interaction = parseStoredInteraction(interactionRow.promptJson);
+      const interaction = parseStoredInteraction((updatedRow ?? interactionRow).promptJson);
       if (!interaction) {
         continue;
       }
 
-      await this.renderStoredPendingInteraction(chatId, {
+      await this.renderStoredPendingInteraction(chatId, updatedRow ?? {
         ...interactionRow,
-        state: "expired",
-        errorReason: reason
+        state: options.state,
+        errorReason: options.reason
       }, interaction);
     }
   }
@@ -1609,32 +1700,30 @@ export class BridgeService {
     }
 
     if (activeSession.status === "running") {
-      const activeTurn = this.activeTurn;
-      const blockedStatus = activeTurn?.tracker.getStatus().turnStatus === "blocked";
-      if (
-        text &&
-        activeTurn &&
-        activeTurn.sessionId === activeSession.sessionId &&
-        blockedStatus &&
-        !this.pendingInteractionTextModes.has(chatId)
-      ) {
+      const steerAvailability = this.getBlockedTurnSteerAvailability(chatId, activeSession);
+      if (text && steerAvailability.kind === "available") {
         try {
           await this.ensureAppServerAvailable();
           await this.appServer?.steerTurn({
-            threadId: activeTurn.threadId,
-            expectedTurnId: activeTurn.turnId,
+            threadId: steerAvailability.activeTurn.threadId,
+            expectedTurnId: steerAvailability.activeTurn.turnId,
             input: [{ type: "text", text }]
           });
         } catch (error) {
           await this.logger.warn("turn steer failed", {
             chatId,
             sessionId: activeSession.sessionId,
-            threadId: activeTurn.threadId,
-            turnId: activeTurn.turnId,
+            threadId: steerAvailability.activeTurn.threadId,
+            turnId: steerAvailability.activeTurn.turnId,
             error: `${error}`
           });
           await this.safeSendMessage(chatId, "Codex 服务暂时不可用，请稍后重试。");
         }
+        return;
+      }
+
+      if (steerAvailability.kind === "interaction_pending") {
+        await this.sendPendingInteractionBlockNotice(chatId);
         return;
       }
 
@@ -2791,7 +2880,13 @@ export class BridgeService {
       return;
     }
 
-    if (!this.canAcceptRichInputPrompt(chatId, session)) {
+    const steerAvailability = this.getBlockedTurnSteerAvailability(chatId, session);
+    if (session.status === "running" && steerAvailability.kind !== "available") {
+      if (steerAvailability.kind === "interaction_pending") {
+        await this.sendPendingInteractionBlockNotice(chatId);
+        return;
+      }
+
       await this.safeSendMessage(chatId, "当前项目仍在执行，请等待完成或发送 /interrupt。");
       return;
     }
@@ -2804,50 +2899,36 @@ export class BridgeService {
     await this.safeSendMessage(chatId, `已记录${promptLabel}，请继续发送任务说明，或发送 /cancel 取消。`);
   }
 
-  private canAcceptRichInputPrompt(chatId: string, session: SessionRow): boolean {
-    if (session.status !== "running") {
-      return true;
-    }
-
-    const activeTurn = this.activeTurn;
-    if (!activeTurn || activeTurn.sessionId !== session.sessionId) {
-      return false;
-    }
-
-    return activeTurn.tracker.getStatus().turnStatus === "blocked" && !this.pendingInteractionTextModes.has(chatId);
-  }
-
   private async submitRichInputs(chatId: string, session: SessionRow, input: UserInput[]): Promise<void> {
     if (!this.store) {
       return;
     }
 
     if (session.status === "running") {
-      const activeTurn = this.activeTurn;
-      const blockedStatus = activeTurn?.tracker.getStatus().turnStatus === "blocked";
-      if (
-        activeTurn &&
-        activeTurn.sessionId === session.sessionId &&
-        blockedStatus &&
-        !this.pendingInteractionTextModes.has(chatId)
-      ) {
+      const steerAvailability = this.getBlockedTurnSteerAvailability(chatId, session);
+      if (steerAvailability.kind === "available") {
         try {
           await this.ensureAppServerAvailable();
           await this.appServer?.steerTurn({
-            threadId: activeTurn.threadId,
-            expectedTurnId: activeTurn.turnId,
+            threadId: steerAvailability.activeTurn.threadId,
+            expectedTurnId: steerAvailability.activeTurn.turnId,
             input
           });
         } catch (error) {
           await this.logger.warn("turn steer failed", {
             chatId,
             sessionId: session.sessionId,
-            threadId: activeTurn.threadId,
-            turnId: activeTurn.turnId,
+            threadId: steerAvailability.activeTurn.threadId,
+            turnId: steerAvailability.activeTurn.turnId,
             error: `${error}`
           });
           await this.safeSendMessage(chatId, "Codex 服务暂时不可用，请稍后重试。");
         }
+        return;
+      }
+
+      if (steerAvailability.kind === "interaction_pending") {
+        await this.sendPendingInteractionBlockNotice(chatId);
         return;
       }
 
@@ -3112,14 +3193,21 @@ export class BridgeService {
     }
 
     const effectiveTurnId = normalized.turnId || activeTurn.turnId;
-    if (normalized.threadId !== activeTurn.threadId || effectiveTurnId !== activeTurn.turnId) {
+    const requestOnRootTurn = normalized.threadId === activeTurn.threadId;
+    const requestOnKnownSubagent = !requestOnRootTurn
+      && activeTurn.tracker.getInspectSnapshot().agentSnapshot.some((agent) => agent.threadId === normalized.threadId);
+
+    if ((requestOnRootTurn && effectiveTurnId !== activeTurn.turnId) || (!requestOnRootTurn && !requestOnKnownSubagent)) {
       await this.logger.warn("server request does not match active turn", {
         method: request.method,
         id: request.id,
         requestThreadId: normalized.threadId,
         requestTurnId: effectiveTurnId,
         activeThreadId: activeTurn.threadId,
-        activeTurnId: activeTurn.turnId
+        activeTurnId: activeTurn.turnId,
+        knownSubagentThreadIds: requestOnRootTurn
+          ? []
+          : activeTurn.tracker.getInspectSnapshot().agentSnapshot.map((agent) => agent.threadId)
       });
       await this.appServer.respondToServerRequestError(request.id, -32001, "Interaction does not match the active turn");
       return;
@@ -3167,7 +3255,7 @@ export class BridgeService {
   private async handleServerRequestResolvedNotification(
     notification: Extract<ReturnType<typeof classifyNotification>, { kind: "server_request_resolved" }>
   ): Promise<void> {
-    if (!this.store || !notification.threadId || !notification.requestId) {
+    if (!this.store || !notification.threadId || notification.requestId === null) {
       return;
     }
 
@@ -3282,7 +3370,11 @@ export class BridgeService {
       return;
     }
 
-    await this.expirePendingInteractionsForTurn(activeTurn.chatId, activeTurn.threadId, activeTurn.turnId, `turn_${classified.status}`);
+    await this.resolveActionablePendingInteractionsForSession(activeTurn.chatId, activeTurn.sessionId, {
+      state: "expired",
+      reason: `turn_${classified.status}`,
+      resolutionSource: "turn_expired"
+    });
 
     this.activeTurn = null;
 
@@ -3765,6 +3857,11 @@ export class BridgeService {
 
     if (this.activeTurn) {
       const runningTurn = this.activeTurn;
+      await this.resolveActionablePendingInteractionsForSession(runningTurn.chatId, runningTurn.sessionId, {
+        state: "failed",
+        reason: "app_server_lost",
+        resolutionSource: "app_server_exit"
+      });
       this.activeTurn = null;
       this.disposeRuntimeCards(runningTurn);
       this.store.updateSessionStatus(runningTurn.sessionId, "failed", {
@@ -5588,14 +5685,14 @@ function buildPendingInteractionSurface(
     return buildInteractionResolvedCard({
       title: interaction.title,
       state: "failed",
-      summary: row.errorReason
+      summary: formatPendingInteractionTerminalReason(row.errorReason)
     });
   }
 
   if (row.state === "expired") {
     return buildInteractionExpiredCard({
       title: interaction.title,
-      reason: row.errorReason
+      reason: formatPendingInteractionTerminalReason(row.errorReason)
     });
   }
 
@@ -5706,7 +5803,7 @@ function summarizeAnsweredInteraction(row: PendingInteractionRow, interaction: N
 
     case "permissions": {
       const scope = typeof payload?.scope === "string" ? payload.scope : "turn";
-      const granted = summarizePermissions(payload?.permissions ?? null);
+      const granted = summarizeGrantedPermissions(payload?.permissions ?? null);
       return granted ? `已授权（${scope}）: ${granted}` : `已拒绝（${scope}）`;
     }
 
@@ -5737,9 +5834,19 @@ function summarizeAnsweredInteraction(row: PendingInteractionRow, interaction: N
 }
 
 function summarizePermissions(value: unknown): string | null {
+  const parts = collectPermissionSummaryParts(value);
+  return parts.length > 0 ? parts.join("；") : "无额外权限";
+}
+
+function summarizeGrantedPermissions(value: unknown): string | null {
+  const parts = collectPermissionSummaryParts(value);
+  return parts.length > 0 ? parts.join("；") : null;
+}
+
+function collectPermissionSummaryParts(value: unknown): string[] {
   const record = parseJsonRecord(value);
   if (!record) {
-    return null;
+    return [];
   }
 
   const parts: string[] = [];
@@ -5762,7 +5869,26 @@ function summarizePermissions(value: unknown): string | null {
     parts.push("macOS 权限");
   }
 
-  return parts.length > 0 ? parts.join("；") : "无额外权限";
+  return parts;
+}
+
+function formatPendingInteractionTerminalReason(reason: string | null | undefined): string | null {
+  switch (reason) {
+    case "app_server_lost":
+      return "Codex 服务已断开，这个交互无法继续。";
+    case "bridge_restart":
+      return "桥接服务已重启，这个交互无法继续。";
+    case "response_dispatch_failed":
+      return "Codex 服务没有收到这次交互结果。";
+    case "turn_completed":
+    case "turn_failed":
+    case "turn_interrupted":
+      return "当前操作已结束，交互已失效。";
+    case "telegram_delivery_failed":
+      return "Telegram 未能发送这张交互卡片。";
+    default:
+      return reason ? "这个交互无法继续。" : null;
+  }
 }
 
 function isPendingInteractionActionable(row: PendingInteractionRow): boolean {
@@ -6094,6 +6220,49 @@ function buildInteractionDecisionResolution(
     case "questionnaire":
       return null;
   }
+}
+
+function resolveInteractionDecisionKey(
+  interaction: NormalizedInteraction,
+  parsed: Extract<ParsedCallbackData, { kind: "interaction_decision" }>
+): string | null {
+  if (parsed.decisionKey) {
+    return parsed.decisionKey;
+  }
+
+  if (parsed.decisionIndex === null) {
+    return null;
+  }
+
+  return getVisibleInteractionDecisionKeys(interaction)[parsed.decisionIndex] ?? null;
+}
+
+function getVisibleInteractionDecisionKeys(interaction: NormalizedInteraction): string[] {
+  switch (interaction.kind) {
+    case "approval":
+      return buildApprovalActions(interaction).map((action) => action.decisionKey);
+    case "permissions":
+      return ["accept", "acceptForSession", "decline"];
+    case "elicitation":
+      return ["accept", "decline"];
+    case "questionnaire":
+      return [];
+  }
+}
+
+function resolveInteractionQuestionId(
+  interaction: NormalizedInteraction,
+  parsed: Extract<ParsedCallbackData, { kind: "interaction_question" | "interaction_text" }>
+): string | null {
+  if (parsed.questionId) {
+    return parsed.questionId;
+  }
+
+  if (interaction.kind !== "questionnaire" || parsed.questionIndex === null) {
+    return null;
+  }
+
+  return interaction.questions[parsed.questionIndex]?.id ?? null;
 }
 
 function parseJsonRecord(value: unknown): Record<string, unknown> | null {

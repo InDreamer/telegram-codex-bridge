@@ -472,22 +472,85 @@ test("buildInspectText renders a concise Chinese inspect view without duplicate 
   assert.doesNotMatch(text, /最近网页搜索/u);
 });
 
-test("parseCallbackData understands v3 interaction callback families", () => {
+test("parseCallbackData understands compact and legacy v3 interaction callbacks", () => {
+  const approval = buildInteractionApprovalCard({
+    interactionId: "550e8400-e29b-41d4-a716-446655440000",
+    title: "Codex 需要命令批准",
+    subtitle: "命令审批",
+    body: "pnpm test",
+    detail: "需要网络访问",
+    actions: [
+      { text: "批准", decisionKey: "accept" },
+      { text: "本会话内总是批准", decisionKey: "acceptForSession" },
+      { text: "拒绝", decisionKey: "decline" }
+    ]
+  });
+  const approvalCallback = approval.replyMarkup.inline_keyboard[0]?.[1]?.callback_data ?? "";
+  assert.ok(Buffer.byteLength(approvalCallback, "utf8") <= 64);
+  assert.deepEqual(parseCallbackData(approvalCallback), {
+    kind: "interaction_decision",
+    interactionId: "550e8400-e29b-41d4-a716-446655440000",
+    decisionKey: null,
+    decisionIndex: 1
+  });
+
+  const questionnaire = buildInteractionQuestionCard({
+    interactionId: "550e8400-e29b-41d4-a716-446655440000",
+    title: "Codex 需要更多信息",
+    questionId: "repo:env",
+    header: "Env",
+    question: "Which environment?",
+    questionIndex: 1,
+    totalQuestions: 2,
+    options: [
+      { label: "staging", description: "Shared test env" },
+      { label: "prod", description: "Production" }
+    ],
+    isOther: true,
+    isSecret: false
+  });
+  const questionCallback = questionnaire.replyMarkup.inline_keyboard[0]?.[0]?.callback_data ?? "";
+  const textCallback = questionnaire.replyMarkup.inline_keyboard[1]?.[0]?.callback_data ?? "";
+  const cancelCallback = questionnaire.replyMarkup.inline_keyboard[2]?.[0]?.callback_data ?? "";
+
+  assert.ok(Buffer.byteLength(questionCallback, "utf8") <= 64);
+  assert.ok(Buffer.byteLength(textCallback, "utf8") <= 64);
+  assert.deepEqual(parseCallbackData(questionCallback), {
+    kind: "interaction_question",
+    interactionId: "550e8400-e29b-41d4-a716-446655440000",
+    questionId: null,
+    questionIndex: 0,
+    optionIndex: 0
+  });
+  assert.deepEqual(parseCallbackData(textCallback), {
+    kind: "interaction_text",
+    interactionId: "550e8400-e29b-41d4-a716-446655440000",
+    questionId: null,
+    questionIndex: 0
+  });
+  assert.deepEqual(parseCallbackData(cancelCallback), {
+    kind: "interaction_cancel",
+    interactionId: "550e8400-e29b-41d4-a716-446655440000"
+  });
+
   assert.deepEqual(parseCallbackData("v3:ix:decision:ix-1:accept"), {
     kind: "interaction_decision",
     interactionId: "ix-1",
-    decisionKey: "accept"
+    decisionKey: "accept",
+    decisionIndex: null
   });
   assert.deepEqual(parseCallbackData("v3:ix:question:ix-1:environment:2"), {
     kind: "interaction_question",
     interactionId: "ix-1",
     questionId: "environment",
+    questionIndex: null,
     optionIndex: 2
   });
   assert.deepEqual(parseCallbackData("v3:ix:text:ix-1:notes"), {
     kind: "interaction_text",
     interactionId: "ix-1",
-    questionId: "notes"
+    questionId: "notes",
+    questionIndex: null
   });
   assert.deepEqual(parseCallbackData("v3:ix:cancel:ix-1"), {
     kind: "interaction_cancel",
@@ -510,19 +573,15 @@ test("interaction cards render approval and questionnaire flows without leaking 
   });
 
   assert.match(approval.text, /Codex 需要命令批准/u);
-  assert.deepEqual(
-    approval.replyMarkup.inline_keyboard[0]?.map((button) => button.callback_data),
-    [
-      "v3:ix:decision:ix-1:accept",
-      "v3:ix:decision:ix-1:acceptForSession",
-      "v3:ix:decision:ix-1:decline"
-    ]
-  );
+  const approvalCallbacks = approval.replyMarkup.inline_keyboard[0]?.map((button) => button.callback_data ?? "") ?? [];
+  assert.equal(approvalCallbacks.length, 3);
+  assert.equal(approvalCallbacks.every((callback) => callback.startsWith("v3:ix:d:")), true);
+  assert.equal(approvalCallbacks.some((callback) => callback.includes("acceptForSession")), false);
 
   const questionnaire = buildInteractionQuestionCard({
     interactionId: "ix-2",
     title: "Codex 需要更多信息",
-    questionId: "environment",
+    questionId: "repo:env",
     header: "Env",
     question: "Which environment?",
     questionIndex: 1,
@@ -536,8 +595,9 @@ test("interaction cards render approval and questionnaire flows without leaking 
   });
 
   assert.match(questionnaire.text, /Which environment/u);
-  assert.equal(questionnaire.replyMarkup.inline_keyboard[0]?.[0]?.callback_data, "v3:ix:question:ix-2:environment:0");
-  assert.equal(questionnaire.replyMarkup.inline_keyboard[1]?.[0]?.callback_data, "v3:ix:text:ix-2:environment");
+  assert.match(questionnaire.replyMarkup.inline_keyboard[0]?.[0]?.callback_data ?? "", /^v3:ix:q:/u);
+  assert.match(questionnaire.replyMarkup.inline_keyboard[1]?.[0]?.callback_data ?? "", /^v3:ix:t:/u);
+  assert.equal((questionnaire.replyMarkup.inline_keyboard[0]?.[0]?.callback_data ?? "").includes("repo:env"), false);
 });
 
 test("resolved and expired interaction cards drop action buttons", () => {

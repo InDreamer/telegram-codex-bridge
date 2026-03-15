@@ -9,6 +9,7 @@ import type { Logger } from "./logger.js";
 import type { BridgePaths } from "./paths.js";
 import type { ActivityStatus } from "./activity/types.js";
 import { ActivityTracker } from "./activity/tracker.js";
+import { CodexAppServerClient } from "./codex/app-server.js";
 import { classifyNotification } from "./codex/notification-classifier.js";
 import { BridgeService } from "./service.js";
 import { BridgeStateStore } from "./state/store.js";
@@ -139,6 +140,16 @@ function createIncomingUserMessage(chatId: number, userId: number, messageId: nu
     date: 0,
     text
   };
+}
+
+function getCallbackData(
+  message: { options?: { replyMarkup?: { inline_keyboard?: Array<Array<{ callback_data?: string }>> } } } | undefined,
+  row: number,
+  column: number
+): string {
+  const callbackData = message?.options?.replyMarkup?.inline_keyboard?.[row]?.[column]?.callback_data;
+  assert.equal(typeof callbackData, "string");
+  return callbackData as string;
 }
 
 function getMessageTexts(
@@ -3843,9 +3854,76 @@ test("server requests are persisted and rendered as Telegram interaction cards",
     const interactionMessage = sent.at(-1);
     assert.match(interactionMessage?.text ?? "", /Codex 需要命令批准/u);
     assert.equal(
-      interactionMessage?.options?.replyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data?.startsWith("v3:ix:decision:"),
+      interactionMessage?.options?.replyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data?.startsWith("v3:ix:d:"),
       true
     );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("known subagent interactions are accepted and retain subagent thread ids", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ chatId: string; text: string; options?: any }> = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.setActiveSession("1", session.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (chatId: string, text: string, options?: any) => {
+        sent.push({ chatId, text, options });
+        return createFakeTelegramMessage(940 + sent.length, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) =>
+        createFakeTelegramMessage(messageId, text),
+      answerCallbackQuery: async () => {}
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      startThread: async () => ({ thread: { id: "thread-root" } }),
+      startTurn: async () => ({ turn: { id: "turn-root", status: "inProgress" } }),
+      resumeThread: async () => ({ thread: { id: "thread-root", turns: [] } }),
+      respondToServerRequest: async () => {},
+      respondToServerRequestError: async () => {}
+    };
+
+    await (service as any).startRealTurn("1", session, "Delegate the work");
+    await (service as any).handleAppServerNotification("item/started", {
+      threadId: "thread-root",
+      turnId: "turn-root",
+      itemId: "item-agent",
+      item: {
+        type: "collabAgentToolCall",
+        tool: "spawn_agent",
+        receiverThreadIds: ["thread-sub-1"],
+        agentsStates: {
+          "thread-sub-1": {
+            status: "running",
+            message: "waiting on approval"
+          }
+        }
+      }
+    });
+
+    await (service as any).handleAppServerServerRequest({
+      id: "server-subagent",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        threadId: "thread-sub-1",
+        turnId: "turn-sub-1",
+        itemId: "item-sub-1",
+        command: "pnpm lint",
+        availableDecisions: ["accept", "decline", "cancel"]
+      }
+    });
+
+    const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
+    assert.ok(pending);
+    assert.equal(pending?.threadId, "thread-sub-1");
+    assert.equal(pending?.turnId, "turn-sub-1");
+    assert.match(sent.at(-1)?.text ?? "", /Codex 需要命令批准/u);
   } finally {
     await cleanup();
   }
@@ -3902,6 +3980,7 @@ test("approval callbacks resolve pending interactions and respond to the app-ser
 
     const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
     assert.ok(pending);
+    const interactionMessage = sent.at(-1);
 
     await (service as any).handleCallback({
       id: "callback-1",
@@ -3914,7 +3993,7 @@ test("approval callbacks resolve pending interactions and respond to the app-ser
         message_id: pending?.telegramMessageId,
         chat: { id: 1, type: "private" }
       },
-      data: `v3:ix:decision:${pending?.interactionId}:accept`
+      data: getCallbackData(interactionMessage, 0, 0)
     });
 
     assert.deepEqual(responses, [{
@@ -3931,6 +4010,7 @@ test("approval callbacks resolve pending interactions and respond to the app-ser
 
 test("approval cancel persists canceled state and appends interaction audit journal records", async () => {
   const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ chatId: string; text: string; options?: any }> = [];
   const responses: Array<{ id: unknown; result: unknown }> = [];
   const edited: Array<{ messageId: number; text: string; options?: any }> = [];
 
@@ -3939,7 +4019,10 @@ test("approval cancel persists canceled state and appends interaction audit jour
     store.setActiveSession("1", session.sessionId);
 
     (service as any).api = {
-      sendMessage: async (_chatId: string, text: string, _options?: any) => createFakeTelegramMessage(955, text),
+      sendMessage: async (chatId: string, text: string, options?: any) => {
+        sent.push({ chatId, text, options });
+        return createFakeTelegramMessage(955 + sent.length, text);
+      },
       editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
         edited.push({ messageId, text, options });
         return createFakeTelegramMessage(messageId, text);
@@ -3975,6 +4058,7 @@ test("approval cancel persists canceled state and appends interaction audit jour
 
     const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
     assert.ok(pending);
+    const cancelCallback = getCallbackData(sent.at(-1), 1, 0);
 
     await (service as any).handleCallback({
       id: "callback-cancel-1",
@@ -3987,7 +4071,7 @@ test("approval cancel persists canceled state and appends interaction audit jour
         message_id: pending?.telegramMessageId,
         chat: { id: 1, type: "private" }
       },
-      data: `v3:ix:cancel:${pending?.interactionId}`
+      data: cancelCallback
     });
 
     assert.deepEqual(responses, [{
@@ -4003,6 +4087,87 @@ test("approval cancel persists canceled state and appends interaction audit jour
     assert.match(debugJournal, /"method":"bridge\/interaction\/resolved"/u);
     assert.match(debugJournal, /"finalState":"canceled"/u);
     assert.match(debugJournal, /"resolutionSource":"server_response_success"/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("declined permissions requests render rejected summaries", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ chatId: string; text: string; options?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; options?: any }> = [];
+  const responses: Array<{ id: unknown; result: unknown }> = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.setActiveSession("1", session.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (chatId: string, text: string, options?: any) => {
+        sent.push({ chatId, text, options });
+        return createFakeTelegramMessage(958 + sent.length, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, options });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      answerCallbackQuery: async () => {}
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      startThread: async () => ({ thread: { id: "thread-permissions" } }),
+      startTurn: async () => ({ turn: { id: "turn-permissions", status: "inProgress" } }),
+      resumeThread: async () => ({ thread: { id: "thread-permissions", turns: [] } }),
+      respondToServerRequest: async (id: unknown, result: unknown) => {
+        responses.push({ id, result });
+      },
+      respondToServerRequestError: async () => {}
+    };
+
+    await (service as any).startRealTurn("1", session, "Need permissions");
+    await (service as any).handleAppServerServerRequest({
+      id: "server-permissions",
+      method: "item/permissions/requestApproval",
+      params: {
+        threadId: "thread-permissions",
+        turnId: "turn-permissions",
+        itemId: "item-permissions",
+        permissions: {
+          network: {
+            enabled: true
+          }
+        }
+      }
+    });
+
+    const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
+    assert.ok(pending);
+    const cancelCallback = getCallbackData(sent.at(-1), 1, 0);
+
+    await (service as any).handleCallback({
+      id: "callback-permissions-decline",
+      from: {
+        id: 1,
+        is_bot: false,
+        first_name: "Tester"
+      },
+      message: {
+        message_id: pending?.telegramMessageId,
+        chat: { id: 1, type: "private" }
+      },
+      data: getCallbackData(sent.at(-1), 0, 2)
+    });
+
+    assert.deepEqual(responses, [{
+      id: "server-permissions",
+      result: {
+        permissions: {},
+        scope: "turn"
+      }
+    }]);
+    assert.match(edited.at(-1)?.text ?? "", /已拒绝（turn）/u);
+    assert.doesNotMatch(edited.at(-1)?.text ?? "", /已授权/u);
   } finally {
     await cleanup();
   }
@@ -4063,10 +4228,8 @@ test("approval callbacks preserve structured decision payloads", async () => {
 
     const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
     assert.ok(pending);
-    assert.equal(
-      sent.at(-1)?.options?.replyMarkup?.inline_keyboard?.[0]?.[1]?.callback_data,
-      `v3:ix:decision:${pending?.interactionId}:acceptWithExecpolicyAmendment`
-    );
+    const interactionMessage = sent.at(-1);
+    assert.match(getCallbackData(interactionMessage, 0, 1), /^v3:ix:d:/u);
 
     await (service as any).handleCallback({
       id: "callback-structured",
@@ -4079,7 +4242,7 @@ test("approval callbacks preserve structured decision payloads", async () => {
         message_id: pending?.telegramMessageId,
         chat: { id: 1, type: "private" }
       },
-      data: `v3:ix:decision:${pending?.interactionId}:acceptWithExecpolicyAmendment`
+      data: getCallbackData(interactionMessage, 0, 1)
     });
 
     assert.deepEqual(responses, [{
@@ -4159,7 +4322,7 @@ test("legacy exec approvals resolve with legacy decision payloads", async () => 
         message_id: pending?.telegramMessageId,
         chat: { id: 1, type: "private" }
       },
-      data: `v3:ix:decision:${pending?.interactionId}:acceptForSession`
+      data: getCallbackData(sent.at(-1), 0, 1)
     });
 
     assert.deepEqual(responses, [{
@@ -4175,6 +4338,7 @@ test("legacy exec approvals resolve with legacy decision payloads", async () => 
 
 test("legacy patch approval cancel maps to abort", async () => {
   const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ chatId: string; text: string; options?: any }> = [];
   const responses: Array<{ id: unknown; result: unknown }> = [];
 
   try {
@@ -4182,7 +4346,10 @@ test("legacy patch approval cancel maps to abort", async () => {
     store.setActiveSession("1", session.sessionId);
 
     (service as any).api = {
-      sendMessage: async (_chatId: string, text: string, _options?: any) => createFakeTelegramMessage(990, text),
+      sendMessage: async (chatId: string, text: string, options?: any) => {
+        sent.push({ chatId, text, options });
+        return createFakeTelegramMessage(990 + sent.length, text);
+      },
       editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) =>
         createFakeTelegramMessage(messageId, text),
       answerCallbackQuery: async () => {}
@@ -4218,6 +4385,7 @@ test("legacy patch approval cancel maps to abort", async () => {
 
     const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
     assert.ok(pending);
+    const cancelCallback = getCallbackData(sent.at(-1), 1, 0);
 
     await (service as any).handleCallback({
       id: "callback-legacy-2",
@@ -4230,7 +4398,7 @@ test("legacy patch approval cancel maps to abort", async () => {
         message_id: pending?.telegramMessageId,
         chat: { id: 1, type: "private" }
       },
-      data: `v3:ix:cancel:${pending?.interactionId}`
+      data: cancelCallback
     });
 
     assert.deepEqual(responses, [{
@@ -4307,6 +4475,7 @@ test("questionnaire interactions advance through options and pending text answer
 
     const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
     assert.ok(pending);
+    const interactionMessage = sent.at(-1);
 
     await (service as any).handleCallback({
       id: "callback-q1",
@@ -4319,7 +4488,7 @@ test("questionnaire interactions advance through options and pending text answer
         message_id: pending?.telegramMessageId,
         chat: { id: 1, type: "private" }
       },
-      data: `v3:ix:question:${pending?.interactionId}:environment:0`
+      data: getCallbackData(interactionMessage, 0, 0)
     });
 
     assert.match(edited.at(-1)?.text ?? "", /Anything else\?/u);
@@ -4335,7 +4504,7 @@ test("questionnaire interactions advance through options and pending text answer
         message_id: pending?.telegramMessageId,
         chat: { id: 1, type: "private" }
       },
-      data: `v3:ix:text:${pending?.interactionId}:notes`
+      data: getCallbackData(edited.at(-1), 0, 0)
     });
 
     assert.equal(store.getPendingInteraction(pending?.interactionId ?? "", "1")?.state, "awaiting_text");
@@ -4361,6 +4530,7 @@ test("questionnaire interactions advance through options and pending text answer
 
 test("questionnaire cancel persists canceled state and treats re-click as already handled", async () => {
   const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ chatId: string; text: string; options?: any }> = [];
   const callbackAnswers: Array<string | undefined> = [];
   const responseErrors: Array<{ id: unknown; code: number; message: string; data: unknown }> = [];
   const edited: Array<{ messageId: number; text: string; options?: any }> = [];
@@ -4370,7 +4540,10 @@ test("questionnaire cancel persists canceled state and treats re-click as alread
     store.setActiveSession("1", session.sessionId);
 
     (service as any).api = {
-      sendMessage: async (_chatId: string, text: string, _options?: any) => createFakeTelegramMessage(1005, text),
+      sendMessage: async (chatId: string, text: string, options?: any) => {
+        sent.push({ chatId, text, options });
+        return createFakeTelegramMessage(1005 + sent.length, text);
+      },
       editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
         edited.push({ messageId, text, options });
         return createFakeTelegramMessage(messageId, text);
@@ -4415,6 +4588,7 @@ test("questionnaire cancel persists canceled state and treats re-click as alread
 
     const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
     assert.ok(pending);
+    const cancelCallback = getCallbackData(sent.at(-1), 1, 0);
 
     await (service as any).handleCallback({
       id: "callback-q-cancel-1",
@@ -4427,7 +4601,7 @@ test("questionnaire cancel persists canceled state and treats re-click as alread
         message_id: pending?.telegramMessageId,
         chat: { id: 1, type: "private" }
       },
-      data: `v3:ix:cancel:${pending?.interactionId}`
+      data: cancelCallback
     });
 
     assert.deepEqual(responseErrors, [{
@@ -4450,12 +4624,99 @@ test("questionnaire cancel persists canceled state and treats re-click as alread
         message_id: pending?.telegramMessageId,
         chat: { id: 1, type: "private" }
       },
-      data: `v3:ix:cancel:${pending?.interactionId}`
+      data: cancelCallback
     });
 
     assert.equal(responseErrors.length, 1);
     assert.equal(callbackAnswers.at(-1), "这个操作已处理。");
   } finally {
+    await cleanup();
+  }
+});
+
+test("app-server exit fails unresolved interactions and clears pending text mode", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ chatId: string; text: string; options?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; options?: any }> = [];
+  const originalInitializeAndProbe = CodexAppServerClient.prototype.initializeAndProbe;
+
+  CodexAppServerClient.prototype.initializeAndProbe = async function (): Promise<void> {
+    throw new Error("restart disabled for test");
+  };
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.setActiveSession("1", session.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (chatId: string, text: string, options?: any) => {
+        sent.push({ chatId, text, options });
+        return createFakeTelegramMessage(1008 + sent.length, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, options });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      answerCallbackQuery: async () => {}
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      startThread: async () => ({ thread: { id: "thread-exit" } }),
+      startTurn: async () => ({ turn: { id: "turn-exit", status: "inProgress" } }),
+      resumeThread: async () => ({ thread: { id: "thread-exit", turns: [] } }),
+      respondToServerRequest: async () => {},
+      respondToServerRequestError: async () => {}
+    };
+
+    await (service as any).startRealTurn("1", session, "Need text input");
+    await (service as any).handleAppServerServerRequest({
+      id: "server-exit",
+      method: "item/tool/requestUserInput",
+      params: {
+        threadId: "thread-exit",
+        turnId: "turn-exit",
+        itemId: "item-exit",
+        questions: [
+          {
+            id: "notes",
+            header: "Notes",
+            question: "Anything else?",
+            options: null,
+            isSecret: false
+          }
+        ]
+      }
+    });
+
+    const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
+    assert.ok(pending);
+    const interactionMessage = sent.at(-1);
+
+    await (service as any).handleCallback({
+      id: "callback-exit-text",
+      from: {
+        id: 1,
+        is_bot: false,
+        first_name: "Tester"
+      },
+      message: {
+        message_id: pending?.telegramMessageId,
+        chat: { id: 1, type: "private" }
+      },
+      data: getCallbackData(interactionMessage, 0, 0)
+    });
+
+    assert.equal(store.getPendingInteraction(pending?.interactionId ?? "", "1")?.state, "awaiting_text");
+    assert.equal((service as any).pendingInteractionTextModes.size, 1);
+
+    await (service as any).handleAppServerExit(new Error("lost child"));
+
+    assert.equal(store.getPendingInteraction(pending?.interactionId ?? "", "1")?.state, "failed");
+    assert.equal((service as any).pendingInteractionTextModes.size, 0);
+    assert.match(edited.at(-1)?.text ?? "", /Codex 服务已断开/u);
+  } finally {
+    CodexAppServerClient.prototype.initializeAndProbe = originalInitializeAndProbe;
     await cleanup();
   }
 });
@@ -4535,6 +4796,7 @@ test("MCP form interactions submit typed accept payloads", async () => {
     const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
     assert.ok(pending);
     assert.match(sent.at(-1)?.text ?? "", /Choose target environment/u);
+    const firstCard = sent.at(-1);
 
     await (service as any).handleCallback({
       id: "callback-form-env",
@@ -4547,7 +4809,7 @@ test("MCP form interactions submit typed accept payloads", async () => {
         message_id: pending?.telegramMessageId,
         chat: { id: 1, type: "private" }
       },
-      data: `v3:ix:question:${pending?.interactionId}:environment:1`
+      data: getCallbackData(firstCard, 0, 1)
     });
     assert.match(edited.at(-1)?.text ?? "", /Whether to force the deploy/u);
 
@@ -4562,7 +4824,7 @@ test("MCP form interactions submit typed accept payloads", async () => {
         message_id: pending?.telegramMessageId,
         chat: { id: 1, type: "private" }
       },
-      data: `v3:ix:question:${pending?.interactionId}:force:0`
+      data: getCallbackData(edited.at(-1), 0, 0)
     });
     assert.match(edited.at(-1)?.text ?? "", /Retry count/u);
 
@@ -4577,7 +4839,7 @@ test("MCP form interactions submit typed accept payloads", async () => {
         message_id: pending?.telegramMessageId,
         chat: { id: 1, type: "private" }
       },
-      data: `v3:ix:text:${pending?.interactionId}:retries`
+      data: getCallbackData(edited.at(-1), 0, 0)
     });
 
     await (service as any).handleMessage(createIncomingUserMessage(1, 1, 1002, "3"));
@@ -4594,7 +4856,7 @@ test("MCP form interactions submit typed accept payloads", async () => {
         message_id: pending?.telegramMessageId,
         chat: { id: 1, type: "private" }
       },
-      data: `v3:ix:text:${pending?.interactionId}:tags`
+      data: getCallbackData(edited.at(-1), 0, 0)
     });
 
     await (service as any).handleMessage(createIncomingUserMessage(1, 1, 1003, "blue, green"));
@@ -4620,6 +4882,7 @@ test("MCP form interactions submit typed accept payloads", async () => {
 
 test("MCP form interactions cancel with action cancel", async () => {
   const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ chatId: string; text: string; options?: any }> = [];
   const edited: Array<{ messageId: number; text: string; options?: any }> = [];
   const responses: Array<{ id: unknown; result: unknown }> = [];
 
@@ -4628,7 +4891,10 @@ test("MCP form interactions cancel with action cancel", async () => {
     store.setActiveSession("1", session.sessionId);
 
     (service as any).api = {
-      sendMessage: async (_chatId: string, text: string, _options?: any) => createFakeTelegramMessage(1030, text),
+      sendMessage: async (chatId: string, text: string, options?: any) => {
+        sent.push({ chatId, text, options });
+        return createFakeTelegramMessage(1030 + sent.length, text);
+      },
       editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
         edited.push({ messageId, text, options });
         return createFakeTelegramMessage(messageId, text);
@@ -4670,6 +4936,7 @@ test("MCP form interactions cancel with action cancel", async () => {
 
     const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
     assert.ok(pending);
+    const cancelCallback = getCallbackData(sent.at(-1), 2, 0);
 
     await (service as any).handleCallback({
       id: "callback-form-cancel",
@@ -4682,7 +4949,7 @@ test("MCP form interactions cancel with action cancel", async () => {
         message_id: pending?.telegramMessageId,
         chat: { id: 1, type: "private" }
       },
-      data: `v3:ix:cancel:${pending?.interactionId}`
+      data: cancelCallback
     });
 
     assert.deepEqual(responses, [{
@@ -4736,6 +5003,129 @@ test("blocked running turns route plain text into turn steer when no interaction
       expectedTurnId: "turn-3",
       input: [{ type: "text", text: "continue with staging" }]
     }]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("blocked turns do not steer plain text while an interaction card is pending", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+  const steerCalls: unknown[] = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.setActiveSession("1", session.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        sent.push(text);
+        return createFakeTelegramMessage(1110 + sent.length, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) =>
+        createFakeTelegramMessage(messageId, text),
+      answerCallbackQuery: async () => {}
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      startThread: async () => ({ thread: { id: "thread-approval-block" } }),
+      startTurn: async () => ({ turn: { id: "turn-approval-block", status: "inProgress" } }),
+      resumeThread: async () => ({ thread: { id: "thread-approval-block", turns: [] } }),
+      steerTurn: async (payload: unknown) => {
+        steerCalls.push(payload);
+      },
+      respondToServerRequest: async () => {},
+      respondToServerRequestError: async () => {}
+    };
+
+    await (service as any).startRealTurn("1", session, "Need approval");
+    await (service as any).handleAppServerNotification("thread/status/changed", {
+      threadId: "thread-approval-block",
+      turnId: "turn-approval-block",
+      status: "active",
+      activeFlags: ["waitingOnApproval"]
+    });
+    await (service as any).handleAppServerServerRequest({
+      id: "server-approval-block",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        threadId: "thread-approval-block",
+        turnId: "turn-approval-block",
+        itemId: "item-approval-block",
+        command: "pnpm publish",
+        availableDecisions: ["accept", "decline", "cancel"]
+      }
+    });
+
+    await (service as any).handleMessage(createIncomingUserMessage(1, 1, 1004, "continue anyway"));
+
+    assert.equal(steerCalls.length, 0);
+    assert.match(sent.at(-1) ?? "", /当前正在等待你处理交互卡片/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("blocked turns do not queue rich input prompts while an interaction card is pending", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.setActiveSession("1", session.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        sent.push(text);
+        return createFakeTelegramMessage(1120 + sent.length, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) =>
+        createFakeTelegramMessage(messageId, text),
+      answerCallbackQuery: async () => {}
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      startThread: async () => ({ thread: { id: "thread-rich-block" } }),
+      startTurn: async () => ({ turn: { id: "turn-rich-block", status: "inProgress" } }),
+      resumeThread: async () => ({ thread: { id: "thread-rich-block", turns: [] } }),
+      respondToServerRequest: async () => {},
+      respondToServerRequestError: async () => {}
+    };
+
+    await (service as any).startRealTurn("1", session, "Need approval");
+    await (service as any).handleAppServerNotification("thread/status/changed", {
+      threadId: "thread-rich-block",
+      turnId: "turn-rich-block",
+      status: "active",
+      activeFlags: ["waitingOnApproval"]
+    });
+    await (service as any).handleAppServerServerRequest({
+      id: "server-rich-block",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        threadId: "thread-rich-block",
+        turnId: "turn-rich-block",
+        itemId: "item-rich-block",
+        command: "pnpm publish",
+        availableDecisions: ["accept", "decline", "cancel"]
+      }
+    });
+
+    const runningSession = store.getActiveSession("1");
+    assert.ok(runningSession);
+
+    await (service as any).submitOrQueueRichInput(
+      "1",
+      runningSession,
+      [{ type: "mention", name: "Repo", path: "app://repo" }],
+      null,
+      "引用"
+    );
+
+    assert.equal((service as any).pendingRichInputComposers.size, 0);
+    assert.match(sent.at(-1) ?? "", /当前正在等待你处理交互卡片/u);
   } finally {
     await cleanup();
   }
@@ -5634,7 +6024,7 @@ test("telegram photo download failures do not leave a pending rich input behind"
   }
 });
 
-test("serverRequest resolved notification matches string request ids and closes pending cards", async () => {
+test("serverRequest resolved notification matches numeric request ids and closes pending cards", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const edited: Array<{ messageId: number; text: string }> = [];
 
@@ -5662,7 +6052,7 @@ test("serverRequest resolved notification matches string request ids and closes 
 
     await (service as any).startRealTurn("1", session, "Need approval");
     await (service as any).handleAppServerServerRequest({
-      id: "server-resolved",
+      id: 7,
       method: "item/commandExecution/requestApproval",
       params: {
         threadId: "thread-resolved",
@@ -5678,7 +6068,7 @@ test("serverRequest resolved notification matches string request ids and closes 
 
     await (service as any).handleAppServerNotification("serverRequest/resolved", {
       threadId: "thread-resolved",
-      requestId: "server-resolved"
+      requestId: 7
     });
 
     assert.equal(store.getPendingInteraction(pending?.interactionId ?? "", "1")?.state, "answered");

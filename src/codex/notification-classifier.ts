@@ -161,7 +161,7 @@ export function classifyNotification(method: string, params: unknown): Classifie
       return {
         kind: "server_request_resolved",
         ...context,
-        requestId: getRequestIdString(params)
+        requestId: getRequestId(params)
       } satisfies ServerRequestResolvedNotification;
 
     case "configWarning":
@@ -387,8 +387,8 @@ function getHookRunSummary(params: unknown): HookRunSummary {
   };
 }
 
-function getRequestIdString(params: unknown): string | null {
-  return getString(params, "requestId") ?? getNumberString(params, "requestId");
+function getRequestId(params: unknown): string | number | null {
+  return getString(params, "requestId") ?? getNumber(params, "requestId");
 }
 
 function getMessagePhase(params: unknown): "commentary" | "final_answer" | null {

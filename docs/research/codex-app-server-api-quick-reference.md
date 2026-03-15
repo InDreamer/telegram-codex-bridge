@@ -263,6 +263,7 @@ Handshake order:
   - the precondition field is `expectedTurnId`, not `turnId`
 - Repo status:
   - used today for blocked-turn text and structured-input continuation
+  - the bridge only uses it when the active session is blocked and no unresolved interaction card is still pending
 
 ### `turn/interrupt`
 
@@ -580,6 +581,7 @@ Platform-specific:
 - Critical response rule:
   - the response returns `answers`
   - answers are keyed by question id
+  - question ids are arbitrary strings, so namespaced values such as `repo:env` are valid
   - each answer currently contains an `answers` string array
 
 ### Other server requests
@@ -670,6 +672,7 @@ Important distinction:
 - they do not describe everything the current Codex protocol supports
 - schema-level remote URL `image` is available in the protocol, but not yet surfaced as a direct Telegram command in this bridge
 - `item/tool/call` and `account/chatgptAuthTokens/refresh` remain intentionally unimplemented; the bridge now rejects them explicitly instead of pretending they map cleanly to Telegram
+- `serverRequest/resolved.requestId` is `string | integer`, so bridge storage and matching must preserve numeric ids exactly
 
 ## LLM Gotchas
 
