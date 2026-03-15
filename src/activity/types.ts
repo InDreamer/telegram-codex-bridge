@@ -1,4 +1,5 @@
 import type { FailureReason } from "../types.js";
+import type { PendingInteractionSummary } from "../types.js";
 
 export type StreamBlockKind =
   | "commentary"
@@ -94,6 +95,7 @@ export interface InspectSnapshot extends ActivityStatus {
   planSnapshot: string[];
   agentSnapshot: CollabAgentStateSnapshot[];
   completedCommentary: string[];
+  pendingInteractions: PendingInteractionSummary[];
 }
 
 export type MessagePhase = "commentary" | "final_answer";

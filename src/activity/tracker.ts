@@ -470,7 +470,8 @@ export class ActivityTracker {
       recentWebSearches: [...this.recentWebSearches],
       planSnapshot: [...this.planSnapshot],
       agentSnapshot: this.getRunningAgentSnapshot(),
-      completedCommentary: [...this.completedCommentary]
+      completedCommentary: [...this.completedCommentary],
+      pendingInteractions: []
     };
   }
 

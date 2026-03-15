@@ -891,3 +891,212 @@ test("clearAuthorization removes persisted final answers", async () => {
     await cleanup();
   }
 });
+
+test("open migrates legacy stores so pending interactions can be persisted", async () => {
+  const { paths, cleanup } = await seedLegacyStore();
+
+  try {
+    const store = await BridgeStateStore.open(paths, testLogger);
+    try {
+      const saved = store.createPendingInteraction({
+        telegramChatId: "chat-legacy",
+        sessionId: "session-legacy",
+        threadId: "thread-legacy",
+        turnId: "turn-legacy",
+        requestId: JSON.stringify(7),
+        requestMethod: "item/commandExecution/requestApproval",
+        interactionKind: "approval",
+        promptJson: JSON.stringify({ kind: "approval", title: "Approval" })
+      });
+
+      assert.equal(saved.requestMethod, "item/commandExecution/requestApproval");
+      assert.equal(store.listUnresolvedPendingInteractions().length, 1);
+    } finally {
+      store.close();
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+test("pending interactions persist lifecycle state and survive reopen", async () => {
+  const { paths, store, cleanup } = await openStore();
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    store.updateSessionThreadId(session.sessionId, "thread-1");
+
+    const created = store.createPendingInteraction({
+      telegramChatId: "chat-1",
+      sessionId: session.sessionId,
+      threadId: "thread-1",
+      turnId: "turn-1",
+      requestId: JSON.stringify("server-1"),
+      requestMethod: "item/tool/requestUserInput",
+      interactionKind: "questionnaire",
+      promptJson: JSON.stringify({
+        kind: "questionnaire",
+        title: "Need answers",
+        questions: [{ id: "environment" }]
+      })
+    });
+
+    store.setPendingInteractionMessageId(created.interactionId, 7001);
+    store.markPendingInteractionAwaitingText(
+      created.interactionId,
+      JSON.stringify({
+        answers: {},
+        awaitingQuestionId: "environment"
+      })
+    );
+
+    const awaiting = store.getPendingInteraction(created.interactionId, "chat-1");
+    assert.equal(awaiting?.telegramMessageId, 7001);
+    assert.equal(awaiting?.state, "awaiting_text");
+
+    store.markPendingInteractionPending(
+      created.interactionId,
+      JSON.stringify({
+        answers: {
+          environment: {
+            answers: ["staging"]
+          }
+        }
+      })
+    );
+    store.markPendingInteractionAnswered(
+      created.interactionId,
+      JSON.stringify({
+        answers: {
+          environment: {
+            answers: ["staging"]
+          }
+        }
+      })
+    );
+
+    const answered = store.getPendingInteraction(created.interactionId, "chat-1");
+    assert.equal(answered?.state, "answered");
+    assert.ok(answered?.resolvedAt);
+    assert.equal(store.listPendingInteractionsByChat("chat-1", ["answered"]).length, 1);
+
+    store.close();
+    const reopened = await BridgeStateStore.open(paths, testLogger);
+    try {
+      const reloaded = reopened.getPendingInteraction(created.interactionId, "chat-1");
+      assert.equal(reloaded?.state, "answered");
+      assert.equal(reloaded?.telegramMessageId, 7001);
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+test("pending interactions persist canceled terminal state and exclude it from unresolved listings", async () => {
+  const { paths, store, cleanup } = await openStore();
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    store.updateSessionThreadId(session.sessionId, "thread-1");
+
+    const created = store.createPendingInteraction({
+      telegramChatId: "chat-1",
+      sessionId: session.sessionId,
+      threadId: "thread-1",
+      turnId: "turn-2",
+      requestId: JSON.stringify("server-cancel"),
+      requestMethod: "item/commandExecution/requestApproval",
+      interactionKind: "approval",
+      promptJson: JSON.stringify({
+        kind: "approval",
+        title: "Need approval"
+      })
+    });
+
+    store.markPendingInteractionCanceled(
+      created.interactionId,
+      JSON.stringify({ decision: "cancel" }),
+      "user_canceled_interaction"
+    );
+
+    const canceled = store.getPendingInteraction(created.interactionId, "chat-1");
+    assert.equal(canceled?.state, "canceled");
+    assert.equal(canceled?.errorReason, "user_canceled_interaction");
+    assert.ok(canceled?.resolvedAt);
+    assert.equal(store.listPendingInteractionsByChat("chat-1", ["canceled"]).length, 1);
+    assert.equal(store.listUnresolvedPendingInteractions().length, 0);
+
+    store.close();
+    const reopened = await BridgeStateStore.open(paths, testLogger);
+    try {
+      const reloaded = reopened.getPendingInteraction(created.interactionId, "chat-1");
+      assert.equal(reloaded?.state, "canceled");
+      assert.equal(reloaded?.errorReason, "user_canceled_interaction");
+      assert.equal(reopened.listUnresolvedPendingInteractions().length, 0);
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+test("markRunningSessionsFailedWithNotices also fails unresolved pending interactions", async () => {
+  const { store, cleanup } = await openStore();
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    store.updateSessionThreadId(session.sessionId, "thread-1");
+    store.updateSessionStatus(session.sessionId, "running", {
+      lastTurnId: "turn-1",
+      lastTurnStatus: "running"
+    });
+
+    const interaction = store.createPendingInteraction({
+      telegramChatId: "chat-1",
+      sessionId: session.sessionId,
+      threadId: "thread-1",
+      turnId: "turn-1",
+      requestId: JSON.stringify("server-2"),
+      requestMethod: "item/commandExecution/requestApproval",
+      interactionKind: "approval",
+      promptJson: JSON.stringify({ kind: "approval", title: "Approval" })
+    });
+    const canceled = store.createPendingInteraction({
+      telegramChatId: "chat-1",
+      sessionId: session.sessionId,
+      threadId: "thread-1",
+      turnId: "turn-1",
+      requestId: JSON.stringify("server-3"),
+      requestMethod: "item/tool/requestUserInput",
+      interactionKind: "questionnaire",
+      promptJson: JSON.stringify({ kind: "questionnaire", title: "Questions" })
+    });
+    store.markPendingInteractionCanceled(canceled.interactionId, null, "user_canceled_interaction");
+
+    store.markRunningSessionsFailedWithNotices("bridge_restart");
+
+    const failed = store.getPendingInteraction(interaction.interactionId, "chat-1");
+    assert.equal(failed?.state, "failed");
+    assert.equal(failed?.errorReason, "bridge_restart");
+    const stillCanceled = store.getPendingInteraction(canceled.interactionId, "chat-1");
+    assert.equal(stillCanceled?.state, "canceled");
+    assert.equal(stillCanceled?.errorReason, "user_canceled_interaction");
+  } finally {
+    await cleanup();
+  }
+});

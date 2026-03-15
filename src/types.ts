@@ -99,6 +99,47 @@ export interface FinalAnswerViewRow {
   createdAt: string;
 }
 
+export type PendingInteractionKind =
+  | "approval"
+  | "permissions"
+  | "questionnaire"
+  | "elicitation";
+
+export type PendingInteractionState =
+  | "pending"
+  | "awaiting_text"
+  | "answered"
+  | "canceled"
+  | "expired"
+  | "failed";
+
+export interface PendingInteractionRow {
+  interactionId: string;
+  telegramChatId: string;
+  sessionId: string;
+  threadId: string;
+  turnId: string;
+  requestId: string;
+  requestMethod: string;
+  interactionKind: PendingInteractionKind;
+  state: PendingInteractionState;
+  promptJson: string;
+  responseJson: string | null;
+  telegramMessageId: number | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+  errorReason: string | null;
+}
+
+export interface PendingInteractionSummary {
+  interactionId: string;
+  requestMethod: string;
+  interactionKind: PendingInteractionKind;
+  state: PendingInteractionState;
+  awaitingText: boolean;
+}
+
 export interface SessionRow {
   sessionId: string;
   telegramChatId: string;

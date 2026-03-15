@@ -14,10 +14,15 @@ import { TelegramPoller } from "./telegram/poller.js";
 import { ActivityTracker, type SubagentIdentityEvent } from "./activity/tracker.js";
 import type { ActivityStatus, CollabAgentStateSnapshot, DebugJournalRecord, InspectSnapshot } from "./activity/types.js";
 import { classifyNotification } from "./codex/notification-classifier.js";
+import type { JsonRpcRequestId, JsonRpcServerRequest, UserInput } from "./codex/app-server.js";
 import {
   buildArchiveSuccessText,
   buildCollapsibleFinalAnswerView,
   buildFinalAnswerReplyMarkup,
+  buildInteractionApprovalCard,
+  buildInteractionExpiredCard,
+  buildInteractionQuestionCard,
+  buildInteractionResolvedCard,
   buildInspectText,
   buildManualPathConfirmMessage,
   buildManualPathPrompt,
@@ -41,8 +46,26 @@ import {
   type RuntimeCommandEntryView
 } from "./telegram/ui.js";
 import { buildHelpText, syncTelegramCommands } from "./telegram/commands.js";
-import type { ProjectCandidate, ProjectPickerResult, ReadinessSnapshot, SessionRow } from "./types.js";
+import type {
+  PendingInteractionRow,
+  PendingInteractionState,
+  PendingInteractionSummary,
+  ProjectCandidate,
+  ProjectPickerResult,
+  ReadinessSnapshot,
+  SessionRow
+} from "./types.js";
 import { CodexAppServerClient } from "./codex/app-server.js";
+import {
+  normalizeServerRequest,
+  SKIP_QUESTION_OPTION_VALUE,
+  type NormalizedApprovalInteraction,
+  type NormalizedElicitationInteraction,
+  type NormalizedInteraction,
+  type NormalizedPermissionsInteraction,
+  type NormalizedQuestion,
+  type NormalizedQuestionnaireInteraction
+} from "./interactions/normalize.js";
 import { buildProjectPicker, refreshProjectPicker, validateManualProjectPath } from "./project/discovery.js";
 
 interface RecentActivityEntry {
@@ -157,6 +180,28 @@ interface PendingThreadArchiveOp {
   remoteStateObserved: PendingThreadArchiveState | null;
 }
 
+interface PendingInteractionTextMode {
+  interactionId: string;
+  questionId: string;
+}
+
+interface QuestionnaireDraft {
+  answers: Record<string, unknown>;
+  awaitingQuestionId?: string | null;
+}
+
+type PendingInteractionTerminalState = Extract<
+  PendingInteractionRow["state"],
+  "answered" | "canceled" | "expired" | "failed"
+>;
+
+type InteractionResolutionSource =
+  | "server_response_success"
+  | "server_response_error"
+  | "telegram_delivery_failed"
+  | "turn_expired"
+  | "bridge_restart_recovery";
+
 type TelegramEditResult =
   | { outcome: "edited" }
   | { outcome: "rate_limited"; retryAfterMs: number }
@@ -184,6 +229,7 @@ export class BridgeService {
   private readonly pickerStates = new Map<string, PickerState>();
   private readonly pendingRenameSessionIds = new Map<string, string>();
   private readonly pendingThreadArchiveOps = new Map<string, PendingThreadArchiveOp[]>();
+  private readonly pendingInteractionTextModes = new Map<string, PendingInteractionTextMode>();
   private readonly recentActivityBySessionId = new Map<string, RecentActivityEntry>();
   private activeTurn: ActiveTurnState | null = null;
   private nextPendingThreadArchiveOpId = 1;
@@ -229,8 +275,17 @@ export class BridgeService {
       throw error;
     }
     const recovered = this.store.recoveredFromCorruption;
+    const recoveryInteractions = this.store.listPendingInteractionsForRunningSessions();
     const recoveryNotices = this.store.markRunningSessionsFailedWithNotices("bridge_restart");
     const failedSessions = recoveryNotices.length;
+
+    for (const interaction of recoveryInteractions) {
+      await this.appendInteractionResolvedJournal(interaction, {
+        finalState: "failed",
+        errorReason: "bridge_restart",
+        resolutionSource: "bridge_restart_recovery"
+      });
+    }
 
     if (failedSessions > 0 || recovered) {
       await this.bootstrapLogger.warn("startup recovery applied", { failedSessions, recovered });
@@ -334,6 +389,18 @@ export class BridgeService {
       return;
     }
 
+    const pendingTextMode = this.pendingInteractionTextModes.get(chatId);
+    if (pendingTextMode) {
+      const command = parseCommand(text);
+      if (command?.name === "cancel") {
+        await this.cancelPendingTextInteraction(chatId, pendingTextMode.interactionId);
+        return;
+      }
+
+      await this.handlePendingInteractionTextAnswer(chatId, pendingTextMode, text);
+      return;
+    }
+
     const command = parseCommand(text);
 
     if (!command) {
@@ -431,6 +498,50 @@ export class BridgeService {
           message.message_id,
           parsed.answerId,
           parsed.page
+        );
+        return;
+      }
+
+      case "interaction_decision": {
+        await this.handleInteractionDecisionCallback(
+          callbackQuery.id,
+          chatId,
+          message.message_id,
+          parsed.interactionId,
+          parsed.decisionKey
+        );
+        return;
+      }
+
+      case "interaction_question": {
+        await this.handleInteractionQuestionCallback(
+          callbackQuery.id,
+          chatId,
+          message.message_id,
+          parsed.interactionId,
+          parsed.questionId,
+          parsed.optionIndex
+        );
+        return;
+      }
+
+      case "interaction_text": {
+        await this.handleInteractionTextModeCallback(
+          callbackQuery.id,
+          chatId,
+          message.message_id,
+          parsed.interactionId,
+          parsed.questionId
+        );
+        return;
+      }
+
+      case "interaction_cancel": {
+        await this.handleInteractionCancelCallback(
+          callbackQuery.id,
+          chatId,
+          message.message_id,
+          parsed.interactionId
         );
         return;
       }
@@ -646,6 +757,536 @@ export class BridgeService {
     }
   }
 
+  private async handleInteractionDecisionCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    interactionId: string,
+    decisionKey: string
+  ): Promise<void> {
+    const loaded = await this.loadPendingInteractionForCallback(chatId, messageId, interactionId, callbackQueryId);
+    if (!loaded) {
+      return;
+    }
+
+    const { row, interaction } = loaded;
+    if (!isPendingInteractionActionable(row)) {
+      await this.renderStoredPendingInteraction(chatId, row, interaction);
+      await this.safeAnswerCallbackQuery(
+        callbackQueryId,
+        isPendingInteractionHandled(row) ? "这个操作已处理。" : "这个按钮已过期，请重新操作。"
+      );
+      return;
+    }
+
+    const resolved = buildInteractionDecisionResolution(interaction, decisionKey);
+    if (!resolved) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个操作当前不支持。");
+      return;
+    }
+
+    const success = await this.submitPendingInteractionResponse(chatId, row, interaction, resolved.payload);
+    if (!success) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "暂时无法处理这个交互，请稍后再试。");
+      return;
+    }
+
+    await this.safeAnswerCallbackQuery(callbackQueryId);
+  }
+
+  private async handleInteractionQuestionCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    interactionId: string,
+    questionId: string,
+    optionIndex: number
+  ): Promise<void> {
+    const loaded = await this.loadPendingInteractionForCallback(chatId, messageId, interactionId, callbackQueryId);
+    if (!loaded) {
+      return;
+    }
+
+    const { row, interaction } = loaded;
+    if (!isPendingInteractionActionable(row)) {
+      await this.renderStoredPendingInteraction(chatId, row, interaction);
+      await this.safeAnswerCallbackQuery(
+        callbackQueryId,
+        isPendingInteractionHandled(row) ? "这个操作已处理。" : "这个按钮已过期，请重新操作。"
+      );
+      return;
+    }
+
+    if (interaction.kind !== "questionnaire") {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    const draft = parseQuestionnaireDraft(row.responseJson);
+    const currentQuestion = getCurrentQuestion(interaction, draft);
+    if (!currentQuestion || currentQuestion.id !== questionId || !currentQuestion.options?.[optionIndex]) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    const parsedAnswer = parseQuestionAnswerInput(
+      currentQuestion,
+      currentQuestion.options[optionIndex].value,
+      "option"
+    );
+    if (!parsedAnswer.ok) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, parsedAnswer.message);
+      return;
+    }
+
+    draft.answers[currentQuestion.id] = parsedAnswer.value;
+    draft.awaitingQuestionId = null;
+
+    const nextQuestion = getCurrentQuestion(interaction, draft);
+    if (nextQuestion) {
+      this.store?.markPendingInteractionPending(row.interactionId, JSON.stringify(draft));
+      await this.renderStoredPendingInteraction(chatId, {
+        ...row,
+        state: "pending",
+        responseJson: JSON.stringify(draft)
+      }, interaction);
+      await this.safeAnswerCallbackQuery(callbackQueryId);
+      return;
+    }
+
+    const payload = buildQuestionnaireSubmissionPayload(interaction, draft);
+    const success = await this.submitPendingInteractionResponse(chatId, row, interaction, payload);
+    if (!success) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "暂时无法处理这个交互，请稍后再试。");
+      return;
+    }
+
+    await this.safeAnswerCallbackQuery(callbackQueryId);
+  }
+
+  private async handleInteractionTextModeCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    interactionId: string,
+    questionId: string
+  ): Promise<void> {
+    const loaded = await this.loadPendingInteractionForCallback(chatId, messageId, interactionId, callbackQueryId);
+    if (!loaded) {
+      return;
+    }
+
+    const { row, interaction } = loaded;
+    if (!isPendingInteractionActionable(row)) {
+      await this.renderStoredPendingInteraction(chatId, row, interaction);
+      await this.safeAnswerCallbackQuery(
+        callbackQueryId,
+        isPendingInteractionHandled(row) ? "这个操作已处理。" : "这个按钮已过期，请重新操作。"
+      );
+      return;
+    }
+
+    if (interaction.kind !== "questionnaire") {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    const draft = parseQuestionnaireDraft(row.responseJson);
+    const currentQuestion = getCurrentQuestion(interaction, draft);
+    if (!currentQuestion || currentQuestion.id !== questionId) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+    if (!questionAllowsTextAnswer(currentQuestion)) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个问题只能用按钮回答。");
+      return;
+    }
+
+    draft.awaitingQuestionId = currentQuestion.id;
+    this.store?.markPendingInteractionAwaitingText(row.interactionId, JSON.stringify(draft));
+    this.pendingInteractionTextModes.set(chatId, {
+      interactionId: row.interactionId,
+      questionId: currentQuestion.id
+    });
+    await this.safeAnswerCallbackQuery(callbackQueryId);
+    await this.safeSendMessage(
+      chatId,
+      currentQuestion.isSecret
+        ? "请直接发送这条敏感回答。桥不会把它回显到可见摘要里。"
+        : "请直接发送这条问题的文字回答。发送 /cancel 可以取消。"
+    );
+  }
+
+  private async handleInteractionCancelCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    interactionId: string
+  ): Promise<void> {
+    const loaded = await this.loadPendingInteractionForCallback(chatId, messageId, interactionId, callbackQueryId);
+    if (!loaded) {
+      return;
+    }
+
+    const { row, interaction } = loaded;
+    if (!isPendingInteractionActionable(row)) {
+      await this.renderStoredPendingInteraction(chatId, row, interaction);
+      await this.safeAnswerCallbackQuery(
+        callbackQueryId,
+        isPendingInteractionHandled(row) ? "这个操作已处理。" : "这个按钮已过期，请重新操作。"
+      );
+      return;
+    }
+
+    if (interaction.kind === "approval") {
+      const resolved = buildInteractionDecisionResolution(interaction, "cancel");
+      const success = resolved
+        ? await this.submitPendingInteractionResponse(chatId, row, interaction, resolved.payload, {
+          state: "canceled",
+          errorReason: "user_canceled_interaction"
+        })
+        : await this.failPendingInteraction(chatId, row, interaction, "user_canceled_interaction", {
+          state: "canceled"
+        });
+      await this.safeAnswerCallbackQuery(callbackQueryId, success ? undefined : "暂时无法处理这个交互，请稍后再试。");
+      return;
+    }
+
+    if (interaction.kind === "elicitation") {
+      const success = await this.submitPendingInteractionResponse(chatId, row, interaction, { action: "cancel" }, {
+        state: "canceled",
+        errorReason: "user_canceled_interaction"
+      });
+      await this.safeAnswerCallbackQuery(callbackQueryId, success ? undefined : "暂时无法处理这个交互，请稍后再试。");
+      return;
+    }
+
+    if (interaction.kind === "questionnaire" && interaction.submission === "mcp_elicitation_form") {
+      const success = await this.submitPendingInteractionResponse(chatId, row, interaction, { action: "cancel" }, {
+        state: "canceled",
+        errorReason: "user_canceled_interaction"
+      });
+      await this.safeAnswerCallbackQuery(callbackQueryId, success ? undefined : "暂时无法处理这个交互，请稍后再试。");
+      return;
+    }
+
+    const failed = await this.failPendingInteraction(chatId, row, interaction, "user_canceled_interaction", {
+      state: "canceled"
+    });
+    await this.safeAnswerCallbackQuery(callbackQueryId, failed ? undefined : "暂时无法处理这个交互，请稍后再试。");
+  }
+
+  private async cancelPendingTextInteraction(chatId: string, interactionId: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const row = this.store.getPendingInteraction(interactionId, chatId);
+    if (!row) {
+      this.pendingInteractionTextModes.delete(chatId);
+      await this.safeSendMessage(chatId, "这个交互已过期。");
+      return;
+    }
+
+    const interaction = parseStoredInteraction(row.promptJson);
+    if (!interaction) {
+      this.pendingInteractionTextModes.delete(chatId);
+      await this.safeSendMessage(chatId, "这个交互已过期。");
+      return;
+    }
+
+    if (interaction.kind === "approval") {
+      const resolved = buildInteractionDecisionResolution(interaction, "cancel");
+      if (resolved) {
+        await this.submitPendingInteractionResponse(chatId, row, interaction, resolved.payload, {
+          state: "canceled",
+          errorReason: "user_canceled_text_mode"
+        });
+      } else {
+        await this.failPendingInteraction(chatId, row, interaction, "user_canceled_text_mode", {
+          state: "canceled"
+        });
+      }
+    } else if (interaction.kind === "elicitation") {
+      await this.submitPendingInteractionResponse(chatId, row, interaction, { action: "cancel" }, {
+        state: "canceled",
+        errorReason: "user_canceled_text_mode"
+      });
+    } else if (interaction.kind === "questionnaire" && interaction.submission === "mcp_elicitation_form") {
+      await this.submitPendingInteractionResponse(chatId, row, interaction, { action: "cancel" }, {
+        state: "canceled",
+        errorReason: "user_canceled_text_mode"
+      });
+    } else {
+      await this.failPendingInteraction(chatId, row, interaction, "user_canceled_text_mode", {
+        state: "canceled"
+      });
+    }
+  }
+
+  private async handlePendingInteractionTextAnswer(
+    chatId: string,
+    mode: PendingInteractionTextMode,
+    text: string
+  ): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const row = this.store.getPendingInteraction(mode.interactionId, chatId);
+    if (!row) {
+      this.pendingInteractionTextModes.delete(chatId);
+      await this.safeSendMessage(chatId, "这个交互已过期。");
+      return;
+    }
+
+    const interaction = parseStoredInteraction(row.promptJson);
+    if (!interaction || interaction.kind !== "questionnaire") {
+      this.pendingInteractionTextModes.delete(chatId);
+      await this.safeSendMessage(chatId, "这个交互已过期。");
+      return;
+    }
+
+    if (!isPendingInteractionActionable(row)) {
+      this.pendingInteractionTextModes.delete(chatId);
+      await this.renderStoredPendingInteraction(chatId, row, interaction);
+      await this.safeSendMessage(chatId, isPendingInteractionHandled(row) ? "这个操作已处理。" : "这个交互已过期。");
+      return;
+    }
+
+    const draft = parseQuestionnaireDraft(row.responseJson);
+    const currentQuestion = getCurrentQuestion(interaction, draft);
+    if (!currentQuestion || currentQuestion.id !== mode.questionId) {
+      this.pendingInteractionTextModes.delete(chatId);
+      await this.safeSendMessage(chatId, "这个交互已过期。");
+      return;
+    }
+
+    const parsedAnswer = parseQuestionAnswerInput(currentQuestion, text, "text");
+    if (!parsedAnswer.ok) {
+      await this.safeSendMessage(chatId, parsedAnswer.message);
+      return;
+    }
+
+    draft.answers[currentQuestion.id] = parsedAnswer.value;
+    draft.awaitingQuestionId = null;
+    this.pendingInteractionTextModes.delete(chatId);
+
+    const nextQuestion = getCurrentQuestion(interaction, draft);
+    if (nextQuestion) {
+      this.store.markPendingInteractionPending(row.interactionId, JSON.stringify(draft));
+      await this.renderStoredPendingInteraction(chatId, {
+        ...row,
+        state: "pending",
+        responseJson: JSON.stringify(draft)
+      }, interaction);
+      return;
+    }
+
+    const payload = buildQuestionnaireSubmissionPayload(interaction, draft);
+    const success = await this.submitPendingInteractionResponse(chatId, row, interaction, payload);
+    if (!success) {
+      await this.safeSendMessage(chatId, "暂时无法处理这个交互，请稍后再试。");
+    }
+  }
+
+  private async submitPendingInteractionResponse(
+    chatId: string,
+    row: PendingInteractionRow,
+    interaction: NormalizedInteraction,
+    payload: unknown,
+    options?: {
+      state?: Extract<PendingInteractionState, "answered" | "canceled">;
+      errorReason?: string | null;
+    }
+  ): Promise<boolean> {
+    if (!this.store || !this.appServer) {
+      return false;
+    }
+
+    const terminalState = options?.state ?? "answered";
+    const payloadJson = JSON.stringify(payload);
+    try {
+      await this.appServer.respondToServerRequest(deserializeJsonRpcRequestId(row.requestId), payload);
+      if (terminalState === "canceled") {
+        this.store.markPendingInteractionCanceled(row.interactionId, payloadJson, options?.errorReason ?? null);
+      } else {
+        this.store.markPendingInteractionAnswered(row.interactionId, payloadJson);
+      }
+      this.clearPendingInteractionTextMode(row.interactionId);
+      await this.appendInteractionResolvedJournal(row, {
+        finalState: terminalState,
+        responseJson: payloadJson,
+        errorReason: options?.errorReason ?? null,
+        resolutionSource: "server_response_success"
+      });
+      await this.renderStoredPendingInteraction(chatId, {
+        ...row,
+        state: terminalState,
+        responseJson: payloadJson,
+        errorReason: options?.errorReason ?? null
+      }, interaction);
+      return true;
+    } catch (error) {
+      await this.logger.warn("interaction response dispatch failed", {
+        interactionId: row.interactionId,
+        requestMethod: row.requestMethod,
+        error: `${error}`
+      });
+      this.store.markPendingInteractionFailed(row.interactionId, "response_dispatch_failed");
+      this.clearPendingInteractionTextMode(row.interactionId);
+      await this.appendInteractionResolvedJournal(row, {
+        finalState: "failed",
+        errorReason: "response_dispatch_failed",
+        resolutionSource: "server_response_error"
+      });
+      await this.renderStoredPendingInteraction(chatId, {
+        ...row,
+        state: "failed",
+        errorReason: "response_dispatch_failed"
+      }, interaction);
+      return false;
+    }
+  }
+
+  private async failPendingInteraction(
+    chatId: string,
+    row: PendingInteractionRow,
+    interaction: NormalizedInteraction,
+    reason: string,
+    options?: {
+      state?: Extract<PendingInteractionState, "failed" | "canceled">;
+    }
+  ): Promise<boolean> {
+    if (!this.store || !this.appServer) {
+      return false;
+    }
+
+    const terminalState = options?.state ?? "failed";
+    try {
+      await this.appServer.respondToServerRequestError(
+        deserializeJsonRpcRequestId(row.requestId),
+        4001,
+        reason
+      );
+      if (terminalState === "canceled") {
+        this.store.markPendingInteractionCanceled(row.interactionId, null, reason);
+      } else {
+        this.store.markPendingInteractionFailed(row.interactionId, reason);
+      }
+      this.clearPendingInteractionTextMode(row.interactionId);
+      await this.appendInteractionResolvedJournal(row, {
+        finalState: terminalState,
+        errorReason: reason,
+        resolutionSource: "server_response_error"
+      });
+      await this.renderStoredPendingInteraction(chatId, {
+        ...row,
+        state: terminalState,
+        errorReason: reason
+      }, interaction);
+      return true;
+    } catch (error) {
+      await this.logger.warn("interaction failure dispatch failed", {
+        interactionId: row.interactionId,
+        requestMethod: row.requestMethod,
+        error: `${error}`
+      });
+      return false;
+    }
+  }
+
+  private async loadPendingInteractionForCallback(
+    chatId: string,
+    messageId: number,
+    interactionId: string,
+    callbackQueryId: string
+  ): Promise<{ row: PendingInteractionRow; interaction: NormalizedInteraction } | null> {
+    if (!this.store) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return null;
+    }
+
+    const row = this.store.getPendingInteraction(interactionId, chatId);
+    if (!row) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return null;
+    }
+
+    if (row.telegramMessageId !== null && row.telegramMessageId !== messageId) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return null;
+    }
+
+    const interaction = parseStoredInteraction(row.promptJson);
+    if (!interaction) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return null;
+    }
+
+    return { row, interaction };
+  }
+
+  private async renderStoredPendingInteraction(
+    chatId: string,
+    row: PendingInteractionRow,
+    interaction: NormalizedInteraction
+  ): Promise<void> {
+    if (row.telegramMessageId === null) {
+      return;
+    }
+
+    const rendered = buildPendingInteractionSurface(row, interaction);
+    await this.safeEditHtmlMessageText(chatId, row.telegramMessageId, rendered.text, rendered.replyMarkup);
+  }
+
+  private clearPendingInteractionTextMode(interactionId: string): void {
+    for (const [chatId, pending] of this.pendingInteractionTextModes.entries()) {
+      if (pending.interactionId === interactionId) {
+        this.pendingInteractionTextModes.delete(chatId);
+      }
+    }
+  }
+
+  private async expirePendingInteractionsForTurn(
+    chatId: string,
+    threadId: string,
+    turnId: string,
+    reason: string
+  ): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const pending = this.store
+      .listPendingInteractionsByTurn(threadId, turnId)
+      .filter((interaction) => isPendingInteractionActionable(interaction));
+
+    if (pending.length === 0) {
+      return;
+    }
+
+    this.store.expirePendingInteractionsForTurn(threadId, turnId, reason);
+    for (const interactionRow of pending) {
+      this.clearPendingInteractionTextMode(interactionRow.interactionId);
+      await this.appendInteractionResolvedJournal(interactionRow, {
+        finalState: "expired",
+        errorReason: reason,
+        resolutionSource: "turn_expired"
+      });
+      const interaction = parseStoredInteraction(interactionRow.promptJson);
+      if (!interaction) {
+        continue;
+      }
+
+      await this.renderStoredPendingInteraction(chatId, {
+        ...interactionRow,
+        state: "expired",
+        errorReason: reason
+      }, interaction);
+    }
+  }
+
   private async authorizeMessageSender(
     message: TelegramMessage
   ): Promise<{ authorized: boolean; chatId: string; userId: string }> {
@@ -837,6 +1478,35 @@ export class BridgeService {
     }
 
     if (activeSession.status === "running") {
+      const activeTurn = this.activeTurn;
+      const blockedStatus = activeTurn?.tracker.getStatus().turnStatus === "blocked";
+      if (
+        text &&
+        activeTurn &&
+        activeTurn.sessionId === activeSession.sessionId &&
+        blockedStatus &&
+        !this.pendingInteractionTextModes.has(chatId)
+      ) {
+        try {
+          await this.ensureAppServerAvailable();
+          await this.appServer?.steerTurn({
+            threadId: activeTurn.threadId,
+            expectedTurnId: activeTurn.turnId,
+            input: [{ type: "text", text }]
+          });
+        } catch (error) {
+          await this.logger.warn("turn steer failed", {
+            chatId,
+            sessionId: activeSession.sessionId,
+            threadId: activeTurn.threadId,
+            turnId: activeTurn.turnId,
+            error: `${error}`
+          });
+          await this.safeSendMessage(chatId, "Codex 服务暂时不可用，请稍后重试。");
+        }
+        return;
+      }
+
       await this.safeSendMessage(chatId, "当前项目仍在执行，请等待完成或发送 /interrupt。");
       return;
     }
@@ -1411,9 +2081,91 @@ export class BridgeService {
       void this.handleAppServerNotification(notification.method, notification.params);
     });
 
+    this.appServer.onServerRequest((request) => {
+      void this.handleAppServerServerRequest(request);
+    });
+
     this.appServer.onExit((error) => {
       void this.handleAppServerExit(error);
     });
+  }
+
+  private async handleAppServerServerRequest(request: JsonRpcServerRequest): Promise<void> {
+    if (!this.store || !this.appServer) {
+      return;
+    }
+
+    const normalized = normalizeServerRequest(request.method, request.params);
+    if (!normalized) {
+      await this.logger.warn("unsupported app-server server request", {
+        method: request.method,
+        id: request.id
+      });
+      await this.appServer.respondToServerRequestError(request.id, -32601, `Unsupported server request: ${request.method}`);
+      return;
+    }
+
+    const activeTurn = this.activeTurn;
+    if (!activeTurn) {
+      await this.logger.warn("server request received without active turn", {
+        method: request.method,
+        id: request.id
+      });
+      await this.appServer.respondToServerRequestError(request.id, -32000, "No active turn available for interaction");
+      return;
+    }
+
+    const effectiveTurnId = normalized.turnId || activeTurn.turnId;
+    if (normalized.threadId !== activeTurn.threadId || effectiveTurnId !== activeTurn.turnId) {
+      await this.logger.warn("server request does not match active turn", {
+        method: request.method,
+        id: request.id,
+        requestThreadId: normalized.threadId,
+        requestTurnId: effectiveTurnId,
+        activeThreadId: activeTurn.threadId,
+        activeTurnId: activeTurn.turnId
+      });
+      await this.appServer.respondToServerRequestError(request.id, -32001, "Interaction does not match the active turn");
+      return;
+    }
+
+    const pending = this.store.createPendingInteraction({
+      telegramChatId: activeTurn.chatId,
+      sessionId: activeTurn.sessionId,
+      threadId: normalized.threadId,
+      turnId: effectiveTurnId,
+      requestId: serializeJsonRpcRequestId(request.id),
+      requestMethod: request.method,
+      interactionKind: normalized.kind,
+      promptJson: JSON.stringify({
+        ...normalized,
+        turnId: effectiveTurnId
+      })
+    });
+    await this.appendInteractionCreatedJournal(pending);
+
+    const sent = await this.sendPendingInteractionCard(activeTurn.chatId, pending, normalized);
+    if (!sent) {
+      this.store.markPendingInteractionFailed(pending.interactionId, "telegram_delivery_failed");
+      await this.appendInteractionResolvedJournal(pending, {
+        finalState: "failed",
+        errorReason: "telegram_delivery_failed",
+        resolutionSource: "telegram_delivery_failed"
+      });
+      await this.appServer.respondToServerRequestError(request.id, -32603, "Failed to deliver Telegram interaction card");
+      return;
+    }
+
+    this.store.setPendingInteractionMessageId(pending.interactionId, sent.message_id);
+  }
+
+  private async sendPendingInteractionCard(
+    chatId: string,
+    pending: PendingInteractionRow,
+    interaction: NormalizedInteraction
+  ): Promise<TelegramMessage | null> {
+    const rendered = buildPendingInteractionSurface(pending, interaction);
+    return await this.safeSendHtmlMessageResult(chatId, rendered.text, rendered.replyMarkup);
   }
 
   private async handleAppServerNotification(method: string, params: unknown): Promise<void> {
@@ -1472,6 +2224,8 @@ export class BridgeService {
     if (classified.kind !== "turn_completed" || (classified.turnId && classified.turnId !== activeTurn.turnId)) {
       return;
     }
+
+    await this.expirePendingInteractionsForTurn(activeTurn.chatId, activeTurn.threadId, activeTurn.turnId, `turn_${classified.status}`);
 
     this.activeTurn = null;
 
@@ -1554,6 +2308,7 @@ export class BridgeService {
   }
 
   private async getInspectRenderPayload(activeSession: SessionRow): Promise<InspectRenderPayload | null> {
+    const pendingInteractions = this.buildPendingInteractionSummaries(activeSession);
     const activity = this.activeTurn?.sessionId === activeSession.sessionId
       ? {
           tracker: this.activeTurn.tracker,
@@ -1563,7 +2318,10 @@ export class BridgeService {
       : this.recentActivityBySessionId.get(activeSession.sessionId);
 
     if (activity) {
-      const snapshot = activity.tracker.getInspectSnapshot();
+      const snapshot = {
+        ...activity.tracker.getInspectSnapshot(),
+        pendingInteractions
+      };
       if (snapshot.inspectAvailable) {
         return {
           snapshot,
@@ -1588,7 +2346,26 @@ export class BridgeService {
       }
     }
 
-    return await this.buildHistoricalInspectRenderPayload(activeSession);
+    const historicalPayload = await this.buildHistoricalInspectRenderPayload(activeSession);
+    if (historicalPayload) {
+      return {
+        ...historicalPayload,
+        snapshot: {
+          ...historicalPayload.snapshot,
+          pendingInteractions
+        }
+      };
+    }
+
+    if (pendingInteractions.length > 0) {
+      return {
+        snapshot: buildPendingInteractionOnlyInspectSnapshot(pendingInteractions),
+        commands: [],
+        note: null
+      };
+    }
+
+    return null;
   }
 
   private async buildHistoricalInspectRenderPayload(activeSession: SessionRow): Promise<InspectRenderPayload | null> {
@@ -1628,6 +2405,23 @@ export class BridgeService {
       });
       return null;
     }
+  }
+
+  private buildPendingInteractionSummaries(activeSession: SessionRow): PendingInteractionSummary[] {
+    if (!this.store) {
+      return [];
+    }
+
+    return this.store
+      .listPendingInteractionsByChat(activeSession.telegramChatId, ["pending", "awaiting_text"])
+      .filter((interaction) => interaction.sessionId === activeSession.sessionId)
+      .map((interaction) => ({
+        interactionId: interaction.interactionId,
+        requestMethod: interaction.requestMethod,
+        interactionKind: interaction.interactionKind,
+        state: interaction.state,
+        awaitingText: interaction.state === "awaiting_text"
+      }));
   }
 
   private getRuntimeCardTraceContext(activeTurn: ActiveTurnState): RuntimeCardTraceContext {
@@ -2113,6 +2907,88 @@ export class BridgeService {
         error: `${error}`
       });
     }
+  }
+
+  private async appendInteractionCreatedJournal(row: PendingInteractionRow): Promise<void> {
+    await this.appendDebugJournalRecord({
+      receivedAt: new Date().toISOString(),
+      threadId: row.threadId,
+      turnId: row.turnId,
+      method: "bridge/interaction/created",
+      params: {
+        interactionId: row.interactionId,
+        requestId: row.requestId,
+        requestMethod: row.requestMethod,
+        interactionKind: row.interactionKind,
+        state: row.state,
+        telegramChatId: row.telegramChatId,
+        sessionId: row.sessionId
+      }
+    }, row.sessionId);
+  }
+
+  private async appendInteractionResolvedJournal(
+    row: PendingInteractionRow,
+    resolution: {
+      finalState: PendingInteractionTerminalState;
+      responseJson?: string | null;
+      errorReason?: string | null;
+      resolutionSource: InteractionResolutionSource;
+    }
+  ): Promise<void> {
+    await this.appendDebugJournalRecord({
+      receivedAt: new Date().toISOString(),
+      threadId: row.threadId,
+      turnId: row.turnId,
+      method: "bridge/interaction/resolved",
+      params: {
+        interactionId: row.interactionId,
+        requestId: row.requestId,
+        requestMethod: row.requestMethod,
+        interactionKind: row.interactionKind,
+        finalState: resolution.finalState,
+        responseJson: resolution.responseJson ?? null,
+        errorReason: resolution.errorReason ?? null,
+        resolutionSource: resolution.resolutionSource
+      }
+    }, row.sessionId);
+  }
+
+  private async appendDebugJournalRecord(record: DebugJournalRecord, sessionId: string | null): Promise<void> {
+    const writer = this.resolveDebugJournalWriter(record.threadId, record.turnId);
+    if (!writer) {
+      return;
+    }
+
+    try {
+      await writer.append(record);
+    } catch (error) {
+      await this.logger.warn("debug journal append failed", {
+        sessionId,
+        turnId: record.turnId,
+        error: `${error}`
+      });
+    }
+  }
+
+  private resolveDebugJournalWriter(threadId: string | null, turnId: string | null): DebugJournalWriter | null {
+    if (
+      threadId
+      && this.activeTurn?.threadId === threadId
+      && (turnId === null || this.activeTurn.turnId === turnId)
+    ) {
+      return this.activeTurn.debugJournal;
+    }
+
+    if (!threadId || !turnId) {
+      return null;
+    }
+
+    return new TurnDebugJournal({
+      debugRootDir: getDebugRuntimeDir(this.paths.runtimeDir),
+      threadId,
+      turnId
+    });
   }
 
   private findPendingThreadArchiveOp(threadId: string, opId: number): PendingThreadArchiveOp | null {
@@ -3315,7 +4191,8 @@ function buildInspectPayloadFromThreadHistory(
     recentWebSearches,
     planSnapshot,
     agentSnapshot: [],
-    completedCommentary
+    completedCommentary,
+    pendingInteractions: []
   };
 
   const hasStructuredDetail = commands.length > 0
@@ -3334,6 +4211,615 @@ function buildInspectPayloadFromThreadHistory(
     snapshot,
     commands,
     note: "以下内容来自最近一次执行的历史记录。"
+  };
+}
+
+function buildPendingInteractionSurface(
+  row: PendingInteractionRow,
+  interaction: NormalizedInteraction
+): {
+  text: string;
+  replyMarkup?: TelegramInlineKeyboardMarkup;
+} {
+  if (row.state === "answered") {
+    return buildInteractionResolvedCard({
+      title: interaction.title,
+      state: "answered",
+      summary: summarizeAnsweredInteraction(row, interaction)
+    });
+  }
+
+  if (row.state === "canceled") {
+    return buildInteractionResolvedCard({
+      title: interaction.title,
+      state: "canceled",
+      summary: "已取消"
+    });
+  }
+
+  if (row.state === "failed") {
+    return buildInteractionResolvedCard({
+      title: interaction.title,
+      state: "failed",
+      summary: row.errorReason
+    });
+  }
+
+  if (row.state === "expired") {
+    return buildInteractionExpiredCard({
+      title: interaction.title,
+      reason: row.errorReason
+    });
+  }
+
+  switch (interaction.kind) {
+    case "approval":
+      return buildInteractionApprovalCard({
+        interactionId: row.interactionId,
+        title: interaction.title,
+        subtitle: interaction.subtitle,
+        body: interaction.body,
+        detail: interaction.detail,
+        actions: buildApprovalActions(interaction)
+      });
+
+    case "permissions":
+      return buildInteractionApprovalCard({
+        interactionId: row.interactionId,
+        title: interaction.title,
+        subtitle: interaction.subtitle,
+        body: summarizePermissions(interaction.requestedPermissions),
+        detail: interaction.detail,
+        actions: [
+          { text: "批准本次权限", decisionKey: "accept" },
+          { text: "本会话内总是批准", decisionKey: "acceptForSession" },
+          { text: "拒绝", decisionKey: "decline" }
+        ]
+      });
+
+    case "elicitation":
+      return buildInteractionApprovalCard({
+        interactionId: row.interactionId,
+        title: interaction.title,
+        subtitle: `MCP: ${interaction.serverName}`,
+        body: interaction.message,
+        detail: interaction.detail,
+        actions: [
+          { text: "接受", decisionKey: "accept" },
+          { text: "拒绝", decisionKey: "decline" }
+        ]
+      });
+
+    case "questionnaire": {
+      const draft = parseQuestionnaireDraft(row.responseJson);
+      const currentQuestion = getCurrentQuestion(interaction, draft);
+      if (!currentQuestion) {
+        return buildInteractionResolvedCard({
+          title: interaction.title,
+          state: "answered",
+          summary: summarizeAnsweredInteraction(row, interaction)
+        });
+      }
+
+      return buildInteractionQuestionCard({
+        interactionId: row.interactionId,
+        title: interaction.title,
+        questionId: currentQuestion.id,
+        header: currentQuestion.header,
+        question: currentQuestion.question,
+        questionIndex: findQuestionIndex(interaction, currentQuestion.id) + 1,
+        totalQuestions: interaction.questions.length,
+        options: currentQuestion.options,
+        isOther: currentQuestion.isOther,
+        isSecret: currentQuestion.isSecret
+      });
+    }
+  }
+}
+
+function buildApprovalActions(interaction: NormalizedApprovalInteraction): Array<{ text: string; decisionKey: string }> {
+  return interaction.decisionOptions
+    .filter((option) => option.kind !== "cancel")
+    .map((option) => ({
+      decisionKey: option.key,
+      text: option.label
+    }));
+}
+
+function summarizeAnsweredInteraction(row: PendingInteractionRow, interaction: NormalizedInteraction): string | null {
+  const payload = parseJsonRecord(row.responseJson);
+  switch (interaction.kind) {
+    case "approval": {
+      const decisionRecord = asRecord(payload?.decision);
+      if (decisionRecord?.acceptWithExecpolicyAmendment) {
+        return "已批准，并更新命令规则";
+      }
+      if (decisionRecord?.applyNetworkPolicyAmendment) {
+        const networkDecision = asRecord(decisionRecord.applyNetworkPolicyAmendment);
+        const amendment = asRecord(networkDecision?.network_policy_amendment);
+        const host = typeof amendment?.host === "string" ? amendment.host : null;
+        return host ? `已批准，并保存网络规则（${host}）` : "已批准，并保存网络规则";
+      }
+
+      const decision = typeof payload?.decision === "string" ? payload.decision : null;
+      if (decision === "accept" || decision === "approved") {
+        return "已批准";
+      }
+      if (decision === "acceptForSession" || decision === "approved_for_session") {
+        return "已批准，并写入本会话缓存";
+      }
+      if (decision === "decline" || decision === "denied") {
+        return "已拒绝";
+      }
+      if (decision === "cancel" || decision === "abort") {
+        return "已取消";
+      }
+      return "已处理";
+    }
+
+    case "permissions": {
+      const scope = typeof payload?.scope === "string" ? payload.scope : "turn";
+      const granted = summarizePermissions(payload?.permissions ?? null);
+      return granted ? `已授权（${scope}）: ${granted}` : `已拒绝（${scope}）`;
+    }
+
+    case "questionnaire": {
+      const action = typeof payload?.action === "string" ? payload.action : null;
+      if (action === "cancel") {
+        return "已取消";
+      }
+      if (action === "decline") {
+        return "已拒绝";
+      }
+      if (action === "accept") {
+        const content = parseJsonRecord(payload?.content);
+        const count = content ? Object.keys(content).length : 0;
+        return count > 0 ? `已提交 ${count} 个字段` : "已提交表单";
+      }
+
+      const answers = parseJsonRecord(payload?.answers);
+      const count = answers ? Object.keys(answers).length : 0;
+      return count > 0 ? `已提交 ${count} 个回答` : "已提交回答";
+    }
+
+    case "elicitation": {
+      const action = typeof payload?.action === "string" ? payload.action : null;
+      return action === "accept" ? "已接受" : action === "decline" ? "已拒绝" : action === "cancel" ? "已取消" : "已处理";
+    }
+  }
+}
+
+function summarizePermissions(value: unknown): string | null {
+  const record = parseJsonRecord(value);
+  if (!record) {
+    return null;
+  }
+
+  const parts: string[] = [];
+  const fileSystem = parseJsonRecord(record.fileSystem);
+  if (fileSystem) {
+    const read = Array.isArray(fileSystem.read) ? fileSystem.read.length : 0;
+    const write = Array.isArray(fileSystem.write) ? fileSystem.write.length : 0;
+    if (read > 0 || write > 0) {
+      parts.push(`文件系统 读${read}/写${write}`);
+    }
+  }
+
+  const network = parseJsonRecord(record.network);
+  if (network?.enabled === true) {
+    parts.push("网络");
+  }
+
+  const macos = parseJsonRecord(record.macos);
+  if (macos) {
+    parts.push("macOS 权限");
+  }
+
+  return parts.length > 0 ? parts.join("；") : "无额外权限";
+}
+
+function isPendingInteractionActionable(row: PendingInteractionRow): boolean {
+  return row.state === "pending" || row.state === "awaiting_text";
+}
+
+function isPendingInteractionHandled(row: PendingInteractionRow): boolean {
+  return row.state === "answered" || row.state === "canceled";
+}
+
+function parseStoredInteraction(promptJson: string): NormalizedInteraction | null {
+  try {
+    return JSON.parse(promptJson) as NormalizedInteraction;
+  } catch {
+    return null;
+  }
+}
+
+function parseQuestionnaireDraft(responseJson: string | null): QuestionnaireDraft {
+  if (!responseJson) {
+    return { answers: {} };
+  }
+
+  try {
+    const parsed = JSON.parse(responseJson) as QuestionnaireDraft;
+    return {
+      answers: typeof parsed?.answers === "object" && parsed.answers && !Array.isArray(parsed.answers)
+        ? parsed.answers
+        : {},
+      awaitingQuestionId: typeof parsed?.awaitingQuestionId === "string" ? parsed.awaitingQuestionId : null
+    };
+  } catch {
+    return { answers: {} };
+  }
+}
+
+function getCurrentQuestion(
+  interaction: NormalizedQuestionnaireInteraction,
+  draft: QuestionnaireDraft
+): NormalizedQuestion | null {
+  if (draft.awaitingQuestionId) {
+    return interaction.questions.find((question) => question.id === draft.awaitingQuestionId) ?? null;
+  }
+
+  return interaction.questions.find((question) => !hasDraftAnswer(draft, question.id)) ?? null;
+}
+
+function findQuestionIndex(interaction: NormalizedQuestionnaireInteraction, questionId: string): number {
+  return Math.max(
+    0,
+    interaction.questions.findIndex((question) => question.id === questionId)
+  );
+}
+
+function hasDraftAnswer(draft: QuestionnaireDraft, questionId: string): boolean {
+  return Object.prototype.hasOwnProperty.call(draft.answers, questionId);
+}
+
+function questionAllowsTextAnswer(question: NormalizedQuestion): boolean {
+  return question.isOther || !question.options || question.options.length === 0;
+}
+
+function buildQuestionnaireSubmissionPayload(
+  interaction: NormalizedQuestionnaireInteraction,
+  draft: QuestionnaireDraft
+): unknown {
+  if (interaction.submission === "mcp_elicitation_form") {
+    return {
+      action: "accept",
+      content: buildMcpElicitationFormContent(interaction, draft)
+    };
+  }
+
+  return {
+    answers: buildToolQuestionnaireAnswers(interaction, draft)
+  };
+}
+
+function buildToolQuestionnaireAnswers(
+  interaction: NormalizedQuestionnaireInteraction,
+  draft: QuestionnaireDraft
+): Record<string, { answers: string[] }> {
+  const answers: Record<string, { answers: string[] }> = {};
+  for (const question of interaction.questions) {
+    if (!hasDraftAnswer(draft, question.id)) {
+      continue;
+    }
+
+    const value = toToolQuestionnaireAnswerArray(draft.answers[question.id]);
+    if (!value) {
+      continue;
+    }
+
+    answers[question.id] = { answers: value };
+  }
+
+  return answers;
+}
+
+function buildMcpElicitationFormContent(
+  interaction: NormalizedQuestionnaireInteraction,
+  draft: QuestionnaireDraft
+): Record<string, unknown> {
+  const content: Record<string, unknown> = {};
+  for (const question of interaction.questions) {
+    if (!hasDraftAnswer(draft, question.id)) {
+      continue;
+    }
+
+    const value = toQuestionAnswerValue(question, draft.answers[question.id]);
+    if (value === null || value === undefined) {
+      continue;
+    }
+
+    content[question.id] = value;
+  }
+
+  return content;
+}
+
+type ParsedQuestionAnswer = { ok: true; value: unknown } | { ok: false; message: string };
+
+function parseQuestionAnswerInput(
+  question: NormalizedQuestion,
+  rawInput: string,
+  source: "option" | "text"
+): ParsedQuestionAnswer {
+  if (rawInput === SKIP_QUESTION_OPTION_VALUE) {
+    if (question.required) {
+      return { ok: false, message: "这个问题不能跳过。" };
+    }
+    return { ok: true, value: null };
+  }
+
+  switch (question.answerFormat) {
+    case "number": {
+      const trimmed = rawInput.trim();
+      const value = Number(trimmed);
+      if (!trimmed || !Number.isFinite(value)) {
+        return { ok: false, message: "请输入有效数字。" };
+      }
+      return { ok: true, value };
+    }
+
+    case "integer": {
+      const trimmed = rawInput.trim();
+      if (!/^[-+]?\d+$/u.test(trimmed)) {
+        return { ok: false, message: "请输入整数。" };
+      }
+      return { ok: true, value: Number(trimmed) };
+    }
+
+    case "boolean": {
+      const normalized = rawInput.trim().toLowerCase();
+      if (["true", "1", "yes", "y", "是"].includes(normalized)) {
+        return { ok: true, value: true };
+      }
+      if (["false", "0", "no", "n", "否"].includes(normalized)) {
+        return { ok: true, value: false };
+      }
+      return { ok: false, message: "请输入 true/false 或 是/否。" };
+    }
+
+    case "string_array": {
+      const values = rawInput.split(/[,\uFF0C]/u).map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+      if (values.length === 0) {
+        return {
+          ok: false,
+          message: question.required ? "请至少输入一个值。" : "请先输入至少一个值，或点击跳过。"
+        };
+      }
+      const invalid = question.allowedValues
+        ? values.filter((entry) => !question.allowedValues?.includes(entry))
+        : [];
+      if (invalid.length > 0) {
+        return {
+          ok: false,
+          message: buildAllowedValuesMessage(question.allowedValues)
+        };
+      }
+      return { ok: true, value: values };
+    }
+
+    case "string":
+    default: {
+      if (source === "text" && rawInput.trim().length === 0) {
+        return { ok: false, message: "回答不能为空。" };
+      }
+      if (question.allowedValues && !(source === "text" && question.isOther) && !question.allowedValues.includes(rawInput)) {
+        return {
+          ok: false,
+          message: buildAllowedValuesMessage(question.allowedValues)
+        };
+      }
+      return { ok: true, value: rawInput };
+    }
+  }
+}
+
+function buildAllowedValuesMessage(values: string[] | null): string {
+  return values && values.length > 0
+    ? `可用值：${values.join("、")}。`
+    : "输入值不合法。";
+}
+
+function toToolQuestionnaireAnswerArray(value: unknown): string[] | null {
+  if (typeof value === "string") {
+    return [value];
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return [String(value)];
+  }
+  if (Array.isArray(value) && value.every((entry) => typeof entry === "string")) {
+    return value;
+  }
+
+  const legacy = extractLegacyAnswerArray(value);
+  return legacy && legacy.length > 0 ? legacy : null;
+}
+
+function toQuestionAnswerValue(question: NormalizedQuestion, value: unknown): unknown {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  switch (question.answerFormat) {
+    case "number":
+    case "integer":
+      if (typeof value === "number") {
+        return value;
+      }
+      break;
+
+    case "boolean":
+      if (typeof value === "boolean") {
+        return value;
+      }
+      break;
+
+    case "string_array":
+      if (Array.isArray(value) && value.every((entry) => typeof entry === "string")) {
+        return value;
+      }
+      break;
+
+    case "string":
+    default:
+      if (typeof value === "string") {
+        return value;
+      }
+      break;
+  }
+
+  const legacyAnswers = extractLegacyAnswerArray(value);
+  if (legacyAnswers) {
+    if (question.answerFormat === "string_array") {
+      return legacyAnswers;
+    }
+
+    const parsed = parseQuestionAnswerInput(question, legacyAnswers[0] ?? "", "text");
+    return parsed.ok ? parsed.value : null;
+  }
+
+  if (typeof value === "string") {
+    const parsed = parseQuestionAnswerInput(question, value, "text");
+    return parsed.ok ? parsed.value : null;
+  }
+
+  return null;
+}
+
+function extractLegacyAnswerArray(value: unknown): string[] | null {
+  const record = asRecord(value);
+  const answers = record?.answers;
+  if (!Array.isArray(answers)) {
+    return null;
+  }
+
+  return answers.filter((entry): entry is string => typeof entry === "string");
+}
+
+function buildInteractionDecisionResolution(
+  interaction: NormalizedInteraction,
+  decisionKey: string
+): { payload: unknown } | null {
+  switch (interaction.kind) {
+    case "approval": {
+      const option = interaction.decisionOptions.find((candidate) => candidate.key === decisionKey);
+      return option ? { payload: option.payload } : null;
+    }
+
+    case "permissions":
+      if (decisionKey === "accept") {
+        return {
+          payload: {
+            permissions: interaction.requestedPermissions,
+            scope: "turn"
+          }
+        };
+      }
+      if (decisionKey === "acceptForSession") {
+        return {
+          payload: {
+            permissions: interaction.requestedPermissions,
+            scope: "session"
+          }
+        };
+      }
+      if (decisionKey === "decline") {
+        return {
+          payload: {
+            permissions: {},
+            scope: "turn"
+          }
+        };
+      }
+      return null;
+
+    case "elicitation":
+      if (decisionKey === "accept" || decisionKey === "decline") {
+        return {
+          payload: {
+            action: decisionKey
+          }
+        };
+      }
+      return null;
+
+    case "questionnaire":
+      return null;
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value === "string") {
+    try {
+      return parseJsonRecord(JSON.parse(value));
+    } catch {
+      return null;
+    }
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function serializeJsonRpcRequestId(id: JsonRpcRequestId): string {
+  return JSON.stringify(id);
+}
+
+function deserializeJsonRpcRequestId(text: string): JsonRpcRequestId {
+  try {
+    const parsed = JSON.parse(text) as JsonRpcRequestId;
+    if (typeof parsed === "number" || typeof parsed === "string") {
+      return parsed;
+    }
+  } catch {
+    // Fall through to the raw string.
+  }
+
+  return text;
+}
+
+function buildPendingInteractionOnlyInspectSnapshot(
+  pendingInteractions: PendingInteractionSummary[]
+): InspectSnapshot {
+  return {
+    turnStatus: "blocked",
+    threadRuntimeState: null,
+    activeItemType: null,
+    activeItemId: null,
+    activeItemLabel: null,
+    lastActivityAt: null,
+    currentItemStartedAt: null,
+    currentItemDurationSec: null,
+    lastHighValueEventType: "blocked",
+    lastHighValueTitle: "Blocked: waiting on interaction",
+    lastHighValueDetail: null,
+    latestProgress: null,
+    recentStatusUpdates: [],
+    threadBlockedReason: null,
+    finalMessageAvailable: false,
+    inspectAvailable: true,
+    debugAvailable: true,
+    errorState: null,
+    recentTransitions: [],
+    recentCommandSummaries: [],
+    recentFileChangeSummaries: [],
+    recentMcpSummaries: [],
+    recentWebSearches: [],
+    planSnapshot: [],
+    agentSnapshot: [],
+    completedCommentary: [],
+    pendingInteractions
   };
 }
 

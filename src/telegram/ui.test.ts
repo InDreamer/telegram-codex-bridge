@@ -4,6 +4,10 @@ import assert from "node:assert/strict";
 import type { InspectSnapshot } from "../activity/types.js";
 import type { ProjectCandidate, ReadinessSnapshot, SessionRow } from "../types.js";
 import {
+  buildInteractionApprovalCard,
+  buildInteractionExpiredCard,
+  buildInteractionQuestionCard,
+  buildInteractionResolvedCard,
   buildInspectText,
   buildManualPathConfirmMessage,
   buildProjectSelectedText,
@@ -13,6 +17,7 @@ import {
   buildRuntimeStatusReplyMarkup,
   buildRuntimeStatusCard,
   buildSessionsText,
+  parseCallbackData,
   renderFinalAnswerHtmlChunks
 } from "./ui.js";
 
@@ -109,7 +114,8 @@ function createInspectSnapshot(overrides: Partial<InspectSnapshot> = {}): Inspec
     recentWebSearches: overrides.recentWebSearches ?? [],
     planSnapshot: overrides.planSnapshot ?? [],
     agentSnapshot: overrides.agentSnapshot ?? [],
-    completedCommentary: overrides.completedCommentary ?? []
+    completedCommentary: overrides.completedCommentary ?? [],
+    pendingInteractions: overrides.pendingInteractions ?? []
   };
 }
 
@@ -458,6 +464,130 @@ test("buildInspectText renders a concise Chinese inspect view without duplicate 
   assert.match(text, /- Checked &lt;final&gt; answer/u);
   assert.doesNotMatch(text, /Debug file/u);
   assert.doesNotMatch(text, /最近网页搜索/u);
+});
+
+test("parseCallbackData understands v3 interaction callback families", () => {
+  assert.deepEqual(parseCallbackData("v3:ix:decision:ix-1:accept"), {
+    kind: "interaction_decision",
+    interactionId: "ix-1",
+    decisionKey: "accept"
+  });
+  assert.deepEqual(parseCallbackData("v3:ix:question:ix-1:environment:2"), {
+    kind: "interaction_question",
+    interactionId: "ix-1",
+    questionId: "environment",
+    optionIndex: 2
+  });
+  assert.deepEqual(parseCallbackData("v3:ix:text:ix-1:notes"), {
+    kind: "interaction_text",
+    interactionId: "ix-1",
+    questionId: "notes"
+  });
+  assert.deepEqual(parseCallbackData("v3:ix:cancel:ix-1"), {
+    kind: "interaction_cancel",
+    interactionId: "ix-1"
+  });
+});
+
+test("interaction cards render approval and questionnaire flows without leaking raw protocol fields", () => {
+  const approval = buildInteractionApprovalCard({
+    interactionId: "ix-1",
+    title: "Codex 需要命令批准",
+    subtitle: "命令审批",
+    body: "pnpm test",
+    detail: "需要网络访问",
+    actions: [
+      { text: "批准", decisionKey: "accept" },
+      { text: "本会话内总是批准", decisionKey: "acceptForSession" },
+      { text: "拒绝", decisionKey: "decline" }
+    ]
+  });
+
+  assert.match(approval.text, /Codex 需要命令批准/u);
+  assert.deepEqual(
+    approval.replyMarkup.inline_keyboard[0]?.map((button) => button.callback_data),
+    [
+      "v3:ix:decision:ix-1:accept",
+      "v3:ix:decision:ix-1:acceptForSession",
+      "v3:ix:decision:ix-1:decline"
+    ]
+  );
+
+  const questionnaire = buildInteractionQuestionCard({
+    interactionId: "ix-2",
+    title: "Codex 需要更多信息",
+    questionId: "environment",
+    header: "Env",
+    question: "Which environment?",
+    questionIndex: 1,
+    totalQuestions: 2,
+    options: [
+      { label: "staging", description: "Shared test env" },
+      { label: "prod", description: "Production" }
+    ],
+    isOther: true,
+    isSecret: false
+  });
+
+  assert.match(questionnaire.text, /Which environment/u);
+  assert.equal(questionnaire.replyMarkup.inline_keyboard[0]?.[0]?.callback_data, "v3:ix:question:ix-2:environment:0");
+  assert.equal(questionnaire.replyMarkup.inline_keyboard[1]?.[0]?.callback_data, "v3:ix:text:ix-2:environment");
+});
+
+test("resolved and expired interaction cards drop action buttons", () => {
+  const resolved = buildInteractionResolvedCard({
+    title: "Codex 需要命令批准",
+    state: "answered",
+    summary: "已批准"
+  });
+  const expired = buildInteractionExpiredCard({
+    title: "Codex 需要更多信息",
+    reason: "turn_completed"
+  });
+
+  assert.equal(resolved.replyMarkup, undefined);
+  assert.equal(expired.replyMarkup, undefined);
+  assert.match(resolved.text, /已处理/u);
+  assert.match(expired.text, /已过期/u);
+});
+
+test("buildInspectText includes pending interaction summaries when present", () => {
+  const text = buildInspectText(
+    createInspectSnapshot({
+      pendingInteractions: [
+        {
+          interactionId: "ix-1",
+          requestMethod: "item/tool/requestUserInput",
+          interactionKind: "questionnaire",
+          state: "awaiting_text",
+          awaitingText: true
+        }
+      ]
+    })
+  );
+
+  assert.match(text, /待处理交互/u);
+  assert.match(text, /questionnaire/u);
+  assert.match(text, /等待文字回答/u);
+});
+
+test("buildInspectText renders canceled pending-interaction summaries when provided", () => {
+  const text = buildInspectText(
+    createInspectSnapshot({
+      pendingInteractions: [
+        {
+          interactionId: "ix-2",
+          requestMethod: "item/commandExecution/requestApproval",
+          interactionKind: "approval",
+          state: "canceled",
+          awaitingText: false
+        }
+      ]
+    })
+  );
+
+  assert.match(text, /approval/u);
+  assert.match(text, /已取消/u);
 });
 
 test("renderFinalAnswerHtmlChunks converts common Markdown into Telegram-safe HTML", () => {

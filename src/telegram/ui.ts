@@ -1,4 +1,5 @@
 import type {
+  PendingInteractionState,
   ProjectCandidate,
   ProjectPickerResult,
   ReadinessSnapshot,
@@ -33,7 +34,11 @@ export type ParsedCallbackData =
   | { kind: "agent_collapse"; sessionId: string }
   | { kind: "final_open"; answerId: string }
   | { kind: "final_close"; answerId: string }
-  | { kind: "final_page"; answerId: string; page: number };
+  | { kind: "final_page"; answerId: string; page: number }
+  | { kind: "interaction_decision"; interactionId: string; decisionKey: string }
+  | { kind: "interaction_question"; interactionId: string; questionId: string; optionIndex: number }
+  | { kind: "interaction_text"; interactionId: string; questionId: string }
+  | { kind: "interaction_cancel"; interactionId: string };
 
 export function parseCommand(text: string): { name: string; args: string } | null {
   const trimmed = text.trim();
@@ -105,9 +110,66 @@ export function encodeFinalAnswerPageCallback(answerId: string, page: number): s
   return `v1:final:page:${answerId}:${page}`;
 }
 
+export function encodeInteractionDecisionCallback(interactionId: string, decisionKey: string): string {
+  return `v3:ix:decision:${interactionId}:${decisionKey}`;
+}
+
+export function encodeInteractionQuestionCallback(
+  interactionId: string,
+  questionId: string,
+  optionIndex: number
+): string {
+  return `v3:ix:question:${interactionId}:${questionId}:${optionIndex}`;
+}
+
+export function encodeInteractionTextCallback(interactionId: string, questionId: string): string {
+  return `v3:ix:text:${interactionId}:${questionId}`;
+}
+
+export function encodeInteractionCancelCallback(interactionId: string): string {
+  return `v3:ix:cancel:${interactionId}`;
+}
+
 export function parseCallbackData(data: string): ParsedCallbackData | null {
   const parts = data.split(":");
   if (parts[0] !== "v1") {
+    if (parts[0] === "v3" && parts[1] === "ix") {
+      if (parts[2] === "decision" && parts[3] && parts[4]) {
+        return {
+          kind: "interaction_decision",
+          interactionId: parts[3],
+          decisionKey: parts[4]
+        };
+      }
+
+      if (parts[2] === "question" && parts[3] && parts[4] && parts[5]) {
+        const optionIndex = Number.parseInt(parts[5], 10);
+        if (Number.isFinite(optionIndex) && optionIndex >= 0) {
+          return {
+            kind: "interaction_question",
+            interactionId: parts[3],
+            questionId: parts[4],
+            optionIndex
+          };
+        }
+      }
+
+      if (parts[2] === "text" && parts[3] && parts[4]) {
+        return {
+          kind: "interaction_text",
+          interactionId: parts[3],
+          questionId: parts[4]
+        };
+      }
+
+      if (parts[2] === "cancel" && parts[3]) {
+        return {
+          kind: "interaction_cancel",
+          interactionId: parts[3]
+        };
+      }
+    }
+
     return null;
   }
 
@@ -488,6 +550,150 @@ export function buildRuntimeErrorCard(
   return lines.join("\n");
 }
 
+export function buildInteractionApprovalCard(options: {
+  interactionId: string;
+  title: string;
+  subtitle: string;
+  body?: string | null;
+  detail?: string | null;
+  actions: Array<{
+    text: string;
+    decisionKey: string;
+  }>;
+}): {
+  text: string;
+  replyMarkup: TelegramInlineKeyboardMarkup;
+} {
+  const lines = [formatHtmlHeading(options.title), formatHtmlField("类型：", options.subtitle)];
+  if (options.body) {
+    lines.push(formatHtmlField("内容：", options.body));
+  }
+  if (options.detail) {
+    lines.push(formatHtmlField("说明：", options.detail));
+  }
+
+  const actionRow = options.actions.map((action) => ({
+    text: action.text,
+    callback_data: encodeInteractionDecisionCallback(options.interactionId, action.decisionKey)
+  }));
+
+  return {
+    text: lines.join("\n"),
+    replyMarkup: {
+      inline_keyboard: [
+        actionRow,
+        [{ text: "取消本次交互", callback_data: encodeInteractionCancelCallback(options.interactionId) }]
+      ]
+    }
+  };
+}
+
+export function buildInteractionQuestionCard(options: {
+  interactionId: string;
+  title: string;
+  questionId: string;
+  header: string;
+  question: string;
+  questionIndex: number;
+  totalQuestions: number;
+  options: Array<{ label: string; description: string }> | null;
+  isOther: boolean;
+  isSecret: boolean;
+}): {
+  text: string;
+  replyMarkup: TelegramInlineKeyboardMarkup;
+} {
+  const lines = [
+    formatHtmlHeading(options.title),
+    formatHtmlField("问题：", `${options.questionIndex}/${options.totalQuestions}`),
+    formatHtmlField("标题：", options.header),
+    escapeHtml(options.question)
+  ];
+
+  if (options.isSecret) {
+    lines.push("<i>这条回答会按敏感输入处理，不会进入可见摘要。</i>");
+  }
+
+  if (!options.options || options.options.length === 0) {
+    lines.push("<i>点击下方按钮后，直接在聊天里发送你的回答。</i>");
+    return {
+      text: lines.join("\n"),
+      replyMarkup: {
+        inline_keyboard: [
+          [{ text: "发送文字回答", callback_data: encodeInteractionTextCallback(options.interactionId, options.questionId) }],
+          [{ text: "取消本次交互", callback_data: encodeInteractionCancelCallback(options.interactionId) }]
+        ]
+      }
+    };
+  }
+
+  for (const [index, option] of options.options.entries()) {
+    lines.push(`${index + 1}. ${escapeHtml(option.label)}: ${escapeHtml(option.description)}`);
+  }
+
+  const optionButtons = options.options.map((option, index) => ({
+    text: option.label,
+    callback_data: encodeInteractionQuestionCallback(options.interactionId, options.questionId, index)
+  }));
+  const rows: TelegramInlineKeyboardMarkup["inline_keyboard"] = chunkButtons(optionButtons, 2);
+
+  if (options.isOther) {
+    rows.push([
+      {
+        text: "其他",
+        callback_data: encodeInteractionTextCallback(options.interactionId, options.questionId)
+      }
+    ]);
+  }
+
+  rows.push([{ text: "取消本次交互", callback_data: encodeInteractionCancelCallback(options.interactionId) }]);
+
+  return {
+    text: lines.join("\n"),
+    replyMarkup: { inline_keyboard: rows }
+  };
+}
+
+export function buildInteractionResolvedCard(options: {
+  title: string;
+  state: "answered" | "canceled" | "failed";
+  summary?: string | null;
+}): {
+  text: string;
+  replyMarkup?: TelegramInlineKeyboardMarkup;
+} {
+  const stateText = options.state === "answered"
+    ? "已处理"
+    : options.state === "canceled"
+      ? "已取消"
+      : "处理失败";
+  const lines = [
+    formatHtmlHeading(options.title),
+    formatHtmlField("状态：", stateText)
+  ];
+  if (options.summary) {
+    lines.push(formatHtmlField("结果：", options.summary));
+  }
+  return { text: lines.join("\n") };
+}
+
+export function buildInteractionExpiredCard(options: {
+  title: string;
+  reason?: string | null;
+}): {
+  text: string;
+  replyMarkup?: TelegramInlineKeyboardMarkup;
+} {
+  const lines = [
+    formatHtmlHeading(options.title),
+    formatHtmlField("状态：", "已过期")
+  ];
+  if (options.reason) {
+    lines.push(formatHtmlField("说明：", options.reason));
+  }
+  return { text: lines.join("\n") };
+}
+
 export function buildTurnStatusCard(
   status: ActivityStatus,
   context?: {
@@ -619,6 +825,12 @@ export function buildInspectText(
     lines.push(...commentaryLines);
   }
 
+  const pendingInteractionLines = formatPendingInteractionSection(snapshot.pendingInteractions);
+  if (pendingInteractionLines.length > 0) {
+    lines.push("", formatHtmlHeading("待处理交互"));
+    lines.push(...pendingInteractionLines);
+  }
+
   return lines.join("\n");
 }
 
@@ -747,6 +959,40 @@ function formatInspectCommandSection(commands: RuntimeCommandEntryView[], fallba
   }
 
   return commands.flatMap((command, index) => buildDetailedRuntimeCommandLines(command, index + 1));
+}
+
+function formatPendingInteractionSection(snapshot: InspectSnapshot["pendingInteractions"]): string[] {
+  return snapshot.map((interaction, index) => {
+    const suffix = interaction.awaitingText ? "，等待文字回答" : "";
+    return `${index + 1}. ${escapeHtml(interaction.interactionKind)} / ${escapeHtml(interaction.requestMethod)} / ${escapeHtml(summarizePendingInteractionState(interaction.state))}${suffix}`;
+  });
+}
+
+function chunkButtons<T>(values: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+  return chunks;
+}
+
+export function summarizePendingInteractionState(state: PendingInteractionState): string {
+  switch (state) {
+    case "pending":
+      return "待处理";
+    case "awaiting_text":
+      return "等待文字回答";
+    case "answered":
+      return "已处理";
+    case "canceled":
+      return "已取消";
+    case "expired":
+      return "已过期";
+    case "failed":
+      return "处理失败";
+    default:
+      return state;
+  }
 }
 
 function formatRuntimeCommandText(commandText: string): string {

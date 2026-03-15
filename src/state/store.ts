@@ -10,6 +10,9 @@ import type {
   ChatBindingRow,
   FailureReason,
   FinalAnswerViewRow,
+  PendingInteractionKind,
+  PendingInteractionRow,
+  PendingInteractionState,
   PendingAuthorizationRow,
   ProjectScanCacheRow,
   ReadinessSnapshot,
@@ -149,6 +152,25 @@ interface FinalAnswerViewRecord {
   created_at: string;
 }
 
+interface PendingInteractionRecord {
+  interaction_id: string;
+  telegram_chat_id: string;
+  session_id: string;
+  thread_id: string;
+  turn_id: string;
+  request_id: string;
+  request_method: string;
+  interaction_kind: PendingInteractionKind;
+  state: PendingInteractionState;
+  prompt_json: string;
+  response_json: string | null;
+  telegram_message_id: number | null;
+  created_at: string;
+  updated_at: string;
+  resolved_at: string | null;
+  error_reason: string | null;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -265,6 +287,27 @@ function mapFinalAnswerView(record: FinalAnswerViewRecord): FinalAnswerViewRow {
   };
 }
 
+function mapPendingInteraction(record: PendingInteractionRecord): PendingInteractionRow {
+  return {
+    interactionId: record.interaction_id,
+    telegramChatId: record.telegram_chat_id,
+    sessionId: record.session_id,
+    threadId: record.thread_id,
+    turnId: record.turn_id,
+    requestId: record.request_id,
+    requestMethod: record.request_method,
+    interactionKind: record.interaction_kind,
+    state: record.state,
+    promptJson: record.prompt_json,
+    responseJson: record.response_json,
+    telegramMessageId: record.telegram_message_id,
+    createdAt: record.created_at,
+    updatedAt: record.updated_at,
+    resolvedAt: record.resolved_at,
+    errorReason: record.error_reason
+  };
+}
+
 function choosePreferredActiveSessionId(bindings: ChatBindingRecord[]): string | null {
   const preferred = bindings
     .filter((binding) => binding.active_session_id !== null)
@@ -370,6 +413,25 @@ function initialSchema(): string {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS pending_interaction (
+      interaction_id TEXT PRIMARY KEY,
+      telegram_chat_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      request_method TEXT NOT NULL,
+      interaction_kind TEXT NOT NULL,
+      state TEXT NOT NULL,
+      prompt_json TEXT NOT NULL,
+      response_json TEXT NULL,
+      telegram_message_id INTEGER NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      resolved_at TEXT NULL,
+      error_reason TEXT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_pending_authorization_last_seen
       ON pending_authorization(last_seen_at DESC);
 
@@ -378,10 +440,16 @@ function initialSchema(): string {
 
     CREATE INDEX IF NOT EXISTS idx_final_answer_view_chat_created_at
       ON final_answer_view(telegram_chat_id, created_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_pending_interaction_chat_state
+      ON pending_interaction(telegram_chat_id, state, created_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_pending_interaction_turn
+      ON pending_interaction(thread_id, turn_id, created_at DESC);
   `;
 }
 
-const CURRENT_SCHEMA_VERSION = 3;
+const CURRENT_SCHEMA_VERSION = 4;
 
 function listColumns(db: DatabaseSync, tableName: string): string[] {
   const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
@@ -463,6 +531,45 @@ function applyMigrations(db: DatabaseSync): void {
     );
 
     recordMigration(db, 3);
+  }
+
+  if (!applied.has(4)) {
+    db.exec(
+      `
+        CREATE TABLE IF NOT EXISTS pending_interaction (
+          interaction_id TEXT PRIMARY KEY,
+          telegram_chat_id TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          thread_id TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          request_id TEXT NOT NULL,
+          request_method TEXT NOT NULL,
+          interaction_kind TEXT NOT NULL,
+          state TEXT NOT NULL,
+          prompt_json TEXT NOT NULL,
+          response_json TEXT NULL,
+          telegram_message_id INTEGER NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          resolved_at TEXT NULL,
+          error_reason TEXT NULL
+        )
+      `
+    );
+    db.exec(
+      `
+        CREATE INDEX IF NOT EXISTS idx_pending_interaction_chat_state
+          ON pending_interaction(telegram_chat_id, state, created_at DESC)
+      `
+    );
+    db.exec(
+      `
+        CREATE INDEX IF NOT EXISTS idx_pending_interaction_turn
+          ON pending_interaction(thread_id, turn_id, created_at DESC)
+      `
+    );
+
+    recordMigration(db, 4);
   }
 }
 
@@ -704,6 +811,18 @@ export class BridgeStateStore {
           )
           .run(candidate.telegramChatId, ...previousChatIds);
 
+        if (appliedTableExists(this.db, "pending_interaction")) {
+          this.db
+            .prepare(
+              `
+                UPDATE pending_interaction
+                SET telegram_chat_id = ?
+                WHERE telegram_chat_id IN (${placeholders})
+              `
+            )
+            .run(candidate.telegramChatId, ...previousChatIds);
+        }
+
         this.db
           .prepare(
             `
@@ -776,6 +895,9 @@ export class BridgeStateStore {
       this.db.prepare("DELETE FROM chat_binding").run();
       this.db.prepare("DELETE FROM pending_authorization").run();
       this.db.prepare("DELETE FROM final_answer_view").run();
+      if (appliedTableExists(this.db, "pending_interaction")) {
+        this.db.prepare("DELETE FROM pending_interaction").run();
+      }
 
       if (previousSnapshot) {
         this.writeReadinessSnapshot({
@@ -862,6 +984,25 @@ export class BridgeStateStore {
         insertNotice.run(notice.key, notice.telegramChatId, notice.type, notice.message, notice.createdAt);
         return notice;
       });
+
+      if (appliedTableExists(this.db, "pending_interaction")) {
+        const sessionIds = runningSessions.map((session) => session.session_id);
+        const placeholders = sessionIds.map(() => "?").join(", ");
+        this.db
+          .prepare(
+            `
+              UPDATE pending_interaction
+              SET
+                state = 'failed',
+                updated_at = ?,
+                resolved_at = COALESCE(resolved_at, ?),
+                error_reason = COALESCE(error_reason, 'bridge_restart')
+              WHERE state IN ('pending', 'awaiting_text')
+                AND session_id IN (${placeholders})
+            `
+          )
+          .run(timestamp, timestamp, ...sessionIds);
+      }
 
       this.db.exec("COMMIT");
       return notices;
@@ -1606,6 +1747,297 @@ export class BridgeStateStore {
     this.db.prepare("DELETE FROM final_answer_view WHERE answer_id = ?").run(answerId);
   }
 
+  createPendingInteraction(options: {
+    interactionId?: string;
+    telegramChatId: string;
+    sessionId: string;
+    threadId: string;
+    turnId: string;
+    requestId: string;
+    requestMethod: string;
+    interactionKind: PendingInteractionKind;
+    state?: PendingInteractionState;
+    promptJson: string;
+    responseJson?: string | null;
+    telegramMessageId?: number | null;
+    errorReason?: string | null;
+  }): PendingInteractionRow {
+    const interactionId = options.interactionId ?? randomUUID();
+    const timestamp = nowIso();
+    this.db
+      .prepare(
+        `
+          INSERT INTO pending_interaction (
+            interaction_id,
+            telegram_chat_id,
+            session_id,
+            thread_id,
+            turn_id,
+            request_id,
+            request_method,
+            interaction_kind,
+            state,
+            prompt_json,
+            response_json,
+            telegram_message_id,
+            created_at,
+            updated_at,
+            resolved_at,
+            error_reason
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+        `
+      )
+      .run(
+        interactionId,
+        options.telegramChatId,
+        options.sessionId,
+        options.threadId,
+        options.turnId,
+        options.requestId,
+        options.requestMethod,
+        options.interactionKind,
+        options.state ?? "pending",
+        options.promptJson,
+        options.responseJson ?? null,
+        options.telegramMessageId ?? null,
+        timestamp,
+        timestamp,
+        options.errorReason ?? null
+      );
+
+    const saved = this.getPendingInteraction(interactionId, options.telegramChatId);
+    if (!saved) {
+      throw new Error(`persisted pending interaction missing after save: ${interactionId}`);
+    }
+    return saved;
+  }
+
+  getPendingInteraction(interactionId: string, telegramChatId?: string): PendingInteractionRow | null {
+    const row = telegramChatId
+      ? this.db
+        .prepare(
+          `
+            SELECT *
+            FROM pending_interaction
+            WHERE interaction_id = ? AND telegram_chat_id = ?
+          `
+        )
+        .get(interactionId, telegramChatId)
+      : this.db
+        .prepare(
+          `
+            SELECT *
+            FROM pending_interaction
+            WHERE interaction_id = ?
+          `
+        )
+        .get(interactionId);
+
+    return row ? mapPendingInteraction(row as unknown as PendingInteractionRecord) : null;
+  }
+
+  listPendingInteractionsByChat(
+    telegramChatId: string,
+    states?: PendingInteractionState[]
+  ): PendingInteractionRow[] {
+    const rows = states && states.length > 0
+      ? this.db
+        .prepare(
+          `
+            SELECT *
+            FROM pending_interaction
+            WHERE telegram_chat_id = ?
+              AND state IN (${states.map(() => "?").join(", ")})
+            ORDER BY created_at DESC, interaction_id DESC
+          `
+        )
+        .all(telegramChatId, ...states)
+      : this.db
+        .prepare(
+          `
+            SELECT *
+            FROM pending_interaction
+            WHERE telegram_chat_id = ?
+            ORDER BY created_at DESC, interaction_id DESC
+          `
+        )
+        .all(telegramChatId);
+
+    return (rows as unknown as PendingInteractionRecord[]).map(mapPendingInteraction);
+  }
+
+  listPendingInteractionsByTurn(threadId: string, turnId: string): PendingInteractionRow[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM pending_interaction
+          WHERE thread_id = ? AND turn_id = ?
+          ORDER BY created_at DESC, interaction_id DESC
+        `
+      )
+      .all(threadId, turnId) as unknown as PendingInteractionRecord[];
+
+    return rows.map(mapPendingInteraction);
+  }
+
+  listUnresolvedPendingInteractions(): PendingInteractionRow[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM pending_interaction
+          WHERE state IN ('pending', 'awaiting_text')
+          ORDER BY created_at ASC, interaction_id ASC
+        `
+      )
+      .all() as unknown as PendingInteractionRecord[];
+
+    return rows.map(mapPendingInteraction);
+  }
+
+  listPendingInteractionsForRunningSessions(): PendingInteractionRow[] {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT pi.*
+          FROM pending_interaction pi
+          INNER JOIN session s
+            ON s.session_id = pi.session_id
+          WHERE s.status = 'running'
+            AND pi.state IN ('pending', 'awaiting_text')
+          ORDER BY pi.created_at ASC, pi.interaction_id ASC
+        `
+      )
+      .all() as unknown as PendingInteractionRecord[];
+
+    return rows.map(mapPendingInteraction);
+  }
+
+  setPendingInteractionMessageId(interactionId: string, messageId: number): void {
+    this.db
+      .prepare(
+        `
+          UPDATE pending_interaction
+          SET telegram_message_id = ?, updated_at = ?
+          WHERE interaction_id = ?
+        `
+      )
+      .run(messageId, nowIso(), interactionId);
+  }
+
+  savePendingInteractionDraftResponse(
+    interactionId: string,
+    state: PendingInteractionState,
+    responseJson: string | null
+  ): void {
+    if (state !== "pending" && state !== "awaiting_text") {
+      throw new Error("draft interaction state must be pending or awaiting_text");
+    }
+
+    this.db
+      .prepare(
+        `
+          UPDATE pending_interaction
+          SET
+            state = ?,
+            response_json = ?,
+            updated_at = ?,
+            resolved_at = NULL,
+            error_reason = NULL
+          WHERE interaction_id = ?
+        `
+      )
+      .run(state, responseJson, nowIso(), interactionId);
+  }
+
+  markPendingInteractionAwaitingText(interactionId: string, responseJson?: string | null): void {
+    this.savePendingInteractionDraftResponse(interactionId, "awaiting_text", responseJson ?? null);
+  }
+
+  markPendingInteractionPending(interactionId: string, responseJson?: string | null): void {
+    this.savePendingInteractionDraftResponse(interactionId, "pending", responseJson ?? null);
+  }
+
+  markPendingInteractionAnswered(interactionId: string, responseJson: string): void {
+    const timestamp = nowIso();
+    this.db
+      .prepare(
+        `
+          UPDATE pending_interaction
+          SET
+            state = 'answered',
+            response_json = ?,
+            updated_at = ?,
+            resolved_at = ?,
+            error_reason = NULL
+          WHERE interaction_id = ?
+        `
+      )
+      .run(responseJson, timestamp, timestamp, interactionId);
+  }
+
+  markPendingInteractionCanceled(
+    interactionId: string,
+    responseJson?: string | null,
+    reason?: string | null
+  ): void {
+    const timestamp = nowIso();
+    this.db
+      .prepare(
+        `
+          UPDATE pending_interaction
+          SET
+            state = 'canceled',
+            response_json = ?,
+            updated_at = ?,
+            resolved_at = ?,
+            error_reason = ?
+          WHERE interaction_id = ?
+        `
+      )
+      .run(responseJson ?? null, timestamp, timestamp, reason ?? null, interactionId);
+  }
+
+  markPendingInteractionFailed(interactionId: string, reason: string): void {
+    const timestamp = nowIso();
+    this.db
+      .prepare(
+        `
+          UPDATE pending_interaction
+          SET
+            state = 'failed',
+            updated_at = ?,
+            resolved_at = ?,
+            error_reason = ?
+          WHERE interaction_id = ?
+        `
+      )
+      .run(timestamp, timestamp, reason, interactionId);
+  }
+
+  expirePendingInteractionsForTurn(threadId: string, turnId: string, reason: string): number {
+    const timestamp = nowIso();
+    const info = this.db
+      .prepare(
+        `
+          UPDATE pending_interaction
+          SET
+            state = 'expired',
+            updated_at = ?,
+            resolved_at = COALESCE(resolved_at, ?),
+            error_reason = COALESCE(error_reason, ?)
+          WHERE thread_id = ?
+            AND turn_id = ?
+            AND state IN ('pending', 'awaiting_text')
+        `
+      )
+      .run(timestamp, timestamp, reason, threadId, turnId);
+
+    return Number(info.changes ?? 0);
+  }
+
   writeReadinessSnapshot(snapshot: ReadinessSnapshot): void {
     this.db
       .prepare(
@@ -1662,6 +2094,20 @@ function initializeDatabase(db: DatabaseSync): void {
   if (!applied.has(CURRENT_SCHEMA_VERSION)) {
     throw new Error(`schema migrations incomplete; expected version ${CURRENT_SCHEMA_VERSION}`);
   }
+}
+
+function appliedTableExists(db: DatabaseSync, tableName: string): boolean {
+  const row = db
+    .prepare(
+      `
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = ?
+      `
+    )
+    .get(tableName) as { name: string } | undefined;
+
+  return Boolean(row?.name);
 }
 
 function verifyIntegrity(db: DatabaseSync): void {

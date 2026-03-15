@@ -7,12 +7,12 @@ import { createInterface } from "node:readline";
 import type { Logger } from "../logger.js";
 
 interface JsonRpcSuccess {
-  id: number;
+  id: JsonRpcRequestId;
   result: unknown;
 }
 
 interface JsonRpcError {
-  id: number;
+  id: JsonRpcRequestId;
   error: {
     code: number;
     message: string;
@@ -25,8 +25,17 @@ interface JsonRpcNotification {
   params?: unknown;
 }
 
-type JsonRpcMessage = JsonRpcSuccess | JsonRpcError | JsonRpcNotification;
+export interface JsonRpcServerRequest {
+  id: JsonRpcRequestId;
+  method: string;
+  params?: unknown;
+}
+
+export type JsonRpcRequestId = number | string;
+
+type JsonRpcMessage = JsonRpcSuccess | JsonRpcError | JsonRpcNotification | JsonRpcServerRequest;
 type NotificationHandler = (notification: JsonRpcNotification) => void;
+type ServerRequestHandler = (request: JsonRpcServerRequest) => void;
 type ExitHandler = (error: Error) => void;
 
 interface PendingRequest {
@@ -48,11 +57,39 @@ interface TurnStartParams {
   sandboxPolicy: {
     type: "dangerFullAccess";
   };
-  input: Array<{
-    type: "text";
-    text: string;
-  }>;
+  input: UserInput[];
 }
+
+export type UserInput =
+  | {
+      type: "text";
+      text: string;
+      text_elements?: Array<{
+        byteRange: {
+          start: number;
+          end: number;
+        };
+        placeholder?: string | null;
+      }>;
+    }
+  | {
+      type: "image";
+      url: string;
+    }
+  | {
+      type: "localImage";
+      path: string;
+    }
+  | {
+      type: "skill";
+      name: string;
+      path: string;
+    }
+  | {
+      type: "mention";
+      name: string;
+      path: string;
+    };
 
 export interface ThreadStartResult {
   thread: { id: string };
@@ -116,14 +153,16 @@ export function buildThreadStartParams(cwd: string): ThreadStartParams {
 export function buildTurnStartParams(options: {
   threadId: string;
   cwd: string;
-  text: string;
+  text?: string;
+  input?: UserInput[];
 }): TurnStartParams {
+  const input = options.input ?? (options.text ? [{ type: "text", text: options.text }] : []);
   return {
     threadId: options.threadId,
     cwd: options.cwd,
     approvalPolicy: "never",
     sandboxPolicy: { type: "dangerFullAccess" },
-    input: [{ type: "text", text: options.text }]
+    input
   };
 }
 
@@ -134,6 +173,7 @@ export class CodexAppServerClient {
   private initialized = false;
   private stderrStream: WriteStream | null = null;
   private readonly notificationHandlers = new Set<NotificationHandler>();
+  private readonly serverRequestHandlers = new Set<ServerRequestHandler>();
   private readonly exitHandlers = new Set<ExitHandler>();
 
   constructor(
@@ -258,7 +298,8 @@ export class CodexAppServerClient {
   async startTurn(options: {
     threadId: string;
     cwd: string;
-    text: string;
+    text?: string;
+    input?: UserInput[];
   }): Promise<TurnStartResult> {
     return await this.request<TurnStartResult>("turn/start", buildTurnStartParams(options));
   }
@@ -268,6 +309,14 @@ export class CodexAppServerClient {
       threadId,
       turnId
     });
+  }
+
+  async steerTurn(options: {
+    threadId: string;
+    expectedTurnId: string;
+    input: UserInput[];
+  }): Promise<void> {
+    await this.request("turn/steer", options);
   }
 
   async request<T>(method: string, params: unknown): Promise<T> {
@@ -320,6 +369,26 @@ export class CodexAppServerClient {
     this.child.stdin.write(`${payload}\n`, "utf8");
   }
 
+  async respondToServerRequest(id: JsonRpcRequestId, result: unknown): Promise<void> {
+    await this.writeJsonRpcFrame({ id, result });
+  }
+
+  async respondToServerRequestError(
+    id: JsonRpcRequestId,
+    code: number,
+    message: string,
+    data?: unknown
+  ): Promise<void> {
+    await this.writeJsonRpcFrame({
+      id,
+      error: {
+        code,
+        message,
+        data
+      }
+    });
+  }
+
   async stop(): Promise<void> {
     if (!this.child) {
       return;
@@ -337,6 +406,13 @@ export class CodexAppServerClient {
     this.notificationHandlers.add(handler);
     return () => {
       this.notificationHandlers.delete(handler);
+    };
+  }
+
+  onServerRequest(handler: ServerRequestHandler): () => void {
+    this.serverRequestHandlers.add(handler);
+    return () => {
+      this.serverRequestHandlers.delete(handler);
     };
   }
 
@@ -368,7 +444,19 @@ export class CodexAppServerClient {
       return;
     }
 
-    if (!("id" in message) || typeof message.id !== "number") {
+    if ("method" in message && "id" in message && (typeof message.id === "number" || typeof message.id === "string")) {
+      void this.logger.info("app-server server request", { method: message.method, id: message.id });
+      for (const handler of this.serverRequestHandlers) {
+        handler(message);
+      }
+      return;
+    }
+
+    if (!("id" in message) || (typeof message.id !== "number" && typeof message.id !== "string")) {
+      return;
+    }
+
+    if (typeof message.id !== "number") {
       return;
     }
 
@@ -403,5 +491,22 @@ export class CodexAppServerClient {
     for (const handler of this.exitHandlers) {
       handler(error);
     }
+  }
+
+  private async writeJsonRpcFrame(payload: Record<string, unknown>): Promise<void> {
+    if (!this.child) {
+      throw new Error("app-server child is not running");
+    }
+
+    const serialized = JSON.stringify(payload);
+    await new Promise<void>((resolve, reject) => {
+      this.child?.stdin.write(`${serialized}\n`, "utf8", (error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
   }
 }
