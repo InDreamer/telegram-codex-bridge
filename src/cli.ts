@@ -3,6 +3,7 @@
 import { getBridgePaths } from "./paths.js";
 import { createLogger } from "./logger.js";
 import { parseProjectScanRootsValue } from "./config.js";
+import { parseBooleanLike } from "./util/boolean.js";
 import {
   clearAuthorization,
   getStatus,
@@ -53,20 +54,7 @@ function parseBooleanFlag(value: string | boolean | undefined): boolean | undefi
     return undefined;
   }
 
-  switch (value.trim().toLowerCase()) {
-    case "1":
-    case "true":
-    case "yes":
-    case "on":
-      return true;
-    case "0":
-    case "false":
-    case "no":
-    case "off":
-      return false;
-    default:
-      return undefined;
-  }
+  return parseBooleanLike(value);
 }
 
 function printUsage(): void {

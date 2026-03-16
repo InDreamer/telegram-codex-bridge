@@ -13,7 +13,7 @@ import { CodexAppServerClient } from "./codex/app-server.js";
 import { classifyNotification } from "./codex/notification-classifier.js";
 import { BridgeService } from "./service.js";
 import { BridgeStateStore } from "./state/store.js";
-import { buildTurnStatusCard } from "./telegram/ui.js";
+import { buildTurnStatusCard, encodeModelPickCallback } from "./telegram/ui.js";
 import type { ReadinessSnapshot } from "./types.js";
 
 const testLogger: Logger = {
@@ -5482,6 +5482,62 @@ test("model picker skips the second step when the chosen model does not offer mu
     assert.equal(store.getActiveSession("1")?.selectedModel, "gpt-4.1");
     assert.equal(store.getActiveSession("1")?.selectedReasoningEffort, null);
     assert.match(edited.at(-1)?.text ?? "", /已设置当前会话模型：gpt-4.1 \+ 默认/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("model picker shows expired message when selected model index is stale", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ text: string; options?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; options?: any }> = [];
+
+  try {
+    authorizeNumericChatWithSession(store, "1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        sent.push({ text, options });
+        return createFakeTelegramMessage(1310 + sent.length, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, options });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      answerCallbackQuery: async () => {}
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      listModels: async () => ({
+        data: [{
+          id: "gpt-4.1",
+          model: "gpt-4.1",
+          displayName: "GPT-4.1",
+          isDefault: true,
+          hidden: false,
+          description: "balanced",
+          defaultReasoningEffort: "minimal",
+          supportedReasoningEfforts: [{ reasoningEffort: "minimal", description: "minimal" }]
+        }],
+        nextCursor: null
+      })
+    };
+
+    await (service as any).routeCommand("1", "model", "");
+    await (service as any).handleCallback({
+      id: "cb-model-stale-index",
+      from: { id: 1, is_bot: false, first_name: "Tester" },
+      message: {
+        message_id: 1311,
+        chat: { id: 1, type: "private" },
+        date: 0,
+        text: sent[0]?.text
+      },
+      data: encodeModelPickCallback(store.getActiveSession("1")!.sessionId, 9)
+    });
+
+    assert.match(edited.at(-1)?.text ?? "", /这个模型列表已过期，请重新发送 \/model。/u);
   } finally {
     await cleanup();
   }

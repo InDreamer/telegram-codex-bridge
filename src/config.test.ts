@@ -62,6 +62,29 @@ test("loadConfig parses PROJECT_SCAN_ROOTS from bridge.env", async () => {
   }
 });
 
+test("loadConfig parses boolean-like VOICE_INPUT_ENABLED values from bridge.env", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctb-config-test-"));
+  const paths = createTestPaths(root);
+
+  try {
+    await mkdir(paths.configRoot, { recursive: true });
+    await writeFile(
+      paths.envPath,
+      [
+        "TELEGRAM_BOT_TOKEN=test-token",
+        "VOICE_INPUT_ENABLED=on"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const config = await loadConfig(paths);
+
+    assert.equal(config.voiceInputEnabled, true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("writeConfig persists PROJECT_SCAN_ROOTS and withInstallOverrides can replace them", async () => {
   const root = await mkdtemp(join(tmpdir(), "ctb-config-test-"));
   const paths = createTestPaths(root);

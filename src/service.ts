@@ -790,6 +790,10 @@ export class BridgeService {
     return activeSession;
   }
 
+  private async handleExpiredModelPicker(chatId: string, messageId: number): Promise<void> {
+    await this.safeEditMessageText(chatId, messageId, "这个模型列表已过期，请重新发送 /model。");
+  }
+
   private async handleModelDefaultCallback(
     callbackQueryId: string,
     chatId: string,
@@ -855,7 +859,7 @@ export class BridgeService {
     const models = await this.fetchAllModels();
     const model = models[modelIndex];
     if (!model) {
-      await this.safeEditMessageText(chatId, messageId, "这个模型列表已过期，请重新发送 /model。");
+      await this.handleExpiredModelPicker(chatId, messageId);
       return;
     }
 
@@ -887,7 +891,7 @@ export class BridgeService {
     const models = await this.fetchAllModels();
     const model = models[modelIndex];
     if (!model) {
-      await this.safeEditMessageText(chatId, messageId, "这个模型列表已过期，请重新发送 /model。");
+      await this.handleExpiredModelPicker(chatId, messageId);
       return;
     }
 

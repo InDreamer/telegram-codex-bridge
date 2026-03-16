@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { delimiter, join, resolve } from "node:path";
 
 import type { BridgePaths } from "./paths.js";
+import { parseBooleanLike } from "./util/boolean.js";
 
 export interface BridgeConfig {
   telegramBotToken: string;
@@ -32,20 +33,7 @@ function parseBooleanEnv(value: string | undefined, fallback: boolean): boolean 
     return fallback;
   }
 
-  switch (value.trim().toLowerCase()) {
-    case "1":
-    case "true":
-    case "yes":
-    case "on":
-      return true;
-    case "0":
-    case "false":
-    case "no":
-    case "off":
-      return false;
-    default:
-      return fallback;
-  }
+  return parseBooleanLike(value) ?? fallback;
 }
 
 function parseEnvFile(content: string): Record<string, string> {
