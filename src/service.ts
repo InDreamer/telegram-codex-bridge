@@ -65,6 +65,7 @@ import {
 import { buildHelpText, syncTelegramCommands } from "./telegram/commands.js";
 import {
   DEFAULT_RUNTIME_STATUS_FIELDS,
+  isOperationalReadinessState,
   type RuntimeStatusField,
   PendingInteractionRow,
   PendingInteractionState,
@@ -88,7 +89,8 @@ import {
 } from "./interactions/normalize.js";
 import { buildProjectPicker, refreshProjectPicker, validateManualProjectPath } from "./project/discovery.js";
 import { commandExists, runCommand } from "./process.js";
-import { asRecord, asRecord as getRecord, getString, getNumber, getArray } from "./util/untyped.js";
+import { parseBooleanLike } from "./util/boolean.js";
+import { asRecord, asRecord as getRecord, getString, getNumber, getArray, getStringArray } from "./util/untyped.js";
 import { normalizeWhitespace, truncateText, normalizeAndTruncate, normalizeNullableText } from "./util/text.js";
 
 interface RecentActivityEntry {
@@ -379,7 +381,7 @@ export class BridgeService {
     this.realtimeVoiceModelId = undefined;
     this.attachAppServerListeners();
 
-    if (snapshot.state !== "ready" && snapshot.state !== "awaiting_authorization") {
+    if (!isOperationalReadinessState(snapshot.state)) {
       if (this.appServer) {
         await this.appServer.stop().catch(() => {});
         this.appServer = null;
@@ -7338,12 +7340,10 @@ function parseQuestionnaireDraft(responseJson: string | null): QuestionnaireDraf
   }
 
   try {
-    const parsed = JSON.parse(responseJson) as QuestionnaireDraft;
+    const parsed = asRecord(JSON.parse(responseJson));
     return {
-      answers: typeof parsed?.answers === "object" && parsed.answers && !Array.isArray(parsed.answers)
-        ? parsed.answers
-        : {},
-      awaitingQuestionId: typeof parsed?.awaitingQuestionId === "string" ? parsed.awaitingQuestionId : null
+      answers: asRecord(parsed?.answers) ?? {},
+      awaitingQuestionId: getString(parsed, "awaitingQuestionId")
     };
   } catch {
     return { answers: {} };
@@ -7467,11 +7467,16 @@ function parseQuestionAnswerInput(
     }
 
     case "boolean": {
+      const parsed = parseBooleanLike(rawInput);
+      if (parsed !== undefined) {
+        return { ok: true, value: parsed };
+      }
+
       const normalized = rawInput.trim().toLowerCase();
-      if (["true", "1", "yes", "y", "是"].includes(normalized)) {
+      if (normalized === "y" || normalized === "是") {
         return { ok: true, value: true };
       }
-      if (["false", "0", "no", "n", "否"].includes(normalized)) {
+      if (normalized === "n" || normalized === "否") {
         return { ok: true, value: false };
       }
       return { ok: false, message: "请输入 true/false 或 是/否。" };
@@ -7587,12 +7592,11 @@ function toQuestionAnswerValue(question: NormalizedQuestion, value: unknown): un
 
 function extractLegacyAnswerArray(value: unknown): string[] | null {
   const record = asRecord(value);
-  const answers = record?.answers;
-  if (!Array.isArray(answers)) {
+  if (!Array.isArray(record?.answers)) {
     return null;
   }
 
-  return answers.filter((entry): entry is string => typeof entry === "string");
+  return getStringArray(record, "answers");
 }
 
 function buildInteractionDecisionResolution(
@@ -7699,11 +7703,7 @@ function parseJsonRecord(value: unknown): Record<string, unknown> | null {
     }
   }
 
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-
-  return value as Record<string, unknown>;
+  return asRecord(value);
 }
 
 function serializeJsonRpcRequestId(id: JsonRpcRequestId): string {

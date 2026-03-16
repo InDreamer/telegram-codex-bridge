@@ -12,6 +12,7 @@ import type { BridgeConfig } from "./config.js";
 import type { BridgeStateStore } from "./state/store.js";
 import type { ReadinessDetails, ReadinessSnapshot } from "./types.js";
 import { normalizeWhitespace } from "./util/text.js";
+import { readRepoPackageJson } from "./util/package-json.js";
 
 const NODE_ENGINE_FALLBACK = ">=25.0.0";
 const MIN_CODEX_VERSION = [0, 114, 0] as const;
@@ -178,11 +179,11 @@ function isVersionAtLeast(versionText: string, minimum: readonly number[]): bool
 
 async function readDeclaredNodeEngine(paths: BridgePaths): Promise<string> {
   try {
-    const packageJson = JSON.parse(await readFile(join(paths.repoRoot, "package.json"), "utf8")) as {
+    const packageJson = await readRepoPackageJson<{
       engines?: {
         node?: string;
       };
-    };
+    }>(paths);
     return packageJson.engines?.node ?? NODE_ENGINE_FALLBACK;
   } catch {
     return NODE_ENGINE_FALLBACK;
@@ -266,12 +267,11 @@ function defaultCreateAppServer(options: {
   );
 }
 
-async function listAllModelPages(appServer: AppServerLifecycle): Promise<Array<{ inputModalities?: string[] }>> {
+async function hasAudioCapableModel(appServer: AppServerLifecycle): Promise<boolean> {
   if (!appServer.listModels) {
-    return [];
+    return false;
   }
 
-  const models: Array<{ inputModalities?: string[] }> = [];
   let cursor: string | null = null;
 
   do {
@@ -280,11 +280,13 @@ async function listAllModelPages(appServer: AppServerLifecycle): Promise<Array<{
       includeHidden: false,
       limit: 50
     });
-    models.push(...page.data);
+    if (page.data.some((model) => (model.inputModalities ?? []).includes("audio"))) {
+      return true;
+    }
     cursor = page.nextCursor ?? null;
   } while (cursor);
 
-  return models;
+  return false;
 }
 
 function extractMethodsFromSchema(schema: unknown): string[] {
@@ -564,8 +566,7 @@ export async function probeReadiness(options: {
     details.appServerAvailable = true;
     if (config.voiceInputEnabled && appServer.listModels) {
       try {
-        const models = await listAllModelPages(appServer);
-        details.voiceRealtimeSupported = models.some((model) => (model.inputModalities ?? []).includes("audio"));
+        details.voiceRealtimeSupported = await hasAudioCapableModel(appServer);
       } catch {
         details.voiceRealtimeSupported = false;
       }

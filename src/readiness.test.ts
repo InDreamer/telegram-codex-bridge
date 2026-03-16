@@ -309,7 +309,7 @@ test("probeReadiness fails hard when voice input is enabled without any usable t
   }
 });
 
-test("probeReadiness checks every model page before reporting realtime voice support", async () => {
+test("probeReadiness stops paginating model pages once realtime voice support is confirmed", async () => {
   const { paths, store, cleanup } = await createReadinessContext();
 
   try {
@@ -357,8 +357,15 @@ test("probeReadiness checks every model page before reporting realtime voice sup
               };
             }
 
+            if (options.cursor === "page-2") {
+              return {
+                data: [{ inputModalities: ["text", "audio"] }],
+                nextCursor: "page-3"
+              };
+            }
+
             return {
-              data: [{ inputModalities: ["text", "audio"] }],
+              data: [{ inputModalities: ["text"] }],
               nextCursor: null
             };
           },

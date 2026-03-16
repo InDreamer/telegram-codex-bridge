@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { TELEGRAM_COMMANDS, syncTelegramCommands } from "./commands.js";
+import { TELEGRAM_COMMANDS, buildHelpText, syncTelegramCommands } from "./commands.js";
 import type { TelegramBotCommand, TelegramBotCommandScope } from "./api.js";
 
 test("syncTelegramCommands syncs default and language-specific command scopes", async () => {
@@ -28,6 +28,15 @@ test("syncTelegramCommands syncs default and language-specific command scopes", 
   ];
 
   assert.deepEqual(calls.sort(compareCalls), expected.sort(compareCalls));
+});
+
+test("buildHelpText stays aligned with the command registry", () => {
+  const helpText = buildHelpText();
+
+  assert.ok(helpText.startsWith("可用指令\n/help 查看可用指令"));
+  assert.ok(helpText.includes("/sessions 查看最近会话\n/sessions archived 查看已归档会话"));
+  assert.ok(helpText.includes("/runtime 配置运行状态卡片顶部摘要行"));
+  assert.ok(helpText.endsWith("/cancel 取消当前输入并返回"));
 });
 
 interface CommandSyncCall {

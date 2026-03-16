@@ -1,8 +1,8 @@
 import { constants } from "node:fs";
 import { access, cp, chmod, mkdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
-import { join, resolve, sep } from "node:path";
+import { delimiter, join, sep } from "node:path";
 
-import { loadConfig, serializeProjectScanRoots, withInstallOverrides, writeConfig, type BridgeConfig } from "./config.js";
+import { loadConfig, parseProjectScanRootsValue, serializeProjectScanRoots, withInstallOverrides, writeConfig, type BridgeConfig } from "./config.js";
 import { collectArchiveDriftDiagnostics } from "./archive-drift.js";
 import { CodexAppServerClient } from "./codex/app-server.js";
 import type { Logger } from "./logger.js";
@@ -17,7 +17,8 @@ import {
 } from "./state/store.js";
 import { TelegramApi } from "./telegram/api.js";
 import { syncTelegramCommands } from "./telegram/commands.js";
-import type { InstallManifest, PendingAuthorizationRow, ReadinessSnapshot } from "./types.js";
+import { isOperationalReadinessState, type InstallManifest, type PendingAuthorizationRow, type ReadinessSnapshot } from "./types.js";
+import { readRepoPackageJson } from "./util/package-json.js";
 
 type CommandRunner = (
   command: string,
@@ -50,18 +51,6 @@ interface InstallDependencies {
 const SERVICE_LABEL = "com.codex.telegram-bridge";
 const CODEX_SKILL_NAME = "telegram-codex-linker";
 
-function resolveProjectScanRoot(inputPath: string, homeDir: string): string {
-  if (inputPath === "~") {
-    return homeDir;
-  }
-
-  if (inputPath.startsWith("~/")) {
-    return join(homeDir, inputPath.slice(2));
-  }
-
-  return resolve(inputPath);
-}
-
 function pathsOverlap(left: string, right: string): boolean {
   return left === right || left.startsWith(`${right}${sep}`) || right.startsWith(`${left}${sep}`);
 }
@@ -73,8 +62,7 @@ async function validateProjectScanRoots(
 ): Promise<string[]> {
   const validatedRoots: string[] = [];
 
-  for (const root of roots) {
-    const resolvedRoot = resolveProjectScanRoot(root, homeDir);
+  for (const resolvedRoot of parseProjectScanRootsValue(roots.join(delimiter), homeDir)) {
     let stats;
 
     try {
@@ -192,9 +180,9 @@ function formatStateStoreFailure(failure: StateStoreFailureRecord | null): strin
 }
 
 async function readPackageVersion(paths: BridgePaths): Promise<string> {
-  const packageJson = JSON.parse(await readFile(join(paths.repoRoot, "package.json"), "utf8")) as {
+  const packageJson = await readRepoPackageJson<{
     version: string;
-  };
+  }>(paths);
 
   return packageJson.version;
 }
@@ -575,7 +563,7 @@ export async function installBridge(
       persist: true
     });
 
-    if (snapshot.state !== "ready" && snapshot.state !== "awaiting_authorization") {
+    if (!isOperationalReadinessState(snapshot.state)) {
       throw new Error(formatSnapshot(snapshot));
     }
 
@@ -718,7 +706,7 @@ export async function runDoctor(paths: BridgePaths, logger: Logger, deps: Instal
       await syncCommands(telegramApi);
     }
     const lines = ["state_store_open=ok", formatSnapshot(snapshot), `pending_runtime_notices=${pendingNoticeCount}`];
-    if ((snapshot.state === "ready" || snapshot.state === "awaiting_authorization") && appServer) {
+    if (isOperationalReadinessState(snapshot.state) && appServer) {
       try {
         const driftSummary = await scanArchiveDrift({
           store,

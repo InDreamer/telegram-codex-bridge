@@ -6,6 +6,10 @@ export type BridgeReadinessState =
   | "telegram_token_invalid"
   | "bridge_unhealthy";
 
+export function isOperationalReadinessState(state: BridgeReadinessState): boolean {
+  return state === "ready" || state === "awaiting_authorization";
+}
+
 export type SessionStatus = "idle" | "running" | "interrupted" | "failed";
 
 export type FailureReason =
