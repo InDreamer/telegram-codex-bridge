@@ -222,10 +222,15 @@ export class TelegramApi {
     }, 20_000);
   }
 
-  async setMyCommands(commands: TelegramBotCommand[], scope?: TelegramBotCommandScope): Promise<void> {
+  async setMyCommands(
+    commands: TelegramBotCommand[],
+    scope?: TelegramBotCommandScope,
+    languageCode?: string
+  ): Promise<void> {
     await this.call("setMyCommands", {
       commands,
-      scope
+      scope,
+      language_code: languageCode
     }, 20_000);
   }
 

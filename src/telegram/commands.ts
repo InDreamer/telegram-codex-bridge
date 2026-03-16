@@ -37,10 +37,20 @@ export const TELEGRAM_COMMANDS: TelegramCommandDefinition[] = [
 ];
 
 export async function syncTelegramCommands(api: Pick<TelegramApi, "setMyCommands">): Promise<void> {
-  await Promise.all([
-    api.setMyCommands(TELEGRAM_COMMANDS, { type: "default" }),
-    api.setMyCommands(TELEGRAM_COMMANDS, { type: "all_private_chats" })
-  ]);
+  const scopes = [
+    { type: "default" },
+    { type: "all_private_chats" }
+  ] as const;
+  // Telegram stores command menus per scope and optional language code.
+  const languageCodes = [undefined, "zh", "en"];
+
+  await Promise.all(
+    scopes.flatMap((scope) =>
+      languageCodes.map(async (languageCode) => {
+        await api.setMyCommands(TELEGRAM_COMMANDS, scope, languageCode);
+      })
+    )
+  );
 }
 
 export function buildHelpText(): string {

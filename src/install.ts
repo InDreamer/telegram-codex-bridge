@@ -436,6 +436,7 @@ export async function installBridge(
   deps: InstallDependencies = {}
 ): Promise<void> {
   const detectManager = deps.detectServiceManager ?? detectServiceManager;
+  const run = deps.runCommand ?? runCommand;
   const readinessProbe = deps.probeReadiness ?? probeReadiness;
   const createTelegramApi = deps.createTelegramApi ?? ((token: string, baseUrl: string) => new TelegramApi(token, baseUrl));
   const syncCommands = deps.syncTelegramCommands ?? syncTelegramCommands;
@@ -467,6 +468,11 @@ export async function installBridge(
     await writeLaunchAgent(paths);
   }
 
+  // Preserve an already-running unit by restarting it after the new release lands.
+  const systemdServiceWasActive = serviceManager === "systemd"
+    ? (await run("systemctl", ["--user", "is-active", "codex-telegram-bridge.service"])).exitCode === 0
+    : false;
+
   const store = await BridgeStateStore.open(paths, logger);
   try {
     const { snapshot } = await readinessProbe({
@@ -489,7 +495,12 @@ export async function installBridge(
 
   if (serviceManager === "systemd") {
     await callSystemctl(["daemon-reload"]);
-    await callSystemctl(["enable", "--now", "codex-telegram-bridge.service"]);
+    if (systemdServiceWasActive) {
+      await callSystemctl(["enable", "codex-telegram-bridge.service"]);
+      await callSystemctl(["restart", "codex-telegram-bridge.service"]);
+    } else {
+      await callSystemctl(["enable", "--now", "codex-telegram-bridge.service"]);
+    }
   } else if (serviceManager === "launchd") {
     await startLaunchAgent(paths);
   } else {

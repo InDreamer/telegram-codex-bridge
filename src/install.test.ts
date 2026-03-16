@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { buildLaunchAgentPlist, getStatus, installCodexSkill, prepareRelease, runDoctor } from "./install.js";
+import { buildLaunchAgentPlist, getStatus, installBridge, installCodexSkill, prepareRelease, runDoctor } from "./install.js";
 import type { Logger } from "./logger.js";
 import { BridgeStateStore } from "./state/store.js";
 import type { BridgePaths } from "./paths.js";
@@ -310,6 +310,85 @@ test("installCodexSkill prefers the current checkout bundle over an older instal
 test("bundled bridge install script parses cleanly in bash", async () => {
   const result = await runCommand("bash", ["-n", "skills/telegram-codex-linker/scripts/install-bridge-from-github.sh"]);
   assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+});
+
+test("installBridge restarts an already-active systemd service so the new build takes effect", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctb-install-test-"));
+  const paths = createTestPaths(root);
+  const binDir = join(root, "bin");
+  const systemctlLogPath = join(root, "systemctl.log");
+  const npmLogPath = join(root, "npm.log");
+
+  try {
+    await Promise.all([
+      createReleaseFixture(paths),
+      createSkillFixture(paths.repoRoot),
+      mkdir(join(paths.repoRoot, "dist"), { recursive: true }),
+      mkdir(binDir, { recursive: true })
+    ]);
+    await writeFile(join(paths.repoRoot, "dist", "cli.js"), "console.log('ok');\n", "utf8");
+    await writeFile(
+      join(binDir, "npm"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf 'npm %s\\n' "$*" >> ${JSON.stringify(npmLogPath)}
+`,
+      "utf8"
+    );
+    await writeFile(
+      join(binDir, "systemctl"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> ${JSON.stringify(systemctlLogPath)}
+if [ "$1" = "--user" ] && [ "$2" = "is-active" ]; then
+  echo active
+  exit 0
+fi
+exit 0
+`,
+      "utf8"
+    );
+    await Promise.all([
+      chmod(join(binDir, "npm"), 0o755),
+      chmod(join(binDir, "systemctl"), 0o755)
+    ]);
+
+    await withEnvironment(
+      {
+        PATH: `${binDir}:${process.env.PATH ?? ""}`
+      },
+      async () => {
+        await installBridge(paths, testLogger, {
+          telegramBotToken: "test-token"
+        }, {
+          detectServiceManager: async () => "systemd",
+          probeReadiness: async () => ({
+            snapshot: createReadinessSnapshot(),
+            appServer: null
+          }),
+          createTelegramApi: () => ({
+            getMe: async () => ({
+              id: 1,
+              is_bot: true,
+              first_name: "Bridge",
+              username: "bridge_bot"
+            }),
+            setMyCommands: async () => {}
+          }),
+          syncTelegramCommands: async () => {}
+        } as any);
+      }
+    );
+
+    const systemctlLog = await readFile(systemctlLogPath, "utf8");
+    assert.match(systemctlLog, /--user is-active codex-telegram-bridge\.service/u);
+    assert.match(systemctlLog, /--user daemon-reload/u);
+    assert.match(systemctlLog, /--user enable codex-telegram-bridge\.service/u);
+    assert.match(systemctlLog, /--user restart codex-telegram-bridge\.service/u);
+    assert.doesNotMatch(systemctlLog, /--user enable --now codex-telegram-bridge\.service/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("buildLaunchAgentPlist keeps launchd passthrough env only and does not pin bridge config", async () => {
