@@ -65,15 +65,16 @@ This is a deliberate product boundary, not a missing feature.
 v1 should be deployed only by operators who explicitly accept that:
 - Telegram is a direct control plane into a high-trust Codex runtime.
 - access control at the Telegram identity boundary matters more, not less
-- the bridge may recommend a project, but it must never silently choose one
+- the bridge may rank or group project choices, but it must never silently choose one
 
 ## User-Facing Copy Rules
 
 Prefer:
-- `选择这次要操作的项目`
-- `继续上次项目：{project_name}`
-- `其他常用项目`
-- `扫描更多仓库`
+- `选择要新建会话的项目`
+- `已收藏`
+- `最近使用`
+- `本地发现`
+- `扫描本地项目`
 - `手动输入路径`
 - `当前项目：{project_name}`
 
@@ -89,6 +90,6 @@ Those terms may appear in local administrator diagnostics only.
 
 ## Final v1 Rule
 
-The bridge may recommend a project, but it must never silently choose the project.
+The bridge may rank visible project choices, but it must never silently choose the project.
 
 Before the first real task is sent, the user must always be able to see which project the next Codex session will operate on.

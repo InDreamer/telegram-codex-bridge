@@ -8,12 +8,12 @@ export interface TelegramCommandDefinition {
 export const TELEGRAM_COMMANDS: TelegramCommandDefinition[] = [
   { command: "help", description: "查看可用指令" },
   { command: "status", description: "查看服务状态" },
-  { command: "new", description: "选择项目并开始新会话" },
+  { command: "new", description: "选择项目并新建会话" },
   { command: "sessions", description: "查看最近会话" },
   { command: "archive", description: "归档当前会话" },
   { command: "unarchive", description: "恢复已归档会话" },
   { command: "use", description: "按序号切换会话" },
-  { command: "rename", description: "重命名当前会话" },
+  { command: "rename", description: "重命名当前会话或项目" },
   { command: "pin", description: "收藏当前项目" },
   { command: "model", description: "查看或设置当前会话模型" },
   { command: "skills", description: "列出当前项目可用技能" },
@@ -33,7 +33,7 @@ export const TELEGRAM_COMMANDS: TelegramCommandDefinition[] = [
   { command: "where", description: "查看当前会话、项目和定位 ID" },
   { command: "inspect", description: "查看当前任务详情" },
   { command: "interrupt", description: "停止当前正在执行的操作" },
-  { command: "cancel", description: "取消手动输入路径并返回" }
+  { command: "cancel", description: "取消当前输入并返回" }
 ];
 
 export async function syncTelegramCommands(api: Pick<TelegramApi, "setMyCommands">): Promise<void> {
@@ -58,13 +58,13 @@ export function buildHelpText(): string {
     "可用指令",
     "/help 查看可用指令",
     "/status 查看服务状态",
-    "/new 选择项目并开始新会话",
+    "/new 选择项目并新建会话",
     "/sessions 查看最近会话",
     "/sessions archived 查看已归档会话",
     "/archive 归档当前会话",
     "/unarchive <序号> 恢复已归档会话",
     "/use <序号> 切换到指定会话",
-    "/rename <名称> 重命名当前会话",
+    "/rename <名称> 快速重命名当前会话；裸 /rename 可选择改会话名或项目别名",
     "/pin 收藏当前项目",
     "/model 查看或设置当前会话模型",
     "/skills 查看当前项目可用技能",
@@ -84,6 +84,6 @@ export function buildHelpText(): string {
     "/where 查看当前会话、项目和定位 ID",
     "/inspect 查看当前任务详情",
     "/interrupt 停止当前正在执行的操作",
-    "/cancel 取消手动输入路径并返回"
+    "/cancel 取消当前输入并返回"
   ].join("\n");
 }

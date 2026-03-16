@@ -32,9 +32,13 @@ import {
   buildManualPathPrompt,
   buildModelPickerMessage,
   buildNoNewProjectsMessage,
+  buildProjectAliasClearedText,
+  buildProjectAliasRenamedText,
   buildProjectPinnedText,
   buildProjectPickerMessage,
   buildReasoningEffortPickerMessage,
+  buildRenameTargetPicker,
+  buildSessionCreatedText,
   buildProjectSelectedText,
   buildRuntimeErrorCard,
   buildRuntimeStatusReplyMarkup,
@@ -98,6 +102,8 @@ const HISTORY_TEXT_LIMIT = 220;
 const MAX_RECENT_ACTIVITY_ENTRIES = 20;
 const RUNTIME_CARD_THROTTLE_MS = 2000;
 const FAILED_EDIT_RETRY_MS = 5000;
+const TELEGRAM_SEND_RETRY_DELAYS_MS = [750, 2_000] as const;
+const TELEGRAM_SEND_MAX_RETRY_AFTER_MS = 10_000;
 const TELEGRAM_IMAGE_CACHE_DIRNAME = "telegram-images";
 const TELEGRAM_IMAGE_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -105,6 +111,12 @@ interface PickerState {
   picker: ProjectPickerResult;
   awaitingManualProjectPath: boolean;
   resolved: boolean;
+}
+
+interface PendingRenameState {
+  kind: "session" | "project";
+  sessionId: string;
+  projectPath: string;
 }
 
 interface RuntimeCardMessageState {
@@ -161,6 +173,7 @@ interface BridgeServiceDependencies {
     logger: Logger,
     onUpdate: (update: TelegramUpdate) => Promise<void>
   ) => TelegramPoller;
+  sleep?: (delayMs: number) => Promise<void>;
 }
 
 interface ActiveTurnState {
@@ -247,7 +260,7 @@ export class BridgeService {
   private appServer: CodexAppServerClient | null = null;
   private readonly unauthorizedReplyAt = new Map<string, number>();
   private readonly pickerStates = new Map<string, PickerState>();
-  private readonly pendingRenameSessionIds = new Map<string, string>();
+  private readonly pendingRenameStates = new Map<string, PendingRenameState>();
   private readonly pendingThreadArchiveOps = new Map<string, PendingThreadArchiveOp[]>();
   private readonly pendingInteractionTextModes = new Map<string, PendingInteractionTextMode>();
   private readonly pendingRichInputComposers = new Map<string, PendingRichInputComposer>();
@@ -390,8 +403,12 @@ export class BridgeService {
     if (this.isAwaitingRename(chatId)) {
       const command = parseCommand(text);
       if (command?.name === "cancel") {
-        this.pendingRenameSessionIds.delete(chatId);
-        await this.safeSendMessage(chatId, "已取消会话重命名。");
+        const pendingRename = this.pendingRenameStates.get(chatId);
+        this.pendingRenameStates.delete(chatId);
+        await this.safeSendMessage(
+          chatId,
+          pendingRename?.kind === "project" ? "已取消项目别名修改。" : "已取消会话重命名。"
+        );
         return;
       }
 
@@ -497,6 +514,24 @@ export class BridgeService {
       case "path_confirm": {
         await this.safeAnswerCallbackQuery(callbackQuery.id);
         await this.confirmManualProject(chatId, parsed.projectKey);
+        return;
+      }
+
+      case "rename_session": {
+        await this.safeAnswerCallbackQuery(callbackQuery.id);
+        await this.beginSessionRename(chatId, parsed.sessionId);
+        return;
+      }
+
+      case "rename_project": {
+        await this.safeAnswerCallbackQuery(callbackQuery.id);
+        await this.beginProjectRename(chatId, parsed.sessionId);
+        return;
+      }
+
+      case "rename_project_clear": {
+        await this.safeAnswerCallbackQuery(callbackQuery.id);
+        await this.clearProjectAlias(chatId, parsed.sessionId);
         return;
       }
 
@@ -1642,14 +1677,28 @@ export class BridgeService {
       }
 
       case "new": {
+        if (!this.store) {
+          return;
+        }
+
+        const activeSession = this.store.getActiveSession(chatId);
+        if (activeSession?.status === "running") {
+          await this.safeSendMessage(chatId, "当前项目仍在执行，请先等待完成或停止当前操作。");
+          return;
+        }
+
         await this.showProjectPicker(chatId);
         return;
       }
 
       case "cancel": {
         if (this.isAwaitingRename(chatId)) {
-          this.pendingRenameSessionIds.delete(chatId);
-          await this.safeSendMessage(chatId, "已取消会话重命名。");
+          const pendingRename = this.pendingRenameStates.get(chatId);
+          this.pendingRenameStates.delete(chatId);
+          await this.safeSendMessage(
+            chatId,
+            pendingRename?.kind === "project" ? "已取消项目别名修改。" : "已取消会话重命名。"
+          );
           return;
         }
 
@@ -1908,7 +1957,7 @@ export class BridgeService {
     }
 
     if (!text) {
-      await this.safeSendHtmlMessage(chatId, buildProjectSelectedText(activeSession.projectName));
+      await this.safeSendHtmlMessage(chatId, buildProjectSelectedText(this.projectDisplayName(activeSession)));
       return;
     }
 
@@ -1962,12 +2011,13 @@ export class BridgeService {
     this.store.createSession({
       telegramChatId: chatId,
       projectName: candidate.projectName,
-      projectPath: candidate.projectPath
+      projectPath: candidate.projectPath,
+      displayName: candidate.displayName
     });
 
     pickerState.resolved = true;
     pickerState.awaitingManualProjectPath = false;
-    await this.safeSendHtmlMessage(chatId, buildProjectSelectedText(candidate.projectName));
+    await this.safeSendHtmlMessage(chatId, buildSessionCreatedText(candidate.displayName));
   }
 
   private async handleScanMore(chatId: string): Promise<void> {
@@ -1981,7 +2031,7 @@ export class BridgeService {
       return;
     }
 
-    await this.safeSendMessage(chatId, "正在扫描更多项目，请稍候…");
+    await this.safeSendMessage(chatId, "正在扫描本地项目，请稍候…");
     const previousKeys = new Set([...pickerState.picker.projectMap.keys()]);
     const refreshed = await refreshProjectPicker(this.paths.homeDir, this.store, previousKeys);
 
@@ -2014,17 +2064,21 @@ export class BridgeService {
   }
 
   private async handleManualPathInput(chatId: string, text: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
     const pickerState = this.pickerStates.get(chatId);
     if (!pickerState) {
       await this.safeSendMessage(chatId, "这个按钮已过期，请重新操作。");
       return;
     }
 
-    const candidate = await validateManualProjectPath(text, this.paths.homeDir);
+    const candidate = await validateManualProjectPath(text, this.paths.homeDir, this.store);
     if (!candidate) {
       await this.safeSendMessage(
         chatId,
-        "这个路径不可用，请重新发送项目路径。\n也可以发送 /cancel 返回项目列表。"
+        "这个目录不可用，请重新发送目录路径。\n也可以发送 /cancel 返回项目列表。"
       );
       return;
     }
@@ -2065,12 +2119,13 @@ export class BridgeService {
     this.store.createSession({
       telegramChatId: chatId,
       projectName: candidate.projectName,
-      projectPath: candidate.projectPath
+      projectPath: candidate.projectPath,
+      displayName: candidate.displayName
     });
 
     pickerState.resolved = true;
     pickerState.awaitingManualProjectPath = false;
-    await this.safeSendHtmlMessage(chatId, buildProjectSelectedText(candidate.projectName));
+    await this.safeSendHtmlMessage(chatId, buildSessionCreatedText(candidate.displayName));
   }
 
   private async returnToProjectPicker(chatId: string): Promise<void> {
@@ -2090,7 +2145,11 @@ export class BridgeService {
   }
 
   private isAwaitingRename(chatId: string): boolean {
-    return this.pendingRenameSessionIds.has(chatId);
+    return this.pendingRenameStates.has(chatId);
+  }
+
+  private projectDisplayName(project: Pick<SessionRow, "projectName" | "projectAlias">): string {
+    return project.projectAlias?.trim() || project.projectName;
   }
 
   private async sendStatus(chatId: string): Promise<void> {
@@ -2151,7 +2210,7 @@ export class BridgeService {
     }
 
     this.store.setActiveSession(chatId, target.sessionId);
-    await this.safeSendHtmlMessage(chatId, buildSessionSwitchedText(target.projectName));
+    await this.safeSendHtmlMessage(chatId, buildSessionSwitchedText(this.projectDisplayName(target)));
   }
 
   private async handleArchive(chatId: string): Promise<void> {
@@ -2193,11 +2252,12 @@ export class BridgeService {
       await this.safeSendHtmlMessage(
         chatId,
         buildArchiveSuccessText(
-          activeSession.projectName,
+          this.projectDisplayName(activeSession),
           nextActiveSession
             ? {
                 displayName: nextActiveSession.displayName,
-                projectName: nextActiveSession.projectName
+                projectName: nextActiveSession.projectName,
+                projectAlias: nextActiveSession.projectAlias
               }
             : null
         )
@@ -2261,7 +2321,7 @@ export class BridgeService {
       if (target.threadId) {
         await this.markPendingThreadArchiveLocalCommit(target.threadId, pendingOpId);
       }
-      await this.safeSendHtmlMessage(chatId, buildUnarchiveSuccessText(target.projectName));
+      await this.safeSendHtmlMessage(chatId, buildUnarchiveSuccessText(this.projectDisplayName(target)));
     } catch {
       // Apply the inverse compensation on restore failures for the same reason.
       if (target.threadId && pendingOpId !== null) {
@@ -2296,14 +2356,77 @@ export class BridgeService {
 
     const name = args.trim();
     if (!name) {
-      this.pendingRenameSessionIds.set(chatId, activeSession.sessionId);
-      await this.safeSendMessage(chatId, "请输入新的会话名称。\n发送 /cancel 取消。");
+      const picker = buildRenameTargetPicker({
+        sessionId: activeSession.sessionId,
+        projectName: this.projectDisplayName(activeSession),
+        hasProjectAlias: Boolean(activeSession.projectAlias?.trim())
+      });
+      await this.safeSendHtmlMessage(chatId, picker.text, picker.replyMarkup);
       return;
     }
 
     this.store.renameSession(activeSession.sessionId, name);
-    this.pendingRenameSessionIds.delete(chatId);
+    this.pendingRenameStates.delete(chatId);
     await this.safeSendHtmlMessage(chatId, buildSessionRenamedText(name));
+  }
+
+  private async beginSessionRename(chatId: string, sessionId: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession || activeSession.sessionId !== sessionId) {
+      await this.safeSendMessage(chatId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    this.pendingRenameStates.set(chatId, {
+      kind: "session",
+      sessionId: activeSession.sessionId,
+      projectPath: activeSession.projectPath
+    });
+    await this.safeSendMessage(chatId, "请输入新的会话名称。\n发送 /cancel 取消。");
+  }
+
+  private async beginProjectRename(chatId: string, sessionId: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession || activeSession.sessionId !== sessionId) {
+      await this.safeSendMessage(chatId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    this.pendingRenameStates.set(chatId, {
+      kind: "project",
+      sessionId: activeSession.sessionId,
+      projectPath: activeSession.projectPath
+    });
+    await this.safeSendMessage(chatId, "请输入新的项目别名。\n发送 /cancel 取消。");
+  }
+
+  private async clearProjectAlias(chatId: string, sessionId: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession || activeSession.sessionId !== sessionId) {
+      await this.safeSendMessage(chatId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    if (!activeSession.projectAlias?.trim()) {
+      await this.safeSendMessage(chatId, "当前项目还没有设置别名。");
+      return;
+    }
+
+    this.store.clearProjectAlias(activeSession.projectPath);
+    this.pendingRenameStates.delete(chatId);
+    await this.safeSendHtmlMessage(chatId, buildProjectAliasClearedText(activeSession.projectName));
   }
 
   private async handleRenameInput(chatId: string, text: string): Promise<void> {
@@ -2311,26 +2434,41 @@ export class BridgeService {
       return;
     }
 
-    const sessionId = this.pendingRenameSessionIds.get(chatId);
-    if (!sessionId) {
+    const pendingRename = this.pendingRenameStates.get(chatId);
+    if (!pendingRename) {
       return;
     }
 
     const name = text.trim();
     if (!name) {
-      await this.safeSendMessage(chatId, "请输入新的会话名称。\n发送 /cancel 取消。");
+      await this.safeSendMessage(
+        chatId,
+        pendingRename.kind === "project" ? "请输入新的项目别名。\n发送 /cancel 取消。" : "请输入新的会话名称。\n发送 /cancel 取消。"
+      );
       return;
     }
 
-    const session = this.store.getSessionById(sessionId);
+    const session = this.store.getSessionById(pendingRename.sessionId);
     if (!session) {
-      this.pendingRenameSessionIds.delete(chatId);
+      this.pendingRenameStates.delete(chatId);
       await this.safeSendMessage(chatId, "当前没有活动会话。");
       return;
     }
 
-    this.store.renameSession(sessionId, name);
-    this.pendingRenameSessionIds.delete(chatId);
+    if (pendingRename.kind === "project") {
+      this.store.setProjectAlias({
+        projectPath: pendingRename.projectPath,
+        projectName: session.projectName,
+        projectAlias: name,
+        sessionId: session.sessionId
+      });
+      this.pendingRenameStates.delete(chatId);
+      await this.safeSendHtmlMessage(chatId, buildProjectAliasRenamedText(name));
+      return;
+    }
+
+    this.store.renameSession(session.sessionId, name);
+    this.pendingRenameStates.delete(chatId);
     await this.safeSendHtmlMessage(chatId, buildSessionRenamedText(name));
   }
 
@@ -2355,7 +2493,7 @@ export class BridgeService {
       projectName: activeSession.projectName,
       sessionId: activeSession.sessionId
     });
-    await this.safeSendHtmlMessage(chatId, buildProjectPinnedText(activeSession.projectName));
+    await this.safeSendHtmlMessage(chatId, buildProjectPinnedText(this.projectDisplayName(activeSession)));
   }
 
   private async handleModel(chatId: string, args: string): Promise<void> {
@@ -4915,23 +5053,13 @@ export class BridgeService {
     text: string,
     replyMarkup?: TelegramInlineKeyboardMarkup
   ): Promise<TelegramMessage | null> {
-    if (!this.api) {
-      return null;
-    }
-
-    try {
-      const sent = await this.api.sendMessage(chatId, text, replyMarkup ? { replyMarkup } : undefined);
-      await this.logger.info("telegram message sent", {
-        chatId,
-        messageId: sent.message_id,
-        replyMarkup: replyMarkup ? "inline_keyboard" : null,
-        preview: summarizeTextPreview(text)
-      });
-      return sent;
-    } catch (error) {
-      await this.logger.error("telegram message delivery failed", { chatId, error: `${error}` });
-      return null;
-    }
+    return await this.safeSendTelegramMessageResult(chatId, text, {
+      parseMode: null,
+      successMessage: "telegram message sent",
+      retryMessage: "telegram message delivery retry scheduled",
+      failureMessage: "telegram message delivery failed",
+      ...(replyMarkup ? { replyMarkup } : {})
+    });
   }
 
   private async safeEditMessageText(
@@ -4969,29 +5097,72 @@ export class BridgeService {
     html: string,
     replyMarkup?: TelegramInlineKeyboardMarkup
   ): Promise<TelegramMessage | null> {
+    return await this.safeSendTelegramMessageResult(chatId, html, {
+      parseMode: "HTML",
+      successMessage: "telegram html message sent",
+      retryMessage: "telegram HTML message delivery retry scheduled",
+      failureMessage: "telegram HTML message delivery failed",
+      ...(replyMarkup ? { replyMarkup } : {})
+    });
+  }
+
+  private async safeSendTelegramMessageResult(
+    chatId: string,
+    text: string,
+    options: {
+      replyMarkup?: TelegramInlineKeyboardMarkup;
+      parseMode: "HTML" | null;
+      successMessage: string;
+      retryMessage: string;
+      failureMessage: string;
+    }
+  ): Promise<TelegramMessage | null> {
     if (!this.api) {
       return null;
     }
 
-    try {
-      const sent = await this.api.sendMessage(
-        chatId,
-        html,
-        replyMarkup
-          ? { parseMode: "HTML", replyMarkup }
-          : { parseMode: "HTML" }
-      );
-      await this.logger.info("telegram html message sent", {
-        chatId,
-        messageId: sent.message_id,
-        replyMarkup: replyMarkup ? "inline_keyboard" : null,
-        preview: summarizeTextPreview(html)
-      });
-      return sent;
-    } catch (error) {
-      await this.logger.error("telegram HTML message delivery failed", { chatId, error: `${error}` });
-      return null;
+    let lastError: unknown = null;
+
+    for (let attempt = 0; attempt <= TELEGRAM_SEND_RETRY_DELAYS_MS.length; attempt += 1) {
+      try {
+        const sent = await this.api.sendMessage(
+          chatId,
+          text,
+          options.parseMode === "HTML"
+            ? options.replyMarkup
+              ? { parseMode: "HTML", replyMarkup: options.replyMarkup }
+              : { parseMode: "HTML" }
+            : options.replyMarkup
+              ? { replyMarkup: options.replyMarkup }
+              : undefined
+        );
+        await this.logger.info(options.successMessage, {
+          chatId,
+          messageId: sent.message_id,
+          replyMarkup: options.replyMarkup ? "inline_keyboard" : null,
+          preview: summarizeTextPreview(text),
+          attempts: attempt + 1
+        });
+        return sent;
+      } catch (error) {
+        lastError = error;
+        const retryDelayMs = getTelegramSendRetryDelayMs(error, attempt);
+        if (retryDelayMs === null) {
+          break;
+        }
+
+        await this.logger.warn(options.retryMessage, {
+          chatId,
+          attempt: attempt + 1,
+          retryDelayMs,
+          error: `${error}`
+        });
+        await this.sleep(retryDelayMs);
+      }
     }
+
+    await this.logger.error(options.failureMessage, { chatId, error: `${lastError}` });
+    return null;
   }
 
   private async safeEditHtmlMessageText(
@@ -5059,6 +5230,15 @@ export class BridgeService {
       });
     }
   }
+
+  private async sleep(delayMs: number): Promise<void> {
+    if (delayMs <= 0) {
+      return;
+    }
+
+    const sleepImpl = this.deps.sleep ?? defaultSleep;
+    await sleepImpl(delayMs);
+  }
 }
 
 export async function runBridgeService(importMetaUrl: string): Promise<void> {
@@ -5101,6 +5281,29 @@ function getTelegramRetryAfterMs(error: unknown): number | null {
   }
 
   return null;
+}
+
+function getTelegramSendRetryDelayMs(error: unknown, attempt: number): number | null {
+  if (attempt >= TELEGRAM_SEND_RETRY_DELAYS_MS.length) {
+    return null;
+  }
+
+  const retryAfterMs = getTelegramRetryAfterMs(error);
+  if (retryAfterMs !== null) {
+    return retryAfterMs <= TELEGRAM_SEND_MAX_RETRY_AFTER_MS ? retryAfterMs : null;
+  }
+
+  if (error instanceof TelegramApiError) {
+    return null;
+  }
+
+  return TELEGRAM_SEND_RETRY_DELAYS_MS[attempt] ?? null;
+}
+
+function defaultSleep(delayMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, delayMs);
+  });
 }
 
 function summarizeActivityStatus(status: ActivityStatus): Record<string, unknown> {

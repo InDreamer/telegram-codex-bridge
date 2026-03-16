@@ -1211,6 +1211,50 @@ test("createSession persists seeded thread and last-turn metadata", async () => 
   }
 });
 
+test("project aliases persist on recent projects and are exposed on session lookups", async () => {
+  const { paths, store, cleanup } = await openStore();
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-project-alias",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    store.setProjectAlias({
+      projectPath: session.projectPath,
+      projectName: session.projectName,
+      projectAlias: "Alias One",
+      sessionId: session.sessionId
+    });
+
+    assert.equal(store.getRecentProjectByPath(session.projectPath)?.projectAlias, "Alias One");
+    assert.equal(store.getSessionById(session.sessionId)?.projectAlias, "Alias One");
+    assert.equal(store.listSessions("chat-project-alias")[0]?.projectAlias, "Alias One");
+
+    store.clearProjectAlias(session.projectPath);
+    assert.equal(store.getSessionById(session.sessionId)?.projectAlias, null);
+
+    store.setProjectAlias({
+      projectPath: session.projectPath,
+      projectName: session.projectName,
+      projectAlias: "Alias Two",
+      sessionId: session.sessionId
+    });
+
+    store.close();
+    const reopened = await BridgeStateStore.open(paths, testLogger);
+    try {
+      assert.equal(reopened.getRecentProjectByPath(session.projectPath)?.projectAlias, "Alias Two");
+      assert.equal(reopened.getSessionById(session.sessionId)?.projectAlias, "Alias Two");
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
 test("open migrates legacy session rows to include selected model column", async () => {
   const { paths, cleanup } = await seedLegacyStore();
   let store: BridgeStateStore | null = null;
@@ -1221,6 +1265,27 @@ test("open migrates legacy session rows to include selected model column", async
 
     store.setSessionSelectedModel("session-legacy", "gpt-5");
     assert.equal(store.getSessionById("session-legacy")?.selectedModel, "gpt-5");
+  } finally {
+    store?.close();
+    await cleanup();
+  }
+});
+
+test("open migrates legacy recent projects to include project aliases", async () => {
+  const { paths, cleanup } = await seedLegacyStore();
+  let store: BridgeStateStore | null = null;
+
+  try {
+    store = await BridgeStateStore.open(paths, testLogger);
+    assert.equal(store.getRecentProjectByPath("/tmp/legacy-project"), null);
+
+    store.setProjectAlias({
+      projectPath: "/tmp/legacy-project",
+      projectName: "Legacy Project",
+      projectAlias: "Legacy Alias",
+      sessionId: "session-legacy"
+    });
+    assert.equal(store.getSessionById("session-legacy")?.projectAlias, "Legacy Alias");
   } finally {
     store?.close();
     await cleanup();

@@ -10,8 +10,13 @@ import {
   buildInteractionResolvedCard,
   buildInspectText,
   buildManualPathConfirmMessage,
+  buildProjectAliasClearedText,
+  buildProjectAliasRenamedText,
+  buildProjectPickerMessage,
   buildProjectSelectedText,
+  buildRenameTargetPicker,
   buildRuntimeErrorCard,
+  buildSessionCreatedText,
   buildWhereText,
   buildStatusText,
   buildRuntimeStatusReplyMarkup,
@@ -60,6 +65,7 @@ function createSession(overrides: Partial<SessionRow>): SessionRow {
     selectedReasoningEffort: "selectedReasoningEffort" in overrides ? overrides.selectedReasoningEffort ?? null : null,
     displayName: overrides.displayName ?? "Session Alpha",
     projectName: overrides.projectName ?? "Project One",
+    projectAlias: "projectAlias" in overrides ? overrides.projectAlias ?? null : null,
     projectPath: overrides.projectPath ?? "/tmp/project-one",
     status: overrides.status ?? "idle",
     failureReason: overrides.failureReason ?? null,
@@ -131,6 +137,11 @@ function createProjectCandidate(overrides: Partial<ProjectCandidate> = {}): Proj
     projectKey: overrides.projectKey ?? "project-1",
     projectPath: overrides.projectPath ?? "/tmp/project-one",
     projectName: overrides.projectName ?? "Project One",
+    projectAlias: "projectAlias" in overrides ? overrides.projectAlias ?? null : null,
+    displayName: overrides.displayName ?? overrides.projectName ?? "Project One",
+    pathLabel: overrides.pathLabel ?? "Repo/project-one",
+    group: overrides.group ?? "discovered",
+    isRecent: overrides.isRecent ?? false,
     score: overrides.score ?? 0,
     pinned: overrides.pinned ?? false,
     hasExistingSession: overrides.hasExistingSession ?? false,
@@ -298,6 +309,7 @@ test("buildManualPathConfirmMessage renders bold field labels and keeps the keyb
   const rendered = buildManualPathConfirmMessage(
     createProjectCandidate({
       projectName: "Project & One",
+      displayName: "Project & One",
       projectPath: "/tmp/project<one>"
     })
   );
@@ -305,16 +317,109 @@ test("buildManualPathConfirmMessage renders bold field labels and keeps the keyb
   assert.equal(
     rendered.text,
     [
-      "在这个项目中开始会话？",
+      "要在这个目录中新建会话吗？",
       "<b>项目：</b> Project &amp; One",
       "<b>路径：</b> /tmp/project&lt;one&gt;"
     ].join("\n")
   );
-  assert.equal(rendered.replyMarkup.inline_keyboard[0]?.[0]?.text, "确认进入项目");
+  assert.equal(rendered.replyMarkup.inline_keyboard[0]?.[0]?.text, "确认新建会话");
 });
 
 test("buildProjectSelectedText renders a bold field label", () => {
   assert.equal(buildProjectSelectedText("Project & One"), "<b>当前项目：</b> Project &amp; One");
+});
+
+test("project creation and alias replies render bold field labels", () => {
+  assert.equal(buildSessionCreatedText("Alias & One"), "<b>已新建会话：</b> Alias &amp; One");
+  assert.equal(buildProjectAliasRenamedText("Alias & One"), "<b>当前项目别名已更新为：</b> Alias &amp; One");
+  assert.equal(buildProjectAliasClearedText("Project & One"), "<b>已清除项目别名：</b> Project &amp; One");
+});
+
+test("buildProjectPickerMessage renders grouped candidates with path hints", () => {
+  const rendered = buildProjectPickerMessage({
+    title: "选择要新建会话的项目",
+    emptyText: null,
+    noticeLines: ["本地扫描结果可能不完整。"],
+    groups: [
+      {
+        key: "pinned",
+        title: "已收藏",
+        candidates: [
+          createProjectCandidate({
+            projectKey: "project-1",
+            projectName: "Project One",
+            displayName: "Alias One",
+            pathLabel: "Repo/team/project-one",
+            group: "pinned",
+            isRecent: true,
+            pinned: true,
+            hasExistingSession: true,
+            fromScan: true
+          })
+        ]
+      },
+      {
+        key: "discovered",
+        title: "本地发现",
+        candidates: [
+          createProjectCandidate({
+            projectKey: "project-2",
+            projectName: "Project Two",
+            displayName: "Project Two",
+            pathLabel: "workspace/project-two",
+            group: "discovered",
+            isRecent: false,
+            fromScan: true
+          })
+        ]
+      }
+    ],
+    partial: true,
+    allRootsFailed: false,
+    projectMap: new Map([
+      ["project-1", createProjectCandidate({
+        projectKey: "project-1",
+        projectName: "Project One",
+        displayName: "Alias One",
+        pathLabel: "Repo/team/project-one",
+        group: "pinned",
+        isRecent: true,
+        pinned: true,
+        hasExistingSession: true,
+        fromScan: true
+      })],
+      ["project-2", createProjectCandidate({
+        projectKey: "project-2",
+        projectName: "Project Two",
+        displayName: "Project Two",
+        pathLabel: "workspace/project-two",
+        group: "discovered",
+        isRecent: false,
+        fromScan: true
+      })]
+    ])
+  });
+
+  assert.match(rendered.text, /^选择要新建会话的项目/um);
+  assert.match(rendered.text, /已收藏/u);
+  assert.match(rendered.text, /1\. Alias One/u);
+  assert.match(rendered.text, /Repo\/team\/project-one/u);
+  assert.match(rendered.text, /最近 · 本地发现 · 有历史会话/u);
+  assert.match(rendered.text, /本地发现/u);
+  assert.equal(rendered.replyMarkup.inline_keyboard.at(-1)?.[0]?.text, "扫描本地项目");
+});
+
+test("buildRenameTargetPicker includes project alias clear action when needed", () => {
+  const rendered = buildRenameTargetPicker({
+    sessionId: "session-1",
+    projectName: "Alias One",
+    hasProjectAlias: true
+  });
+
+  assert.match(rendered.text, /<b>当前项目：<\/b> Alias One/u);
+  assert.equal(rendered.replyMarkup.inline_keyboard[0]?.[0]?.text, "重命名会话");
+  assert.equal(rendered.replyMarkup.inline_keyboard[1]?.[0]?.text, "设置项目别名");
+  assert.equal(rendered.replyMarkup.inline_keyboard[2]?.[0]?.text, "清除项目别名");
 });
 
 test("buildRuntimeStatusCard renders bold prefixes and markdown progress on a new line", () => {
@@ -564,6 +669,18 @@ test("parseCallbackData understands compact and legacy v3 interaction callbacks"
   assert.deepEqual(parseCallbackData("v3:ix:cancel:ix-1"), {
     kind: "interaction_cancel",
     interactionId: "ix-1"
+  });
+  assert.deepEqual(parseCallbackData("v1:rename:session:session-1"), {
+    kind: "rename_session",
+    sessionId: "session-1"
+  });
+  assert.deepEqual(parseCallbackData("v1:rename:project:session-1"), {
+    kind: "rename_project",
+    sessionId: "session-1"
+  });
+  assert.deepEqual(parseCallbackData("v1:rename:project:clear:session-1"), {
+    kind: "rename_project_clear",
+    sessionId: "session-1"
   });
 });
 

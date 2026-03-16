@@ -62,7 +62,9 @@ function createTestPaths(root: string): BridgePaths {
   };
 }
 
-async function createServiceContext(): Promise<{
+async function createServiceContext(
+  deps: ConstructorParameters<typeof BridgeService>[2] = {}
+): Promise<{
   service: BridgeService;
   store: BridgeStateStore;
   cleanup: () => Promise<void>;
@@ -77,7 +79,7 @@ async function createServiceContext(): Promise<{
   ]);
 
   const store = await BridgeStateStore.open(paths, testLogger);
-  const service = new BridgeService(paths, testConfig);
+  const service = new BridgeService(paths, testConfig, deps);
 
   (service as any).store = store;
   (service as any).logger = testLogger;
@@ -3467,7 +3469,7 @@ test("structured project and session replies use Telegram HTML parse mode", asyn
   }
 });
 
-test("manual path confirmation replies use Telegram HTML and preserve inline buttons", async () => {
+test("manual path confirmation accepts readable directories and preserves inline buttons", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ text: string; parseMode?: string; replyMarkup?: any }> = [];
   const paths = (service as any).paths as BridgePaths;
@@ -3476,7 +3478,6 @@ test("manual path confirmation replies use Telegram HTML and preserve inline but
     authorizeChat(store, "chat-1");
     const projectPath = join(paths.homeDir, "Repo", "manual-project");
     await mkdir(projectPath, { recursive: true });
-    await writeFile(join(projectPath, "package.json"), '{ "name": "manual-project" }\n', "utf8");
 
     (service as any).api = {
       sendMessage: async (_chatId: string, text: string, options?: any) => {
@@ -3492,7 +3493,66 @@ test("manual path confirmation replies use Telegram HTML and preserve inline but
     assert.equal(sent.at(-1)?.parseMode, "HTML");
     assert.match(sent.at(-1)?.text ?? "", /<b>项目：<\/b> manual-project/u);
     assert.match(sent.at(-1)?.text ?? "", /<b>路径：<\/b> /u);
-    assert.equal(sent.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "确认进入项目");
+    assert.equal(sent.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "确认新建会话");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("rename command can set and clear the current project alias", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ text: string; parseMode?: string; replyMarkup?: any }> = [];
+
+  try {
+    const session = authorizeChatWithSession(store, "chat-1");
+    store.setActiveSession("chat-1", session.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        sent.push({ text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(980 + sent.length, text);
+      }
+    };
+
+    await (service as any).routeCommand("chat-1", "rename", "");
+    assert.equal(sent.at(-1)?.parseMode, "HTML");
+    assert.equal(sent.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "重命名会话");
+    assert.equal(sent.at(-1)?.replyMarkup?.inline_keyboard?.[1]?.[0]?.text, "设置项目别名");
+
+    await (service as any).beginProjectRename("chat-1", session.sessionId);
+    await (service as any).handleRenameInput("chat-1", "Alias <One>");
+    assert.equal(sent.at(-1)?.parseMode, "HTML");
+    assert.equal(sent.at(-1)?.text, "<b>当前项目别名已更新为：</b> Alias &lt;One&gt;");
+    assert.equal(store.getActiveSession("chat-1")?.projectAlias, "Alias <One>");
+
+    await (service as any).routeCommand("chat-1", "pin", "");
+    assert.equal(sent.at(-1)?.text, "<b>已收藏项目：</b> Alias &lt;One&gt;");
+
+    await (service as any).clearProjectAlias("chat-1", session.sessionId);
+    assert.equal(sent.at(-1)?.text, "<b>已清除项目别名：</b> Project One");
+    assert.equal(store.getActiveSession("chat-1")?.projectAlias, null);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("new command refuses to open the picker while the active session is running", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ text: string; parseMode?: string }> = [];
+
+  try {
+    const session = authorizeChatWithSession(store, "chat-1");
+    store.updateSessionStatus(session.sessionId, "running");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        sent.push({ text, parseMode: options?.parseMode });
+        return createFakeTelegramMessage(990 + sent.length, text);
+      }
+    };
+
+    await (service as any).routeCommand("chat-1", "new", "");
+    assert.equal(sent.at(-1)?.text, "当前项目仍在执行，请先等待完成或停止当前操作。");
   } finally {
     await cleanup();
   }
@@ -3710,7 +3770,9 @@ test("default activity message renders structured English state without leaking 
 });
 
 test("flushRuntimeNotices retains notices after a failed delivery and retries later", async () => {
-  const { service, store, cleanup } = await createServiceContext();
+  const { service, store, cleanup } = await createServiceContext({
+    sleep: async () => {}
+  });
   let attempts = 0;
 
   try {
@@ -3718,7 +3780,7 @@ test("flushRuntimeNotices retains notices after a failed delivery and retries la
     (service as any).api = {
       sendMessage: async (_chatId: string, text: string) => {
         attempts += 1;
-        if (attempts === 1) {
+        if (attempts <= 3) {
           throw new Error("telegram down");
         }
 
@@ -3733,6 +3795,32 @@ test("flushRuntimeNotices retains notices after a failed delivery and retries la
     await (service as any).flushRuntimeNotices("chat-1");
     assert.equal(store.listRuntimeNotices("chat-1").length, 0);
     assert.equal(store.countRuntimeNotices(), 0);
+    assert.equal(attempts, 4);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("safeSendMessageResult retries transient delivery failures before giving up", async () => {
+  const { service, cleanup } = await createServiceContext({
+    sleep: async () => {}
+  });
+  let attempts = 0;
+
+  try {
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error("proxy flaked");
+        }
+
+        return createFakeTelegramMessage(900, text);
+      }
+    };
+
+    const sent = await (service as any).safeSendMessageResult("chat-1", "hello");
+    assert.equal(sent?.message_id, 900);
     assert.equal(attempts, 2);
   } finally {
     await cleanup();

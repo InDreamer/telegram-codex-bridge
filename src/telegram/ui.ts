@@ -31,6 +31,9 @@ export type ParsedCallbackData =
   | { kind: "path_manual" }
   | { kind: "path_back" }
   | { kind: "path_confirm"; projectKey: string }
+  | { kind: "rename_session"; sessionId: string }
+  | { kind: "rename_project"; sessionId: string }
+  | { kind: "rename_project_clear"; sessionId: string }
   | { kind: "model_default"; sessionId: string }
   | { kind: "model_page"; sessionId: string; page: number }
   | { kind: "model_pick"; sessionId: string; modelIndex: number }
@@ -95,6 +98,18 @@ export function encodePathBackCallback(): string {
 
 export function encodePathConfirmCallback(projectKey: string): string {
   return `v1:path:confirm:${projectKey}`;
+}
+
+export function encodeRenameSessionCallback(sessionId: string): string {
+  return ensureTelegramCallbackDataLimit(`v1:rename:session:${sessionId}`);
+}
+
+export function encodeRenameProjectCallback(sessionId: string): string {
+  return ensureTelegramCallbackDataLimit(`v1:rename:project:${sessionId}`);
+}
+
+export function encodeRenameProjectClearCallback(sessionId: string): string {
+  return ensureTelegramCallbackDataLimit(`v1:rename:project:clear:${sessionId}`);
 }
 
 export function encodeModelDefaultCallback(sessionId: string): string {
@@ -356,6 +371,18 @@ export function parseCallbackData(data: string): ParsedCallbackData | null {
     return { kind: "path_confirm", projectKey: parts[3] };
   }
 
+  if (parts[1] === "rename" && parts[2] === "session" && parts[3]) {
+    return { kind: "rename_session", sessionId: parts[3] };
+  }
+
+  if (parts[1] === "rename" && parts[2] === "project" && parts[3] === "clear" && parts[4]) {
+    return { kind: "rename_project_clear", sessionId: parts[4] };
+  }
+
+  if (parts[1] === "rename" && parts[2] === "project" && parts[3]) {
+    return { kind: "rename_project", sessionId: parts[3] };
+  }
+
   if (parts[1] === "plan" && parts[2] === "expand" && parts[3]) {
     return { kind: "plan_expand", sessionId: parts[3] };
   }
@@ -390,12 +417,31 @@ export function parseCallbackData(data: string): ParsedCallbackData | null {
   return null;
 }
 
-function primaryButtonCopy(candidate: ProjectCandidate): string {
-  if (candidate.lastSuccessAt || candidate.lastUsedAt || candidate.hasExistingSession) {
-    return `继续上次项目：${candidate.projectName}`;
+function displayProjectName(projectName: string, projectAlias: string | null | undefined): string {
+  return projectAlias?.trim() || projectName;
+}
+
+function buildProjectBadgeLabels(candidate: ProjectCandidate): string[] {
+  const labels: string[] = [];
+  if (candidate.group !== "recent" && candidate.isRecent) {
+    labels.push("最近");
+  }
+  if (candidate.group !== "discovered" && candidate.fromScan) {
+    labels.push("本地发现");
+  }
+  if (candidate.hasExistingSession) {
+    labels.push("有历史会话");
   }
 
-  return `进入项目：${candidate.projectName}`;
+  return labels;
+}
+
+function buildProjectButtonLabel(candidate: ProjectCandidate, duplicateDisplayNames: Set<string>): string {
+  if (!duplicateDisplayNames.has(candidate.displayName)) {
+    return candidate.displayName;
+  }
+
+  return `${candidate.displayName} · ${candidate.pathLabel}`;
 }
 
 export function buildProjectPickerMessage(picker: ProjectPickerResult): {
@@ -403,33 +449,47 @@ export function buildProjectPickerMessage(picker: ProjectPickerResult): {
   replyMarkup: TelegramInlineKeyboardMarkup;
 } {
   const rows: TelegramInlineKeyboardMarkup["inline_keyboard"] = [];
+  const visibleCandidates = picker.groups.flatMap((group) => group.candidates);
+  const duplicateDisplayNames = new Set(
+    visibleCandidates
+      .map((candidate) => candidate.displayName)
+      .filter((name, index, names) => names.indexOf(name) !== index)
+  );
 
-  if (picker.primary) {
+  for (const candidate of visibleCandidates) {
     rows.push([
       {
-        text: primaryButtonCopy(picker.primary),
-        callback_data: encodePickCallback(picker.primary.projectKey)
-      }
-    ]);
-  }
-
-  for (const candidate of picker.frequent) {
-    rows.push([
-      {
-        text: candidate.projectName,
+        text: buildProjectButtonLabel(candidate, duplicateDisplayNames),
         callback_data: encodePickCallback(candidate.projectKey)
       }
     ]);
   }
 
   rows.push([
-    { text: "扫描更多仓库", callback_data: encodeScanMoreCallback() },
+    { text: "扫描本地项目", callback_data: encodeScanMoreCallback() },
     { text: "手动输入路径", callback_data: encodePathManualCallback() }
   ]);
 
   const lines = [picker.title];
+  for (const noticeLine of picker.noticeLines) {
+    lines.push("", noticeLine);
+  }
   if (picker.emptyText) {
     lines.push("", picker.emptyText);
+  }
+
+  let itemIndex = 1;
+  for (const group of picker.groups) {
+    lines.push("", group.title);
+    for (const candidate of group.candidates) {
+      const badges = buildProjectBadgeLabels(candidate);
+      lines.push(`${itemIndex}. ${candidate.displayName}`);
+      lines.push(`   ${candidate.pathLabel}`);
+      if (badges.length > 0) {
+        lines.push(`   ${badges.join(" · ")}`);
+      }
+      itemIndex += 1;
+    }
   }
 
   return {
@@ -443,7 +503,7 @@ export function buildManualPathPrompt(): {
   replyMarkup: TelegramInlineKeyboardMarkup;
 } {
   return {
-    text: "请发送项目路径，例如：/home/ubuntu/Repo/openclaw\n发送 /cancel 返回项目列表。",
+    text: "请发送要开始会话的目录路径，例如：/home/ubuntu/Repo/openclaw\n发送 /cancel 返回项目列表。",
     replyMarkup: {
       inline_keyboard: [[{ text: "返回项目列表", callback_data: encodePathBackCallback() }]]
     }
@@ -456,13 +516,13 @@ export function buildManualPathConfirmMessage(candidate: ProjectCandidate): {
 } {
   return {
     text: [
-      "在这个项目中开始会话？",
-      formatHtmlField("项目：", candidate.projectName),
+      "要在这个目录中新建会话吗？",
+      formatHtmlField("项目：", candidate.displayName),
       formatHtmlField("路径：", candidate.projectPath)
     ].join("\n"),
     replyMarkup: {
       inline_keyboard: [
-        [{ text: "确认进入项目", callback_data: encodePathConfirmCallback(candidate.projectKey) }],
+        [{ text: "确认新建会话", callback_data: encodePathConfirmCallback(candidate.projectKey) }],
         [{ text: "返回项目列表", callback_data: encodePathBackCallback() }]
       ]
     }
@@ -474,7 +534,7 @@ export function buildNoNewProjectsMessage(): {
   replyMarkup: TelegramInlineKeyboardMarkup;
 } {
   return {
-    text: "没有发现更多可用项目，请手动输入路径。",
+    text: "没有发现新的本地项目。",
     replyMarkup: {
       inline_keyboard: [
         [{ text: "手动输入路径", callback_data: encodePathManualCallback() }],
@@ -579,7 +639,7 @@ export function buildStatusText(
   const issueText = snapshot.details.issues.length === 0 ? "无" : snapshot.details.issues.join("；");
   const activeSessionText = activeSession
     ? [
-        activeSession.projectName,
+        displayProjectName(activeSession.projectName, activeSession.projectAlias),
         activeSession.displayName,
         formatSessionState(activeSession),
         formatSessionModelReasoningConfig(activeSession),
@@ -611,7 +671,7 @@ export function buildWhereText(session: SessionRow | null): string {
   const lines = [
     formatHtmlHeading("当前会话"),
     formatHtmlField("会话名：", session.displayName),
-    formatHtmlField("项目：", session.projectName),
+    formatHtmlField("项目：", displayProjectName(session.projectName, session.projectAlias)),
     formatHtmlField("路径：", session.projectPath),
     formatHtmlField("状态：", formatSessionState(session)),
     formatHtmlField("模型 + 思考强度：", formatSessionModelReasoningConfig(session))
@@ -643,7 +703,7 @@ export function buildSessionsText(options: {
     const marker = !options.archived && session.sessionId === options.activeSessionId ? "[当前] " : "";
     const parts = [
       `${marker}${session.displayName}`,
-      session.projectName,
+      displayProjectName(session.projectName, session.projectAlias),
       formatSessionState(session),
       formatLastTurnSummary(session),
       formatRelativeTime(session.lastUsedAt)
@@ -659,6 +719,10 @@ export function buildProjectSelectedText(projectName: string): string {
   return formatHtmlField("当前项目：", projectName);
 }
 
+export function buildSessionCreatedText(projectName: string): string {
+  return formatHtmlField("已新建会话：", projectName);
+}
+
 export function buildSessionSwitchedText(projectName: string): string {
   return formatHtmlField("已切换到项目：", projectName);
 }
@@ -668,12 +732,18 @@ export function buildArchiveSuccessText(
   nextActiveSession?: {
     displayName: string;
     projectName: string;
+    projectAlias?: string | null;
   } | null
 ): string {
   const lines = [formatHtmlField("已归档当前会话：", projectName)];
   if (nextActiveSession) {
     lines.push(formatHtmlField("当前会话：", nextActiveSession.displayName));
-    lines.push(formatHtmlField("当前项目：", nextActiveSession.projectName));
+    lines.push(
+      formatHtmlField(
+        "当前项目：",
+        displayProjectName(nextActiveSession.projectName, nextActiveSession.projectAlias ?? null)
+      )
+    );
   } else {
     lines.push("当前没有活动会话，请发送 /new 选择项目。");
   }
@@ -689,8 +759,42 @@ export function buildSessionRenamedText(name: string): string {
   return formatHtmlField("当前会话已重命名为：", name);
 }
 
+export function buildProjectAliasRenamedText(name: string): string {
+  return formatHtmlField("当前项目别名已更新为：", name);
+}
+
+export function buildProjectAliasClearedText(projectName: string): string {
+  return formatHtmlField("已清除项目别名：", projectName);
+}
+
 export function buildProjectPinnedText(projectName: string): string {
   return formatHtmlField("已收藏项目：", projectName);
+}
+
+export function buildRenameTargetPicker(options: {
+  sessionId: string;
+  projectName: string;
+  hasProjectAlias: boolean;
+}): {
+  text: string;
+  replyMarkup: TelegramInlineKeyboardMarkup;
+} {
+  const rows: TelegramInlineKeyboardMarkup["inline_keyboard"] = [
+    [{ text: "重命名会话", callback_data: encodeRenameSessionCallback(options.sessionId) }],
+    [{ text: "设置项目别名", callback_data: encodeRenameProjectCallback(options.sessionId) }]
+  ];
+
+  if (options.hasProjectAlias) {
+    rows.push([{ text: "清除项目别名", callback_data: encodeRenameProjectClearCallback(options.sessionId) }]);
+  }
+
+  return {
+    text: [
+      "要修改哪个名称？",
+      formatHtmlField("当前项目：", options.projectName)
+    ].join("\n"),
+    replyMarkup: { inline_keyboard: rows }
+  };
 }
 
 export function buildUnsupportedCommandText(): string {

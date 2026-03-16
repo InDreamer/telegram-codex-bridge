@@ -97,6 +97,7 @@ interface SessionRecord {
   selected_reasoning_effort: ReasoningEffort | null;
   display_name: string;
   project_name: string;
+  project_alias?: string | null;
   project_path: string;
   status: SessionStatus;
   failure_reason: FailureReason | null;
@@ -111,6 +112,7 @@ interface SessionRecord {
 interface RecentProjectRecord {
   project_path: string;
   project_name: string;
+  project_alias: string | null;
   last_used_at: string;
   pinned: number;
   last_session_id: string | null;
@@ -223,6 +225,7 @@ function mapSession(record: SessionRecord): SessionRow {
     selectedReasoningEffort: record.selected_reasoning_effort,
     displayName: record.display_name,
     projectName: record.project_name,
+    projectAlias: record.project_alias ?? null,
     projectPath: record.project_path,
     status: record.status,
     failureReason: record.failure_reason,
@@ -239,6 +242,7 @@ function mapRecentProject(record: RecentProjectRecord): RecentProjectRow {
   return {
     projectPath: record.project_path,
     projectName: record.project_name,
+    projectAlias: record.project_alias,
     lastUsedAt: record.last_used_at,
     pinned: record.pinned === 1,
     lastSessionId: record.last_session_id,
@@ -266,6 +270,28 @@ function mapSessionProjectStats(record: SessionProjectStatsRecord): SessionProje
     sessionCount: Number(record.session_count),
     lastUsedAt: record.last_used_at
   };
+}
+
+function sessionSelectColumns(sessionAlias: string, recentAlias: string): string {
+  return [
+    `${sessionAlias}.session_id AS session_id`,
+    `${sessionAlias}.telegram_chat_id AS telegram_chat_id`,
+    `${sessionAlias}.thread_id AS thread_id`,
+    `${sessionAlias}.selected_model AS selected_model`,
+    `${sessionAlias}.selected_reasoning_effort AS selected_reasoning_effort`,
+    `${sessionAlias}.display_name AS display_name`,
+    `${sessionAlias}.project_name AS project_name`,
+    `${recentAlias}.project_alias AS project_alias`,
+    `${sessionAlias}.project_path AS project_path`,
+    `${sessionAlias}.status AS status`,
+    `${sessionAlias}.failure_reason AS failure_reason`,
+    `${sessionAlias}.archived AS archived`,
+    `${sessionAlias}.archived_at AS archived_at`,
+    `${sessionAlias}.created_at AS created_at`,
+    `${sessionAlias}.last_used_at AS last_used_at`,
+    `${sessionAlias}.last_turn_id AS last_turn_id`,
+    `${sessionAlias}.last_turn_status AS last_turn_status`
+  ].join(",\n            ");
 }
 
 function mapRuntimeNotice(record: RuntimeNoticeRecord): RuntimeNotice {
@@ -375,6 +401,7 @@ function initialSchema(): string {
     CREATE TABLE IF NOT EXISTS recent_project (
       project_path TEXT PRIMARY KEY,
       project_name TEXT NOT NULL,
+      project_alias TEXT NULL,
       last_used_at TEXT NOT NULL,
       pinned INTEGER NOT NULL DEFAULT 0,
       last_session_id TEXT NULL,
@@ -456,7 +483,7 @@ function initialSchema(): string {
   `;
 }
 
-const CURRENT_SCHEMA_VERSION = 5;
+const CURRENT_SCHEMA_VERSION = 7;
 
 function listColumns(db: DatabaseSync, tableName: string): string[] {
   const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
@@ -593,6 +620,14 @@ function applyMigrations(db: DatabaseSync): void {
     }
 
     recordMigration(db, 6);
+  }
+
+  if (!applied.has(7)) {
+    if (!hasColumn(db, "recent_project", "project_alias")) {
+      db.exec("ALTER TABLE recent_project ADD COLUMN project_alias TEXT NULL");
+    }
+
+    recordMigration(db, 7);
   }
 }
 
@@ -1040,10 +1075,12 @@ export class BridgeStateStore {
     const rows = this.db
       .prepare(
         `
-          SELECT *
-          FROM session
-          WHERE telegram_chat_id = ? AND archived = ?
-          ORDER BY last_used_at DESC, created_at DESC
+          SELECT
+            ${sessionSelectColumns("s", "rp")}
+          FROM session s
+          LEFT JOIN recent_project rp ON rp.project_path = s.project_path
+          WHERE s.telegram_chat_id = ? AND s.archived = ?
+          ORDER BY s.last_used_at DESC, s.created_at DESC
           LIMIT ?
         `
       )
@@ -1054,7 +1091,15 @@ export class BridgeStateStore {
 
   getSessionById(sessionId: string): SessionRow | null {
     const row = this.db
-      .prepare("SELECT * FROM session WHERE session_id = ?")
+      .prepare(
+        `
+          SELECT
+            ${sessionSelectColumns("s", "rp")}
+          FROM session s
+          LEFT JOIN recent_project rp ON rp.project_path = s.project_path
+          WHERE s.session_id = ?
+        `
+      )
       .get(sessionId) as SessionRecord | undefined;
 
     return row ? mapSession(row) : null;
@@ -1062,7 +1107,15 @@ export class BridgeStateStore {
 
   getSessionByThreadId(threadId: string): SessionRow | null {
     const row = this.db
-      .prepare("SELECT * FROM session WHERE thread_id = ?")
+      .prepare(
+        `
+          SELECT
+            ${sessionSelectColumns("s", "rp")}
+          FROM session s
+          LEFT JOIN recent_project rp ON rp.project_path = s.project_path
+          WHERE s.thread_id = ?
+        `
+      )
       .get(threadId) as SessionRecord | undefined;
 
     return row ? mapSession(row) : null;
@@ -1072,10 +1125,12 @@ export class BridgeStateStore {
     const rows = this.db
       .prepare(
         `
-          SELECT *
-          FROM session
-          WHERE thread_id IS NOT NULL
-          ORDER BY last_used_at DESC, created_at DESC
+          SELECT
+            ${sessionSelectColumns("s", "rp")}
+          FROM session s
+          LEFT JOIN recent_project rp ON rp.project_path = s.project_path
+          WHERE s.thread_id IS NOT NULL
+          ORDER BY s.last_used_at DESC, s.created_at DESC
         `
       )
       .all() as unknown as SessionRecord[];
@@ -1087,9 +1142,11 @@ export class BridgeStateStore {
     const row = this.db
       .prepare(
         `
-          SELECT s.*
+          SELECT
+            ${sessionSelectColumns("s", "rp")}
           FROM chat_binding cb
           JOIN session s ON s.session_id = cb.active_session_id
+          LEFT JOIN recent_project rp ON rp.project_path = s.project_path
           WHERE cb.telegram_chat_id = ? AND s.archived = 0
         `
       )
@@ -1119,6 +1176,7 @@ export class BridgeStateStore {
       selectedReasoningEffort: options.selectedReasoningEffort ?? null,
       displayName: options.displayName ?? options.projectName,
       projectName: options.projectName,
+      projectAlias: null,
       projectPath: options.projectPath,
       status: "idle",
       failureReason: null,
@@ -1233,7 +1291,15 @@ export class BridgeStateStore {
 
   private getVisibleSessionById(sessionId: string): SessionRow | null {
     const row = this.db
-      .prepare("SELECT * FROM session WHERE session_id = ? AND archived = 0")
+      .prepare(
+        `
+          SELECT
+            ${sessionSelectColumns("s", "rp")}
+          FROM session s
+          LEFT JOIN recent_project rp ON rp.project_path = s.project_path
+          WHERE s.session_id = ? AND s.archived = 0
+        `
+      )
       .get(sessionId) as SessionRecord | undefined;
 
     return row ? mapSession(row) : null;
@@ -1407,6 +1473,14 @@ export class BridgeStateStore {
     return row?.pinned === 1;
   }
 
+  getRecentProjectByPath(projectPath: string): RecentProjectRow | null {
+    const row = this.db
+      .prepare("SELECT * FROM recent_project WHERE project_path = ?")
+      .get(projectPath) as RecentProjectRecord | undefined;
+
+    return row ? mapRecentProject(row) : null;
+  }
+
   listRecentProjects(): RecentProjectRow[] {
     const rows = this.db
       .prepare(
@@ -1419,6 +1493,49 @@ export class BridgeStateStore {
       .all() as unknown as RecentProjectRecord[];
 
     return rows.map(mapRecentProject);
+  }
+
+  setProjectAlias(options: {
+    projectPath: string;
+    projectName: string;
+    projectAlias: string;
+    sessionId: string | null;
+  }): void {
+    const timestamp = nowIso();
+    this.db
+      .prepare(
+        `
+          INSERT INTO recent_project (
+            project_path,
+            project_name,
+            project_alias,
+            last_used_at,
+            pinned,
+            last_session_id,
+            last_success_at,
+            source
+          )
+          VALUES (?, ?, ?, ?, 0, ?, NULL, 'mru')
+          ON CONFLICT(project_path) DO UPDATE SET
+            project_name = excluded.project_name,
+            project_alias = excluded.project_alias,
+            last_used_at = excluded.last_used_at,
+            last_session_id = COALESCE(excluded.last_session_id, recent_project.last_session_id)
+        `
+      )
+      .run(options.projectPath, options.projectName, options.projectAlias, timestamp, options.sessionId);
+  }
+
+  clearProjectAlias(projectPath: string): void {
+    this.db
+      .prepare(
+        `
+          UPDATE recent_project
+          SET project_alias = NULL, last_used_at = ?
+          WHERE project_path = ?
+        `
+      )
+      .run(nowIso(), projectPath);
   }
 
   listPinnedProjectPaths(): string[] {

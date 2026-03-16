@@ -150,6 +150,7 @@ export interface SessionRow {
   selectedReasoningEffort: ReasoningEffort | null;
   displayName: string;
   projectName: string;
+  projectAlias: string | null;
   projectPath: string;
   status: SessionStatus;
   failureReason: FailureReason | null;
@@ -164,6 +165,7 @@ export interface SessionRow {
 export interface RecentProjectRow {
   projectPath: string;
   projectName: string;
+  projectAlias: string | null;
   lastUsedAt: string;
   pinned: boolean;
   lastSessionId: string | null;
@@ -192,6 +194,11 @@ export interface ProjectCandidate {
   projectKey: string;
   projectPath: string;
   projectName: string;
+  projectAlias: string | null;
+  displayName: string;
+  pathLabel: string;
+  group: "pinned" | "recent" | "discovered";
+  isRecent: boolean;
   score: number;
   pinned: boolean;
   hasExistingSession: boolean;
@@ -202,11 +209,17 @@ export interface ProjectCandidate {
   detectedMarkers: string[];
 }
 
+export interface ProjectPickerGroup {
+  key: "pinned" | "recent" | "discovered";
+  title: string;
+  candidates: ProjectCandidate[];
+}
+
 export interface ProjectPickerResult {
   title: string;
   emptyText: string | null;
-  primary: ProjectCandidate | null;
-  frequent: ProjectCandidate[];
+  noticeLines: string[];
+  groups: ProjectPickerGroup[];
   partial: boolean;
   allRootsFailed: boolean;
   projectMap: Map<string, ProjectCandidate>;

@@ -65,7 +65,7 @@ Scan limits:
 - max candidates: 200
 - max scan time: 3 seconds per `/new`
 
-Recommendation scoring:
+Ordering signals:
 - `+100` pinned project
 - `+80` last successful project
 - `+60` most recently used project
@@ -79,14 +79,17 @@ Tie-breakers:
 3. lexical project name
 
 `/new` output rules:
-- show one primary recommendation if score is at least 60
-- show up to 5 other frequent projects
-- always show `扫描更多仓库` and `手动输入路径`
+- `/new` only selects a project and creates a new session
+- group visible candidates into `已收藏`, `最近使用`, and `本地发现`
+- show up to 5 projects per group
+- each visible project shows display name plus path hint
+- the same project path appears at most once; if it matches multiple sources, show it in the highest-priority group and expose the others as tags
+- always show `扫描本地项目` and `手动输入路径`
 
 Degradation:
 - partial scan results are acceptable
 - scan timeout does not fail `/new`
-- if no candidates remain, show fallback actions and `未找到推荐项目，请扫描更多仓库或手动输入路径。`
+- if no candidates remain, show fallback actions and `未找到可用项目，请扫描本地项目或手动输入路径。`
 
 ## Telegram Command Contract
 
@@ -99,24 +102,25 @@ General rule:
 ### `/new`
 
 Shows the project picker:
-- title `选择这次要操作的项目`
-- optional primary recommendation
-- frequent project buttons
+- title `选择要新建会话的项目`
+- grouped project list
+- project buttons in the same order as the visible grouped list
 - fallback buttons
 
-Primary button examples:
-- `继续上次项目：{project_name}`
-- `进入项目：{project_name}`
+Rules:
+- selecting a project always creates a new session
+- `/new` never resumes or switches to an old session
+- if the current active session is still running, reject `/new` with `当前项目仍在执行，请先等待完成或停止当前操作。`
 
-### `扫描更多仓库`
+### `扫描本地项目`
 
 Behavior:
 - send a new message instead of editing the original picker
-- show `正在扫描更多项目，请稍候…`
+- show `正在扫描本地项目，请稍候…`
 - after scanning, send a refreshed picker as another new message
 
 If no new results are found:
-- show `没有发现更多可用项目，请手动输入路径。`
+- show `没有发现新的本地项目。`
 - include `手动输入路径` and `返回项目列表`
 
 ### `手动输入路径`
@@ -128,16 +132,15 @@ Behavior:
 
 Validation flow:
 1. user sends a plain-text path
-2. bridge validates existence
-3. bridge validates project-candidate rules
-4. if valid, bridge asks for confirmation and shows name plus path
+2. bridge validates that the path exists, is readable, and is a directory
+3. if valid, bridge asks for confirmation and shows display name plus path
 5. if confirmed, bridge creates the session
 
 Invalid path feedback:
-- `这个路径不可用，请重新发送项目路径。`
+- `这个目录不可用，请重新发送目录路径。`
 - `也可以发送 /cancel 返回项目列表。`
 
-`/cancel` also exits rename input mode when the bridge is waiting for a new session name.
+`/cancel` also exits rename input mode when the bridge is waiting for a new session name or project alias.
 
 ### `/sessions`
 
@@ -145,14 +148,14 @@ Shows:
 - default title `最近会话`
 - default view hides archived sessions
 - up to 10 sessions, newest first
-- session index, active marker when applicable, display name, project name, user-visible state, optional last-result summary, and relative last-used time
+- session index, active marker when applicable, display name, project display name, user-visible state, optional last-result summary, and relative last-used time
 
 ### `/sessions archived`
 
 Shows:
 - title `已归档会话`
 - up to 10 archived sessions, newest first by last-used time
-- session index, display name, project name, user-visible state, optional last-result summary, and relative last-used time
+- session index, display name, project display name, user-visible state, optional last-result summary, and relative last-used time
 
 ### `/use <n>`
 
@@ -189,11 +192,16 @@ Rules:
 - `<n>` is indexed against `/sessions archived`, not the default `/sessions` view
 - if no active visible session remains, the restored session becomes active automatically
 
-### `/rename <name>`
+### `/rename` and `/rename <name>`
 
 Responses:
-- success: `当前会话已重命名为：{name}`
-- missing or empty name: prompt with `请输入新的会话名称。` and allow `/cancel`
+- `/rename <name>` success: `当前会话已重命名为：{name}`
+- bare `/rename` shows a picker for `重命名会话` and `设置项目别名`
+- if the current project already has an alias, the picker also shows `清除项目别名`
+- project alias success: `当前项目别名已更新为：{name}`
+- project alias clear success: `已清除项目别名：{project_name}`
+- session rename prompt: `请输入新的会话名称。`
+- project alias prompt: `请输入新的项目别名。`
 
 ### `/pin`
 

@@ -1,10 +1,10 @@
-import { access, readdir } from "node:fs/promises";
+import { access, readdir, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { createHash } from "node:crypto";
-import { basename, join, resolve } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 
 import type { BridgeStateStore } from "../state/store.js";
-import type { ProjectCandidate, ProjectPickerResult } from "../types.js";
+import type { ProjectCandidate, ProjectPickerGroup, ProjectPickerResult, RecentProjectRow } from "../types.js";
 
 const SCAN_ROOT_NAMES = ["Repo", "workspace", "code"] as const;
 const PROJECT_MARKERS = [".git", "package.json", "pyproject.toml", "Cargo.toml", "go.mod", ".jj"] as const;
@@ -21,6 +21,7 @@ const EXCLUDED_DIR_NAMES = new Set([
 const MAX_DEPTH = 3;
 const MAX_CANDIDATES = 200;
 const MAX_SCAN_MS = 3000;
+const MAX_GROUP_CANDIDATES = 5;
 
 interface ScanCandidate {
   projectPath: string;
@@ -46,6 +47,7 @@ interface ScanResult {
 interface AggregateCandidate {
   projectPath: string;
   projectName: string;
+  projectAlias: string | null;
   pinned: boolean;
   lastUsedAt: string | null;
   lastSuccessAt: string | null;
@@ -79,6 +81,46 @@ function expandProjectPath(inputPath: string, homeDir: string): string {
   }
 
   return resolve(inputPath);
+}
+
+function normalizePathForDisplay(path: string): string {
+  return path.split(sep).join("/");
+}
+
+function buildProjectPathLabel(projectPath: string, homeDir: string): string {
+  for (const rootName of SCAN_ROOT_NAMES) {
+    const rootPath = join(homeDir, rootName);
+    if (projectPath === rootPath) {
+      return rootName;
+    }
+
+    if (projectPath.startsWith(`${rootPath}${sep}`)) {
+      const relativePath = normalizePathForDisplay(relative(rootPath, projectPath));
+      return `${rootName}/${relativePath}`;
+    }
+  }
+
+  return normalizePathForDisplay(projectPath);
+}
+
+function projectDisplayName(projectName: string, projectAlias: string | null): string {
+  return projectAlias?.trim() || projectName;
+}
+
+function projectIsRecent(candidate: AggregateCandidate): boolean {
+  return candidate.lastUsedAt !== null || candidate.lastSuccessAt !== null || candidate.hasExistingSession;
+}
+
+function projectGroup(candidate: AggregateCandidate): ProjectCandidate["group"] {
+  if (candidate.pinned) {
+    return "pinned";
+  }
+
+  if (projectIsRecent(candidate)) {
+    return "recent";
+  }
+
+  return "discovered";
 }
 
 async function pathAccessible(path: string): Promise<boolean> {
@@ -184,11 +226,27 @@ async function scanProjects(homeDir: string, store: BridgeStateStore): Promise<S
   };
 }
 
-async function buildCandidates(
-  homeDir: string,
-  store: BridgeStateStore,
-  scanResult: ScanResult
-): Promise<ProjectCandidate[]> {
+function compareCandidates(left: ProjectCandidate, right: ProjectCandidate): number {
+  if (right.score !== left.score) {
+    return right.score - left.score;
+  }
+
+  const leftUsedAt = Date.parse(left.lastUsedAt ?? "1970-01-01");
+  const rightUsedAt = Date.parse(right.lastUsedAt ?? "1970-01-01");
+  if (rightUsedAt !== leftUsedAt) {
+    return rightUsedAt - leftUsedAt;
+  }
+
+  const leftSuccessAt = Date.parse(left.lastSuccessAt ?? "1970-01-01");
+  const rightSuccessAt = Date.parse(right.lastSuccessAt ?? "1970-01-01");
+  if (rightSuccessAt !== leftSuccessAt) {
+    return rightSuccessAt - leftSuccessAt;
+  }
+
+  return left.displayName.localeCompare(right.displayName, "zh-CN");
+}
+
+async function buildCandidates(homeDir: string, store: BridgeStateStore): Promise<ProjectCandidate[]> {
   const recentProjects = store.listRecentProjects();
   const scannedProjects = store.listProjectScanCache();
   const sessionStats = store.listSessionProjectStats();
@@ -198,6 +256,7 @@ async function buildCandidates(
     aggregate.set(recentProject.projectPath, {
       projectPath: recentProject.projectPath,
       projectName: recentProject.projectName,
+      projectAlias: recentProject.projectAlias,
       pinned: recentProject.pinned,
       lastUsedAt: recentProject.lastUsedAt,
       lastSuccessAt: recentProject.lastSuccessAt,
@@ -214,6 +273,7 @@ async function buildCandidates(
     aggregate.set(sessionProject.projectPath, {
       projectPath: sessionProject.projectPath,
       projectName: existing?.projectName ?? sessionProject.projectName,
+      projectAlias: existing?.projectAlias ?? null,
       pinned: existing?.pinned ?? false,
       lastUsedAt: existing?.lastUsedAt ?? sessionProject.lastUsedAt,
       lastSuccessAt: existing?.lastSuccessAt ?? null,
@@ -230,6 +290,7 @@ async function buildCandidates(
     aggregate.set(scannedProject.projectPath, {
       projectPath: scannedProject.projectPath,
       projectName: existing?.projectName ?? scannedProject.projectName,
+      projectAlias: existing?.projectAlias ?? null,
       pinned: existing?.pinned ?? false,
       lastUsedAt: existing?.lastUsedAt ?? null,
       lastSuccessAt: existing?.lastSuccessAt ?? null,
@@ -288,6 +349,11 @@ async function buildCandidates(
       projectKey: projectKeyForPath(candidate.projectPath),
       projectPath: candidate.projectPath,
       projectName: candidate.projectName,
+      projectAlias: candidate.projectAlias,
+      displayName: projectDisplayName(candidate.projectName, candidate.projectAlias),
+      pathLabel: buildProjectPathLabel(candidate.projectPath, homeDir),
+      group: projectGroup(candidate),
+      isRecent: projectIsRecent(candidate),
       score,
       pinned: candidate.pinned,
       hasExistingSession: candidate.hasExistingSession,
@@ -300,38 +366,78 @@ async function buildCandidates(
   }
 
   return projectCandidates
-    .sort((left, right) => {
-      if (right.score !== left.score) {
-        return right.score - left.score;
-      }
-
-      const leftUsedAt = Date.parse(left.lastUsedAt ?? "1970-01-01");
-      const rightUsedAt = Date.parse(right.lastUsedAt ?? "1970-01-01");
-      if (rightUsedAt !== leftUsedAt) {
-        return rightUsedAt - leftUsedAt;
-      }
-
-      if (left.pinned !== right.pinned) {
-        return left.pinned ? -1 : 1;
-      }
-
-      return left.projectName.localeCompare(right.projectName, "zh-CN");
-    })
+    .sort(compareCandidates)
     .filter((candidate) => candidate.accessible || candidate.score > 0);
+}
+
+function buildProjectGroups(candidates: ProjectCandidate[]): ProjectPickerGroup[] {
+  const definitions: Array<{ key: ProjectCandidate["group"]; title: string }> = [
+    { key: "pinned", title: "已收藏" },
+    { key: "recent", title: "最近使用" },
+    { key: "discovered", title: "本地发现" }
+  ];
+
+  return definitions
+    .map((definition) => ({
+      key: definition.key,
+      title: definition.title,
+      candidates: candidates.filter((candidate) => candidate.group === definition.key).slice(0, MAX_GROUP_CANDIDATES)
+    }))
+    .filter((group) => group.candidates.length > 0);
+}
+
+function buildNoticeLines(scanResult: ScanResult): string[] {
+  const lines: string[] = [];
+  if (scanResult.allRootsFailed) {
+    lines.push("默认扫描目录当前不可用，以下结果可能主要来自历史记录。");
+  } else if (scanResult.partial) {
+    lines.push("本地扫描结果可能不完整。");
+  }
+
+  return lines;
+}
+
+function buildManualPathCandidate(
+  projectPath: string,
+  homeDir: string,
+  recentProject: RecentProjectRow | null,
+  detectedMarkers: string[]
+): ProjectCandidate {
+  const projectName = recentProject?.projectName ?? basename(projectPath);
+  const projectAlias = recentProject?.projectAlias ?? null;
+  const isRecent = Boolean(recentProject);
+
+  return {
+    projectKey: projectKeyForPath(projectPath),
+    projectPath,
+    projectName,
+    projectAlias,
+    displayName: projectDisplayName(projectName, projectAlias),
+    pathLabel: buildProjectPathLabel(projectPath, homeDir),
+    group: recentProject?.pinned ? "pinned" : isRecent ? "recent" : "discovered",
+    isRecent,
+    score: 0,
+    pinned: recentProject?.pinned ?? false,
+    hasExistingSession: false,
+    lastUsedAt: recentProject?.lastUsedAt ?? null,
+    lastSuccessAt: recentProject?.lastSuccessAt ?? null,
+    accessible: true,
+    fromScan: false,
+    detectedMarkers
+  };
 }
 
 export async function buildProjectPicker(homeDir: string, store: BridgeStateStore): Promise<ProjectPickerResult> {
   const scanResult = await scanProjects(homeDir, store);
-  const ranked = await buildCandidates(homeDir, store, scanResult);
-  const primary = ranked.length > 0 && ranked[0]?.score !== undefined && ranked[0].score >= 60 ? ranked[0] : null;
-  const frequent = primary ? ranked.slice(1, 6) : ranked.slice(0, 5);
+  const ranked = await buildCandidates(homeDir, store);
+  const groups = buildProjectGroups(ranked);
   const projectMap = new Map<string, ProjectCandidate>(ranked.map((candidate) => [candidate.projectKey, candidate]));
 
   return {
-    title: "选择这次要操作的项目",
-    emptyText: ranked.length === 0 ? "未找到推荐项目，请扫描更多仓库或手动输入路径。" : null,
-    primary,
-    frequent,
+    title: "选择要新建会话的项目",
+    emptyText: ranked.length === 0 ? "未找到可用项目，请扫描本地项目或手动输入路径。" : null,
+    noticeLines: buildNoticeLines(scanResult),
+    groups,
     partial: scanResult.partial,
     allRootsFailed: scanResult.allRootsFailed,
     projectMap
@@ -352,29 +458,25 @@ export async function refreshProjectPicker(
 
 export async function validateManualProjectPath(
   inputPath: string,
-  homeDir: string
+  homeDir: string,
+  store: BridgeStateStore
 ): Promise<ProjectCandidate | null> {
   const resolvedPath = expandProjectPath(inputPath.trim(), homeDir);
 
   try {
-    const inspection = await inspectProjectDirectory(resolvedPath);
-    if (inspection.markers.length === 0) {
+    const stats = await stat(resolvedPath);
+    if (!stats.isDirectory()) {
       return null;
     }
 
-    return {
-      projectKey: projectKeyForPath(resolvedPath),
-      projectPath: resolvedPath,
-      projectName: basename(resolvedPath),
-      score: 0,
-      pinned: false,
-      hasExistingSession: false,
-      lastUsedAt: null,
-      lastSuccessAt: null,
-      accessible: true,
-      fromScan: false,
-      detectedMarkers: inspection.markers
-    };
+    await access(resolvedPath, constants.R_OK);
+    const inspection = await inspectProjectDirectory(resolvedPath);
+    return buildManualPathCandidate(
+      resolvedPath,
+      homeDir,
+      store.getRecentProjectByPath(resolvedPath),
+      inspection.markers
+    );
   } catch {
     return null;
   }
