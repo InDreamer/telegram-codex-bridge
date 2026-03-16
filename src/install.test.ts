@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { loadConfig } from "./config.js";
 import { buildLaunchAgentPlist, getStatus, installBridge, installCodexSkill, prepareRelease, runDoctor } from "./install.js";
 import type { Logger } from "./logger.js";
 import { BridgeStateStore } from "./state/store.js";
@@ -312,6 +313,72 @@ test("bundled bridge install script parses cleanly in bash", async () => {
   assert.equal(result.exitCode, 0, result.stderr || result.stdout);
 });
 
+test("public install script parses cleanly in bash", async () => {
+  const result = await runCommand("bash", ["-n", "scripts/install-from-github.sh"]);
+  assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+});
+
+test("installBridge validates and persists non-overlapping project scan roots", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctb-install-test-"));
+  const paths = createTestPaths(root);
+  const binDir = join(root, "bin");
+  const firstRoot = join(root, "projects");
+  const nestedRoot = join(firstRoot, "nested");
+  const secondRoot = join(root, "work");
+
+  try {
+    await Promise.all([
+      createReleaseFixture(paths),
+      createSkillFixture(paths.repoRoot),
+      mkdir(join(paths.repoRoot, "dist"), { recursive: true }),
+      mkdir(binDir, { recursive: true }),
+      mkdir(firstRoot, { recursive: true }),
+      mkdir(nestedRoot, { recursive: true }),
+      mkdir(secondRoot, { recursive: true })
+    ]);
+    await writeFile(join(paths.repoRoot, "dist", "cli.js"), "console.log('ok');\n", "utf8");
+    await writeFile(
+      join(binDir, "npm"),
+      "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n",
+      "utf8"
+    );
+    await chmod(join(binDir, "npm"), 0o755);
+
+    await withEnvironment(
+      {
+        PATH: `${binDir}:${process.env.PATH ?? ""}`
+      },
+      async () => {
+        await installBridge(paths, testLogger, {
+          telegramBotToken: "test-token",
+          projectScanRoots: [firstRoot, nestedRoot, secondRoot]
+        }, {
+          detectServiceManager: async () => "none",
+          probeReadiness: async () => ({
+            snapshot: createReadinessSnapshot(),
+            appServer: null
+          }),
+          createTelegramApi: () => ({
+            getMe: async () => ({
+              id: 1,
+              is_bot: true,
+              first_name: "Bridge",
+              username: "bridge_bot"
+            }),
+            setMyCommands: async () => {}
+          }),
+          syncTelegramCommands: async () => {}
+        } as any);
+      }
+    );
+
+    const config = await loadConfig(paths);
+    assert.deepEqual(config.projectScanRoots, [firstRoot, secondRoot]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("installBridge restarts an already-active systemd service so the new build takes effect", async () => {
   const root = await mkdtemp(join(tmpdir(), "ctb-install-test-"));
   const paths = createTestPaths(root);
@@ -514,7 +581,11 @@ test("getStatus renders the expanded readiness summary fields", async () => {
     try {
       store.writeReadinessSnapshot(createReadinessSnapshot({
         details: {
-          issues: ["service manager warning: no supported service manager found"]
+          issues: ["service manager warning: no supported service manager found"],
+          voiceInputEnabled: true,
+          voiceOpenaiConfigured: true,
+          voiceFfmpegAvailable: true,
+          voiceRealtimeSupported: false
         }
       }));
     } finally {
@@ -535,6 +606,10 @@ test("getStatus renders the expanded readiness summary fields", async () => {
     assert.match(output, /codex_version=codex-cli 0\.114\.0/u);
     assert.match(output, /codex_version_supported=true/u);
     assert.match(output, /service_manager_health=warning/u);
+    assert.match(output, /voice_input_enabled=true/u);
+    assert.match(output, /voice_openai_configured=true/u);
+    assert.match(output, /voice_ffmpeg_available=true/u);
+    assert.match(output, /voice_realtime_supported=false/u);
     assert.match(output, /capability_check_passed=true/u);
     assert.match(output, /capability_check_source=cache/u);
   } finally {

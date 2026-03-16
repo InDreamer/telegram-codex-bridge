@@ -21,6 +21,16 @@ ctb doctor
 
 Or use the installed wrapper path when `ctb` is not on `PATH`.
 
+Before first install, inspect `HOME` for likely project roots.
+Rules:
+
+- if the user gives explicit roots, use them
+- if the user gives fewer than 3 roots, supplement with obvious disjoint roots when possible
+- if the user gives none, auto-select up to 3 disjoint roots
+- prefer roots that contain multiple child directories that look like projects or repos
+- do not keep overlapping parent-child roots
+- if no good roots are obvious, omit the install flag and let runtime fall back to scanning `HOME`
+
 ## 2. Decide
 
 ### Bridge not installed
@@ -31,7 +41,7 @@ Or use the installed wrapper path when `ctb` is not on `PATH`.
 Command:
 
 ```bash
-bash scripts/install-bridge-from-github.sh --telegram-token '<token>'
+bash scripts/install-bridge-from-github.sh --telegram-token '<token>' --project-scan-roots '<path1:path2:path3>'
 ```
 
 ### Bridge installed

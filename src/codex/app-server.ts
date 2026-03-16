@@ -64,6 +64,13 @@ interface TurnStartParams {
   effort?: ReasoningEffort;
 }
 
+export interface ThreadRealtimeAudioChunk {
+  data: string;
+  sampleRate: number;
+  numChannels: number;
+  samplesPerChannel?: number | null;
+}
+
 export type UserInput =
   | {
       type: "text";
@@ -363,7 +370,10 @@ export class CodexAppServerClient {
     private readonly codexBin: string,
     private readonly logPath: string,
     private readonly logger: Logger,
-    private readonly startupTimeoutMs = 5000
+    private readonly startupTimeoutMs = 5000,
+    private readonly options: {
+      experimentalApi?: boolean;
+    } = {}
   ) {}
 
   async start(): Promise<void> {
@@ -419,7 +429,12 @@ export class CodexAppServerClient {
       clientInfo: {
         name: "codex-telegram-bridge",
         version: "0.1.0"
-      }
+      },
+      ...(this.options.experimentalApi ? {
+        capabilities: {
+          experimentalApi: true
+        }
+      } : {})
     });
     this.notify("initialized", {});
     await this.request("thread/list", {});
@@ -637,6 +652,36 @@ export class CodexAppServerClient {
       threadId,
       numTurns
     });
+  }
+
+  async startThreadRealtime(options: {
+    threadId: string;
+    prompt: string;
+    sessionId?: string | null;
+  }): Promise<void> {
+    await this.request("thread/realtime/start", {
+      threadId: options.threadId,
+      prompt: options.prompt,
+      ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {})
+    });
+  }
+
+  async appendThreadRealtimeAudio(threadId: string, audio: ThreadRealtimeAudioChunk): Promise<void> {
+    await this.request("thread/realtime/appendAudio", {
+      threadId,
+      audio
+    });
+  }
+
+  async appendThreadRealtimeText(threadId: string, text: string): Promise<void> {
+    await this.request("thread/realtime/appendText", {
+      threadId,
+      text
+    });
+  }
+
+  async stopThreadRealtime(threadId: string): Promise<void> {
+    await this.request("thread/realtime/stop", { threadId });
   }
 
   async compactThread(threadId: string): Promise<void> {

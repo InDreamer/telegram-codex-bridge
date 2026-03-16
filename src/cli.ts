@@ -2,6 +2,7 @@
 
 import { getBridgePaths } from "./paths.js";
 import { createLogger } from "./logger.js";
+import { parseProjectScanRootsValue } from "./config.js";
 import {
   clearAuthorization,
   getStatus,
@@ -44,9 +45,33 @@ function parseFlags(args: string[]): ParsedFlags {
   return flags;
 }
 
+function parseBooleanFlag(value: string | boolean | undefined): boolean | undefined {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  switch (value.trim().toLowerCase()) {
+    case "1":
+    case "true":
+    case "yes":
+    case "on":
+      return true;
+    case "0":
+    case "false":
+    case "no":
+    case "off":
+      return false;
+    default:
+      return undefined;
+  }
+}
+
 function printUsage(): void {
   process.stdout.write(`Usage:
-  ctb install --telegram-token <token> [--codex-bin <bin>]
+  ctb install --telegram-token <token> [--codex-bin <bin>] [--project-scan-roots <path1:path2:...>] [--voice-input <true|false>] [--voice-openai-api-key <key>] [--voice-openai-model <model>] [--voice-ffmpeg-bin <bin>]
   ctb install-skill
   ctb status
   ctb doctor
@@ -72,6 +97,11 @@ async function main(): Promise<void> {
       const installOverrides: {
         telegramBotToken?: string;
         codexBin?: string;
+        projectScanRoots?: string[];
+        voiceInputEnabled?: boolean;
+        voiceOpenaiApiKey?: string;
+        voiceOpenaiTranscribeModel?: string;
+        voiceFfmpegBin?: string;
       } = {};
 
       if (typeof flags["telegram-token"] === "string") {
@@ -80,6 +110,27 @@ async function main(): Promise<void> {
 
       if (typeof flags["codex-bin"] === "string") {
         installOverrides.codexBin = flags["codex-bin"];
+      }
+
+      if (typeof flags["project-scan-roots"] === "string") {
+        installOverrides.projectScanRoots = parseProjectScanRootsValue(
+          flags["project-scan-roots"],
+          paths.homeDir
+        );
+      }
+
+      const voiceInputEnabled = parseBooleanFlag(flags["voice-input"]);
+      if (voiceInputEnabled !== undefined) {
+        installOverrides.voiceInputEnabled = voiceInputEnabled;
+      }
+      if (typeof flags["voice-openai-api-key"] === "string") {
+        installOverrides.voiceOpenaiApiKey = flags["voice-openai-api-key"];
+      }
+      if (typeof flags["voice-openai-model"] === "string") {
+        installOverrides.voiceOpenaiTranscribeModel = flags["voice-openai-model"];
+      }
+      if (typeof flags["voice-ffmpeg-bin"] === "string") {
+        installOverrides.voiceFfmpegBin = flags["voice-ffmpeg-bin"];
       }
 
       await installBridge(paths, logger, {

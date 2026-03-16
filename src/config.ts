@@ -1,4 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
+import { delimiter, join, resolve } from "node:path";
 
 import type { BridgePaths } from "./paths.js";
 
@@ -8,14 +9,44 @@ export interface BridgeConfig {
   telegramApiBaseUrl: string;
   telegramPollTimeoutSeconds: number;
   telegramPollIntervalMs: number;
+  projectScanRoots: string[];
+  voiceInputEnabled: boolean;
+  voiceOpenaiApiKey: string;
+  voiceOpenaiTranscribeModel: string;
+  voiceFfmpegBin: string;
 }
 
 const DEFAULT_CONFIG = {
   codexBin: "codex",
   telegramApiBaseUrl: "https://api.telegram.org",
   telegramPollTimeoutSeconds: 20,
-  telegramPollIntervalMs: 1500
+  telegramPollIntervalMs: 1500,
+  projectScanRoots: [],
+  voiceInputEnabled: false,
+  voiceOpenaiTranscribeModel: "gpt-4o-mini-transcribe",
+  voiceFfmpegBin: "ffmpeg"
 } as const;
+
+function parseBooleanEnv(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  switch (value.trim().toLowerCase()) {
+    case "1":
+    case "true":
+    case "yes":
+    case "on":
+      return true;
+    case "0":
+    case "false":
+    case "no":
+    case "off":
+      return false;
+    default:
+      return fallback;
+  }
+}
 
 function parseEnvFile(content: string): Record<string, string> {
   const entries = content
@@ -33,6 +64,43 @@ function parseEnvFile(content: string): Record<string, string> {
     .filter((entry): entry is readonly [string, string] => entry !== null);
 
   return Object.fromEntries(entries);
+}
+
+function expandConfiguredPath(inputPath: string, homeDir: string): string {
+  if (inputPath === "~") {
+    return homeDir;
+  }
+
+  if (inputPath.startsWith("~/")) {
+    return join(homeDir, inputPath.slice(2));
+  }
+
+  return resolve(inputPath);
+}
+
+export function parseProjectScanRootsValue(value: string | undefined, homeDir: string): string[] {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const roots: string[] = [];
+
+  for (const entry of value.split(delimiter).map((part) => part.trim()).filter((part) => part.length > 0)) {
+    const resolved = expandConfiguredPath(entry, homeDir);
+    if (seen.has(resolved)) {
+      continue;
+    }
+
+    seen.add(resolved);
+    roots.push(resolved);
+  }
+
+  return roots;
+}
+
+export function serializeProjectScanRoots(roots: string[]): string {
+  return roots.join(delimiter);
 }
 
 export async function loadConfig(paths: BridgePaths): Promise<BridgeConfig> {
@@ -62,7 +130,12 @@ export async function loadConfig(paths: BridgePaths): Promise<BridgeConfig> {
     telegramPollIntervalMs: Number.parseInt(
       merged.TELEGRAM_POLL_INTERVAL_MS ?? `${DEFAULT_CONFIG.telegramPollIntervalMs}`,
       10
-    )
+    ),
+    projectScanRoots: parseProjectScanRootsValue(merged.PROJECT_SCAN_ROOTS, paths.homeDir),
+    voiceInputEnabled: parseBooleanEnv(merged.VOICE_INPUT_ENABLED, DEFAULT_CONFIG.voiceInputEnabled),
+    voiceOpenaiApiKey: merged.VOICE_OPENAI_API_KEY ?? "",
+    voiceOpenaiTranscribeModel: merged.VOICE_OPENAI_TRANSCRIBE_MODEL ?? DEFAULT_CONFIG.voiceOpenaiTranscribeModel,
+    voiceFfmpegBin: merged.VOICE_FFMPEG_BIN ?? DEFAULT_CONFIG.voiceFfmpegBin
   };
 }
 
@@ -72,7 +145,12 @@ export async function writeConfig(paths: BridgePaths, config: BridgeConfig): Pro
     `CODEX_BIN=${config.codexBin}`,
     `TELEGRAM_API_BASE_URL=${config.telegramApiBaseUrl}`,
     `TELEGRAM_POLL_TIMEOUT_SECONDS=${config.telegramPollTimeoutSeconds}`,
-    `TELEGRAM_POLL_INTERVAL_MS=${config.telegramPollIntervalMs}`
+    `TELEGRAM_POLL_INTERVAL_MS=${config.telegramPollIntervalMs}`,
+    `PROJECT_SCAN_ROOTS=${serializeProjectScanRoots(config.projectScanRoots)}`,
+    `VOICE_INPUT_ENABLED=${config.voiceInputEnabled ? "1" : "0"}`,
+    `VOICE_OPENAI_API_KEY=${config.voiceOpenaiApiKey}`,
+    `VOICE_OPENAI_TRANSCRIBE_MODEL=${config.voiceOpenaiTranscribeModel}`,
+    `VOICE_FFMPEG_BIN=${config.voiceFfmpegBin}`
   ].join("\n");
 
   await writeFile(paths.envPath, `${content}\n`, "utf8");
@@ -87,6 +165,11 @@ export function withInstallOverrides(
     codexBin: overrides.codexBin ?? current.codexBin,
     telegramApiBaseUrl: overrides.telegramApiBaseUrl ?? current.telegramApiBaseUrl,
     telegramPollTimeoutSeconds: overrides.telegramPollTimeoutSeconds ?? current.telegramPollTimeoutSeconds,
-    telegramPollIntervalMs: overrides.telegramPollIntervalMs ?? current.telegramPollIntervalMs
+    telegramPollIntervalMs: overrides.telegramPollIntervalMs ?? current.telegramPollIntervalMs,
+    projectScanRoots: overrides.projectScanRoots ?? current.projectScanRoots,
+    voiceInputEnabled: overrides.voiceInputEnabled ?? current.voiceInputEnabled,
+    voiceOpenaiApiKey: overrides.voiceOpenaiApiKey ?? current.voiceOpenaiApiKey,
+    voiceOpenaiTranscribeModel: overrides.voiceOpenaiTranscribeModel ?? current.voiceOpenaiTranscribeModel,
+    voiceFfmpegBin: overrides.voiceFfmpegBin ?? current.voiceFfmpegBin
   };
 }

@@ -77,6 +77,16 @@ interface TelegramValidationResult {
 interface AppServerLifecycle {
   pid?: number | null;
   initializeAndProbe(): Promise<void>;
+  listModels?(options?: {
+    cursor?: string;
+    includeHidden?: boolean;
+    limit?: number;
+  }): Promise<{
+    data: Array<{
+      inputModalities?: string[];
+    }>;
+    nextCursor?: string | null;
+  }>;
   stop(): Promise<void>;
 }
 
@@ -92,6 +102,7 @@ interface ReadinessDependencies {
     codexBin: string;
     appServerLogPath: string;
     logger: Logger;
+    experimentalApi: boolean;
   }) => AppServerLifecycle;
   evaluateCapabilities?: (options: {
     codexBin: string;
@@ -242,8 +253,38 @@ function defaultCreateAppServer(options: {
   codexBin: string;
   appServerLogPath: string;
   logger: Logger;
+  experimentalApi: boolean;
 }): AppServerLifecycle {
-  return new CodexAppServerClient(options.codexBin, options.appServerLogPath, options.logger);
+  return new CodexAppServerClient(
+    options.codexBin,
+    options.appServerLogPath,
+    options.logger,
+    5000,
+    {
+      experimentalApi: options.experimentalApi
+    }
+  );
+}
+
+async function listAllModelPages(appServer: AppServerLifecycle): Promise<Array<{ inputModalities?: string[] }>> {
+  if (!appServer.listModels) {
+    return [];
+  }
+
+  const models: Array<{ inputModalities?: string[] }> = [];
+  let cursor: string | null = null;
+
+  do {
+    const page = await appServer.listModels({
+      ...(cursor ? { cursor } : {}),
+      includeHidden: false,
+      limit: 50
+    });
+    models.push(...page.data);
+    cursor = page.nextCursor ?? null;
+  } while (cursor);
+
+  return models;
 }
 
 function extractMethodsFromSchema(schema: unknown): string[] {
@@ -405,7 +446,13 @@ export async function probeReadiness(options: {
     telegramTokenValid: false,
     authorizedUserBound: store.getAuthorizedUser() !== null,
     issues: [],
-    nodeVersion: deps.nodeVersion
+    nodeVersion: deps.nodeVersion,
+    voiceInputEnabled: config.voiceInputEnabled,
+    ...(config.voiceInputEnabled ? {
+      voiceOpenaiConfigured: config.voiceOpenaiApiKey.trim().length > 0,
+      voiceFfmpegAvailable: await deps.commandExists(config.voiceFfmpegBin),
+      voiceRealtimeSupported: false
+    } : {})
   };
 
   const requiredNodeRange = await readDeclaredNodeEngine(paths);
@@ -510,10 +557,19 @@ export async function probeReadiness(options: {
     appServer = deps.createAppServer({
       codexBin: config.codexBin,
       appServerLogPath: paths.appServerLogPath,
-      logger
+      logger,
+      experimentalApi: config.voiceInputEnabled
     });
     await appServer.initializeAndProbe();
     details.appServerAvailable = true;
+    if (config.voiceInputEnabled && appServer.listModels) {
+      try {
+        const models = await listAllModelPages(appServer);
+        details.voiceRealtimeSupported = models.some((model) => (model.inputModalities ?? []).includes("audio"));
+      } catch {
+        details.voiceRealtimeSupported = false;
+      }
+    }
   } catch (error) {
     details.issues.push(`${error}`);
 
@@ -522,6 +578,16 @@ export async function probeReadiness(options: {
     }
 
     return finalizeFailure("app_server_unavailable", details, store, persist);
+  }
+
+  if (
+    config.voiceInputEnabled
+    && !details.voiceOpenaiConfigured
+    && !(details.voiceRealtimeSupported && details.voiceFfmpegAvailable)
+  ) {
+    details.issues.push("voice input is enabled but no usable transcription backend is available");
+    await appServer.stop().catch(() => {});
+    return finalizeFailure("bridge_unhealthy", details, store, persist);
   }
 
   const state = details.authorizedUserBound ? "ready" : "awaiting_authorization";

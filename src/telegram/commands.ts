@@ -25,13 +25,14 @@ export const TELEGRAM_COMMANDS: TelegramCommandDefinition[] = [
   { command: "account", description: "查看当前 Codex 账号状态" },
   { command: "review", description: "启动当前会话的代码审查" },
   { command: "fork", description: "分叉当前会话线程" },
-  { command: "rollback", description: "回滚最近几个 turn" },
+  { command: "rollback", description: "选择目标并回滚线程" },
   { command: "compact", description: "压缩当前线程上下文" },
   { command: "local_image", description: "发送服务器本地图片输入" },
   { command: "mention", description: "发送结构化引用输入" },
   { command: "thread", description: "设置线程名称或元数据" },
   { command: "where", description: "查看当前会话、项目和定位 ID" },
   { command: "inspect", description: "查看当前任务详情" },
+  { command: "runtime", description: "配置运行状态卡片摘要" },
   { command: "interrupt", description: "停止当前正在执行的操作" },
   { command: "cancel", description: "取消当前输入并返回" }
 ];
@@ -76,13 +77,14 @@ export function buildHelpText(): string {
     "/account 查看当前 Codex 账号与额度",
     "/review [detached] [branch <分支>|commit <SHA>|custom <说明>] 启动审查",
     "/fork [名称] 分叉当前线程为新会话",
-    "/rollback <数量> 回滚最近几个 turn",
+    "/rollback 选择回滚目标；/rollback <数量> 兼容旧用法",
     "/compact 压缩当前线程上下文",
     "/local_image <路径> :: 任务说明 发送本地图片输入",
     "/mention <path> :: 任务说明 发送结构化引用输入",
     "/thread name <名称> 或 /thread meta branch=<分支> sha=<提交> origin=<URL> 或 /thread clean-terminals",
     "/where 查看当前会话、项目和定位 ID",
     "/inspect 查看当前任务详情",
+    "/runtime 配置运行状态卡片顶部摘要行",
     "/interrupt 停止当前正在执行的操作",
     "/cancel 取消当前输入并返回"
   ].join("\n");

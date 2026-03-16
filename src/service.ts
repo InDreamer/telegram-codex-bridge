@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { access, mkdir, readdir, rm, stat } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
 
 import { createLogger, type Logger } from "./logger.js";
@@ -28,6 +28,7 @@ import {
   buildInteractionQuestionCard,
   buildInteractionResolvedCard,
   buildInspectText,
+  buildInspectViewMessage,
   buildManualPathConfirmMessage,
   buildManualPathPrompt,
   buildModelPickerMessage,
@@ -37,9 +38,12 @@ import {
   buildProjectPinnedText,
   buildProjectPickerMessage,
   buildReasoningEffortPickerMessage,
+  buildRollbackConfirmMessage,
+  buildRollbackPickerMessage,
   buildRenameTargetPicker,
   buildSessionCreatedText,
   buildProjectSelectedText,
+  buildRuntimePreferencesMessage,
   buildRuntimeErrorCard,
   buildRuntimeStatusReplyMarkup,
   buildRuntimeStatusCard,
@@ -55,10 +59,13 @@ import {
   parseCallbackData,
   parseCommand,
   type ParsedCallbackData,
+  type RollbackTargetView,
   type RuntimeCommandEntryView
 } from "./telegram/ui.js";
 import { buildHelpText, syncTelegramCommands } from "./telegram/commands.js";
-import type {
+import {
+  DEFAULT_RUNTIME_STATUS_FIELDS,
+  type RuntimeStatusField,
   PendingInteractionRow,
   PendingInteractionState,
   PendingInteractionSummary,
@@ -80,6 +87,7 @@ import {
   type NormalizedQuestionnaireInteraction
 } from "./interactions/normalize.js";
 import { buildProjectPicker, refreshProjectPicker, validateManualProjectPath } from "./project/discovery.js";
+import { commandExists, runCommand } from "./process.js";
 import { asRecord, asRecord as getRecord, getString, getNumber, getArray } from "./util/untyped.js";
 import { normalizeWhitespace, truncateText, normalizeAndTruncate, normalizeNullableText } from "./util/text.js";
 
@@ -106,6 +114,15 @@ const TELEGRAM_SEND_RETRY_DELAYS_MS = [750, 2_000] as const;
 const TELEGRAM_SEND_MAX_RETRY_AFTER_MS = 10_000;
 const TELEGRAM_IMAGE_CACHE_DIRNAME = "telegram-images";
 const TELEGRAM_IMAGE_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const TELEGRAM_VOICE_CACHE_DIRNAME = "telegram-voice";
+const OPENAI_AUDIO_TRANSCRIPT_URL = "https://api.openai.com/v1/audio/transcriptions";
+const VOICE_PCM_SAMPLE_RATE = 16_000;
+const VOICE_PCM_NUM_CHANNELS = 1;
+const VOICE_PCM_BYTES_PER_SAMPLE = 2;
+const VOICE_REALTIME_CHUNK_BYTES = 32_000;
+const VOICE_REALTIME_WAIT_TIMEOUT_MS = 30_000;
+const VOICE_REALTIME_POLL_INTERVAL_MS = 1_000;
+const VOICE_REALTIME_TRANSCRIPTION_PROMPT = "请逐字转写收到的语音，只返回转写文本，不要解释。";
 
 interface PickerState {
   picker: ProjectPickerResult;
@@ -117,6 +134,13 @@ interface PendingRenameState {
   kind: "session" | "project";
   sessionId: string;
   projectPath: string;
+}
+
+interface RuntimePreferencesDraftState {
+  chatId: string;
+  messageId: number;
+  fields: RuntimeStatusField[];
+  page: number;
 }
 
 interface RuntimeCardMessageState {
@@ -217,6 +241,18 @@ interface PendingRichInputComposer {
   promptLabel: string;
 }
 
+interface VoiceTranscriptionResult {
+  transcript: string;
+  source: "openai" | "realtime";
+}
+
+interface VoiceProcessingTask {
+  chatId: string;
+  sessionId: string;
+  messageId: number;
+  telegramFileId: string;
+}
+
 interface QuestionnaireDraft {
   answers: Record<string, unknown>;
   awaitingQuestionId?: string | null;
@@ -264,9 +300,13 @@ export class BridgeService {
   private readonly pendingThreadArchiveOps = new Map<string, PendingThreadArchiveOp[]>();
   private readonly pendingInteractionTextModes = new Map<string, PendingInteractionTextMode>();
   private readonly pendingRichInputComposers = new Map<string, PendingRichInputComposer>();
+  private readonly runtimePreferenceDrafts = new Map<string, RuntimePreferencesDraftState>();
   private readonly recentActivityBySessionId = new Map<string, RecentActivityEntry>();
+  private voiceTaskQueue: Promise<void> = Promise.resolve();
+  private pendingVoiceTaskCount = 0;
   private activeTurn: ActiveTurnState | null = null;
   private nextPendingThreadArchiveOpId = 1;
+  private realtimeVoiceModelId: string | null | undefined = undefined;
   private stopping = false;
 
   constructor(
@@ -336,6 +376,7 @@ export class BridgeService {
 
     this.snapshot = snapshot;
     this.appServer = appServer;
+    this.realtimeVoiceModelId = undefined;
     this.attachAppServerListeners();
 
     if (snapshot.state !== "ready" && snapshot.state !== "awaiting_authorization") {
@@ -449,6 +490,11 @@ export class BridgeService {
       }
 
       await this.handlePendingRichInputPrompt(chatId, pendingRichInputComposer, text);
+      return;
+    }
+
+    if (message.voice) {
+      await this.handleVoiceMessage(chatId, message);
       return;
     }
 
@@ -600,6 +646,92 @@ export class BridgeService {
           parsed.answerId,
           parsed.page
         );
+        return;
+      }
+
+      case "runtime_page": {
+        await this.handleRuntimePreferencesPageCallback(callbackQuery.id, chatId, message.message_id, parsed.token, parsed.page);
+        return;
+      }
+
+      case "runtime_toggle": {
+        await this.handleRuntimePreferencesToggleCallback(
+          callbackQuery.id,
+          chatId,
+          message.message_id,
+          parsed.token,
+          parsed.field
+        );
+        return;
+      }
+
+      case "runtime_save": {
+        await this.handleRuntimePreferencesSaveCallback(callbackQuery.id, chatId, message.message_id, parsed.token);
+        return;
+      }
+
+      case "runtime_reset": {
+        await this.handleRuntimePreferencesResetCallback(callbackQuery.id, chatId, message.message_id, parsed.token);
+        return;
+      }
+
+      case "inspect_expand": {
+        await this.handleInspectViewCallback(callbackQuery.id, chatId, message.message_id, parsed.sessionId, {
+          collapsed: false,
+          page: parsed.page
+        });
+        return;
+      }
+
+      case "inspect_collapse": {
+        await this.handleInspectViewCallback(callbackQuery.id, chatId, message.message_id, parsed.sessionId, {
+          collapsed: true,
+          page: 0
+        });
+        return;
+      }
+
+      case "inspect_page": {
+        await this.handleInspectViewCallback(callbackQuery.id, chatId, message.message_id, parsed.sessionId, {
+          collapsed: false,
+          page: parsed.page
+        });
+        return;
+      }
+
+      case "rollback_page": {
+        await this.handleRollbackPickerCallback(callbackQuery.id, chatId, message.message_id, parsed.sessionId, {
+          mode: "list",
+          page: parsed.page
+        });
+        return;
+      }
+
+      case "rollback_pick": {
+        await this.handleRollbackPickerCallback(callbackQuery.id, chatId, message.message_id, parsed.sessionId, {
+          mode: "confirm",
+          page: parsed.page,
+          targetIndex: parsed.targetIndex
+        });
+        return;
+      }
+
+      case "rollback_confirm": {
+        await this.handleRollbackConfirmCallback(
+          callbackQuery.id,
+          chatId,
+          message.message_id,
+          parsed.sessionId,
+          parsed.targetIndex
+        );
+        return;
+      }
+
+      case "rollback_back": {
+        await this.handleRollbackPickerCallback(callbackQuery.id, chatId, message.message_id, parsed.sessionId, {
+          mode: "list",
+          page: parsed.page
+        });
         return;
       }
 
@@ -788,6 +920,154 @@ export class BridgeService {
     }
 
     await this.safeEditMessageText(chatId, messageId, text);
+  }
+
+  private async handleRuntime(chatId: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const token = this.createRuntimePreferencesDraftToken();
+    const draft: RuntimePreferencesDraftState = {
+      chatId,
+      messageId: 0,
+      fields: [...this.store.getRuntimeCardPreferences().fields],
+      page: 0
+    };
+    const rendered = buildRuntimePreferencesMessage({
+      token,
+      fields: draft.fields,
+      page: draft.page
+    });
+    const sent = await this.safeSendHtmlMessageResult(chatId, rendered.text, rendered.replyMarkup);
+    if (!sent) {
+      return;
+    }
+
+    draft.messageId = sent.message_id;
+    this.runtimePreferenceDrafts.set(token, draft);
+  }
+
+  private createRuntimePreferencesDraftToken(): string {
+    return randomUUID().replace(/-/gu, "").slice(0, 10);
+  }
+
+  private getRuntimePreferencesDraft(
+    token: string,
+    chatId: string,
+    messageId: number
+  ): RuntimePreferencesDraftState | null {
+    const draft = this.runtimePreferenceDrafts.get(token);
+    if (!draft || draft.chatId !== chatId || draft.messageId !== messageId) {
+      return null;
+    }
+
+    return draft;
+  }
+
+  private async renderRuntimePreferencesDraft(token: string, draft: RuntimePreferencesDraftState): Promise<void> {
+    const rendered = buildRuntimePreferencesMessage({
+      token,
+      fields: draft.fields,
+      page: draft.page
+    });
+    await this.safeEditHtmlMessageText(draft.chatId, draft.messageId, rendered.text, rendered.replyMarkup);
+  }
+
+  private async handleRuntimePreferencesPageCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    token: string,
+    page: number
+  ): Promise<void> {
+    const draft = this.getRuntimePreferencesDraft(token, chatId, messageId);
+    if (!draft) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新发送 /runtime。");
+      return;
+    }
+
+    draft.page = Math.max(0, page);
+    await this.safeAnswerCallbackQuery(callbackQueryId);
+    await this.renderRuntimePreferencesDraft(token, draft);
+  }
+
+  private async handleRuntimePreferencesToggleCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    token: string,
+    field: RuntimeStatusField
+  ): Promise<void> {
+    const draft = this.getRuntimePreferencesDraft(token, chatId, messageId);
+    if (!draft) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新发送 /runtime。");
+      return;
+    }
+
+    draft.fields = draft.fields.includes(field)
+      ? draft.fields.filter((candidate) => candidate !== field)
+      : [...draft.fields, field];
+    await this.safeAnswerCallbackQuery(callbackQueryId);
+    await this.renderRuntimePreferencesDraft(token, draft);
+  }
+
+  private async handleRuntimePreferencesSaveCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    token: string
+  ): Promise<void> {
+    if (!this.store) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "状态存储当前不可用。");
+      return;
+    }
+
+    const draft = this.getRuntimePreferencesDraft(token, chatId, messageId);
+    if (!draft) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新发送 /runtime。");
+      return;
+    }
+
+    const saved = this.store.setRuntimeCardPreferences(draft.fields);
+    draft.fields = [...saved.fields];
+    await this.safeAnswerCallbackQuery(callbackQueryId, "已保存。");
+    await this.renderRuntimePreferencesDraft(token, draft);
+    await this.refreshActiveRuntimeStatusCard(chatId, "runtime_preferences_saved");
+  }
+
+  private async handleRuntimePreferencesResetCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    token: string
+  ): Promise<void> {
+    const draft = this.getRuntimePreferencesDraft(token, chatId, messageId);
+    if (!draft) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新发送 /runtime。");
+      return;
+    }
+
+    draft.fields = [...DEFAULT_RUNTIME_STATUS_FIELDS];
+    draft.page = 0;
+    await this.safeAnswerCallbackQuery(callbackQueryId, "已恢复默认，记得保存。");
+    await this.renderRuntimePreferencesDraft(token, draft);
+  }
+
+  private async refreshActiveRuntimeStatusCard(chatId: string, reason: string): Promise<void> {
+    if (!this.activeTurn || this.activeTurn.chatId !== chatId) {
+      return;
+    }
+
+    const rendered = this.buildStatusCardRenderPayload(
+      this.activeTurn.sessionId,
+      this.activeTurn.tracker,
+      this.activeTurn.statusCard
+    );
+    await this.requestRuntimeCardRender(this.activeTurn, this.activeTurn.statusCard, rendered.text, rendered.replyMarkup, {
+      force: true,
+      reason
+    });
   }
 
   private async handlePlanToggle(
@@ -1746,6 +2026,11 @@ export class BridgeService {
         return;
       }
 
+      case "runtime": {
+        await this.handleRuntime(chatId);
+        return;
+      }
+
       case "use": {
         await this.handleUse(chatId, args);
         return;
@@ -1969,7 +2254,7 @@ export class BridgeService {
       return;
     }
 
-    const picker = await buildProjectPicker(this.paths.homeDir, this.store);
+    const picker = await buildProjectPicker(this.paths.homeDir, this.config.projectScanRoots, this.store);
     this.pickerStates.set(chatId, {
       picker,
       awaitingManualProjectPath: false,
@@ -2033,7 +2318,12 @@ export class BridgeService {
 
     await this.safeSendMessage(chatId, "正在扫描本地项目，请稍候…");
     const previousKeys = new Set([...pickerState.picker.projectMap.keys()]);
-    const refreshed = await refreshProjectPicker(this.paths.homeDir, this.store, previousKeys);
+    const refreshed = await refreshProjectPicker(
+      this.paths.homeDir,
+      this.config.projectScanRoots,
+      this.store,
+      previousKeys
+    );
 
     this.pickerStates.set(chatId, {
       picker: refreshed.picker,
@@ -2954,24 +3244,234 @@ export class BridgeService {
       return;
     }
 
-    const numTurns = Number.parseInt(args.trim(), 10);
+    const trimmed = args.trim();
+    if (!trimmed) {
+      const targets = await this.buildRollbackTargets(activeSession);
+      if (targets.length === 0) {
+        await this.safeSendMessage(chatId, "当前没有可选择的回滚目标。");
+        return;
+      }
+
+      const rendered = buildRollbackPickerMessage({
+        sessionId: activeSession.sessionId,
+        page: 0,
+        targets
+      });
+      await this.safeSendHtmlMessage(chatId, rendered.text, rendered.replyMarkup);
+      return;
+    }
+
+    const numTurns = Number.parseInt(trimmed, 10);
     if (!Number.isFinite(numTurns) || numTurns < 1) {
-      await this.safeSendMessage(chatId, "用法：/rollback <回滚的 turn 数量>");
+      await this.safeSendMessage(chatId, "用法：/rollback 或 /rollback <回滚的 turn 数量>");
+      return;
+    }
+
+    await this.executeRollback(activeSession, numTurns);
+    await this.safeSendMessage(chatId, this.buildRollbackSuccessText(numTurns));
+  }
+
+  private getRollbackSessionForCallback(chatId: string, sessionId: string): SessionRow | null {
+    if (!this.store) {
+      return null;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession || activeSession.sessionId !== sessionId || !activeSession.threadId) {
+      return null;
+    }
+
+    if (activeSession.status === "running") {
+      return null;
+    }
+
+    return activeSession;
+  }
+
+  private async handleRollbackPickerCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    sessionId: string,
+    options:
+      | {
+          mode: "list";
+          page: number;
+        }
+      | {
+          mode: "confirm";
+          page: number;
+          targetIndex: number;
+        }
+  ): Promise<void> {
+    const session = this.getRollbackSessionForCallback(chatId, sessionId);
+    if (!session) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新发送 /rollback。");
+      return;
+    }
+
+    const targets = await this.buildRollbackTargets(session);
+    if (targets.length === 0) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "当前没有可选择的回滚目标。");
+      return;
+    }
+
+    await this.safeAnswerCallbackQuery(callbackQueryId);
+
+    if (options.mode === "confirm") {
+      const target = targets.find((candidate) => candidate.index === options.targetIndex);
+      if (!target) {
+        await this.safeEditMessageText(chatId, messageId, "这个回滚目标已失效，请重新发送 /rollback。");
+        return;
+      }
+
+      const rendered = buildRollbackConfirmMessage({
+        sessionId,
+        page: options.page,
+        target
+      });
+      await this.safeEditHtmlMessageText(chatId, messageId, rendered.text, rendered.replyMarkup);
+      return;
+    }
+
+    const rendered = buildRollbackPickerMessage({
+      sessionId,
+      page: options.page,
+      targets
+    });
+    await this.safeEditHtmlMessageText(chatId, messageId, rendered.text, rendered.replyMarkup);
+  }
+
+  private async handleRollbackConfirmCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    sessionId: string,
+    targetIndex: number
+  ): Promise<void> {
+    const session = this.getRollbackSessionForCallback(chatId, sessionId);
+    if (!session) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新发送 /rollback。");
+      return;
+    }
+
+    const targets = await this.buildRollbackTargets(session);
+    const target = targets.find((candidate) => candidate.index === targetIndex);
+    if (!target || target.rollbackCount < 1) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个回滚目标已失效，请重新发送 /rollback。");
+      return;
+    }
+
+    await this.safeAnswerCallbackQuery(callbackQueryId);
+    await this.executeRollback(session, target.rollbackCount);
+    await this.safeEditMessageText(
+      chatId,
+      messageId,
+      `已回滚到：${target.sequenceNumber}. ${target.label}\n${this.buildRollbackSuccessText(target.rollbackCount)}`
+    );
+  }
+
+  private buildRollbackSuccessText(numTurns: number): string {
+    return `已回滚最近 ${numTurns} 个 turn。\n注意：这不会自动撤销代理已经写到本地文件的改动。`;
+  }
+
+  private async executeRollback(session: SessionRow, numTurns: number): Promise<void> {
+    if (!this.store || !session.threadId) {
       return;
     }
 
     await this.ensureAppServerAvailable();
-    const result = await this.appServer?.rollbackThread(activeSession.threadId, numTurns);
+    const result = await this.appServer?.rollbackThread(session.threadId, numTurns);
     const lastTurn = result?.thread.turns.at(-1) ?? null;
-    this.store.updateSessionStatus(activeSession.sessionId, "idle", {
+    this.store.updateSessionStatus(session.sessionId, "idle", {
       lastTurnId: lastTurn?.id ?? null,
       lastTurnStatus: lastTurn?.status ?? null
     });
-    this.clearRecentActivity(activeSession.sessionId);
-    await this.safeSendMessage(
-      chatId,
-      `已回滚最近 ${numTurns} 个 turn。\n注意：这不会自动撤销代理已经写到本地文件的改动。`
-    );
+    this.clearRecentActivity(session.sessionId);
+  }
+
+  private async buildRollbackTargets(session: SessionRow): Promise<RollbackTargetView[]> {
+    if (!session.threadId) {
+      return [];
+    }
+
+    await this.ensureAppServerAvailable();
+    const result = await this.appServer?.readThread(session.threadId, true);
+    const threadRecord = asRecord(result?.thread);
+    const turns = getArray(threadRecord, "turns");
+    const targets: RollbackTargetView[] = [];
+    let sequenceNumber = 1;
+
+    for (let turnIndex = turns.length - 2; turnIndex >= 0; turnIndex -= 1) {
+      const turn = asRecord(turns[turnIndex]);
+      const label = this.summarizeRollbackTargetInput(session.threadId, turn);
+      if (!label) {
+        continue;
+      }
+
+      targets.push({
+        index: turnIndex,
+        sequenceNumber,
+        label,
+        rollbackCount: turns.length - turnIndex - 1
+      });
+      sequenceNumber += 1;
+    }
+
+    return targets;
+  }
+
+  private summarizeRollbackTargetInput(threadId: string, turn: Record<string, unknown> | null): string | null {
+    const turnId = getString(turn, "id");
+    if (turnId) {
+      const source = this.store?.getTurnInputSource(threadId, turnId);
+      if (source?.sourceKind === "voice") {
+        return truncateText(`语音：${normalizeWhitespace(source.transcript)}`, HISTORY_TEXT_LIMIT);
+      }
+    }
+
+    const userMessage = asRecord(turn?.userMessage);
+    const content = getArray(userMessage, "content");
+    if (content.length === 0) {
+      return null;
+    }
+
+    const textParts: string[] = [];
+    const labels: string[] = [];
+
+    for (const item of content) {
+      const record = asRecord(item);
+      const type = getString(record, "type");
+      switch (type) {
+        case "text": {
+          const text = normalizeWhitespace(getString(record, "text") ?? "");
+          if (text) {
+            textParts.push(text);
+          }
+          break;
+        }
+        case "image":
+        case "localImage":
+          labels.push("图片输入");
+          break;
+        case "skill":
+          labels.push(`skill: ${getString(record, "name") ?? "unknown"}`);
+          break;
+        case "mention":
+          labels.push(`引用: ${getString(record, "name") ?? getString(record, "path") ?? "unknown"}`);
+          break;
+        default:
+          labels.push("结构化输入");
+          break;
+      }
+    }
+
+    const summary = textParts.length > 0
+      ? textParts.join(" ")
+      : labels.length > 0
+        ? labels.join(" + ")
+        : null;
+    return summary ? truncateText(summary, HISTORY_TEXT_LIMIT) : null;
   }
 
   private async handleCompact(chatId: string): Promise<void> {
@@ -3120,6 +3620,351 @@ export class BridgeService {
       chatId,
       "用法：/thread name <名称> 或 /thread meta branch=<分支> sha=<提交> origin=<URL> 或 /thread clean-terminals"
     );
+  }
+
+  private async handleVoiceMessage(chatId: string, message: TelegramMessage): Promise<void> {
+    if (!this.store || !this.api?.getFile || !this.api?.downloadFile) {
+      return;
+    }
+
+    if (!this.config.voiceInputEnabled) {
+      await this.safeSendMessage(chatId, "未启用语音输入。");
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession) {
+      await this.safeSendMessage(chatId, "请先发送 /new 选择项目。");
+      return;
+    }
+
+    const voice = message.voice;
+    if (!voice) {
+      return;
+    }
+
+    this.enqueueVoiceProcessingTask({
+      chatId,
+      sessionId: activeSession.sessionId,
+      messageId: message.message_id,
+      telegramFileId: voice.file_id
+    });
+    await this.safeSendMessage(
+      chatId,
+      this.pendingVoiceTaskCount > 1
+        ? `已收到语音，正在排队转写。前方还有 ${this.pendingVoiceTaskCount - 1} 条语音。`
+        : "已收到语音，正在转写。"
+    );
+  }
+
+  private enqueueVoiceProcessingTask(task: VoiceProcessingTask): void {
+    this.pendingVoiceTaskCount += 1;
+    const runTask = async () => {
+      try {
+        await this.processQueuedVoiceTask(task);
+      } finally {
+        this.pendingVoiceTaskCount = Math.max(0, this.pendingVoiceTaskCount - 1);
+      }
+    };
+    this.voiceTaskQueue = this.voiceTaskQueue.then(runTask, runTask);
+  }
+
+  private async processQueuedVoiceTask(task: VoiceProcessingTask): Promise<void> {
+    if (this.stopping || !this.store || !this.api?.getFile || !this.api?.downloadFile) {
+      return;
+    }
+
+    const session = this.store.getSessionById(task.sessionId);
+    if (!session || session.telegramChatId !== task.chatId || session.archived) {
+      await this.safeSendMessage(task.chatId, "这条语音对应的会话已不可用，请重新选择会话后再试。");
+      return;
+    }
+
+    let localVoicePath: string | null = null;
+    try {
+      const file = await this.api.getFile(task.telegramFileId);
+      if (!file.file_path) {
+        await this.safeSendMessage(task.chatId, "暂时无法读取这段语音，请稍后重试。");
+        return;
+      }
+
+      localVoicePath = await this.cacheTelegramVoice(task.messageId, task.telegramFileId, file.file_path, file);
+      if (!localVoicePath) {
+        await this.safeSendMessage(task.chatId, "暂时无法读取这段语音，请稍后重试。");
+        return;
+      }
+
+      let transcription: VoiceTranscriptionResult | null = null;
+      if (this.config.voiceOpenaiApiKey.trim()) {
+        try {
+          transcription = await this.transcribeVoiceWithOpenAi(localVoicePath);
+        } catch (error) {
+          await this.logger.warn("openai voice transcription failed", {
+            chatId: task.chatId,
+            sessionId: session.sessionId,
+            error: `${error}`
+          });
+          await this.safeSendMessage(task.chatId, "OpenAI 语音转写失败，正在尝试 realtime 兜底。");
+        }
+      }
+
+      if (!transcription) {
+        try {
+          transcription = await this.transcribeVoiceWithRealtime(session, localVoicePath);
+        } catch (error) {
+          await this.logger.warn("realtime voice transcription failed", {
+            chatId: task.chatId,
+            sessionId: session.sessionId,
+            error: `${error}`
+          });
+          await this.safeSendMessage(task.chatId, `语音输入失败：${normalizeWhitespace(`${error}`)}`);
+          return;
+        }
+      }
+
+      const currentSession = this.store.getSessionById(task.sessionId);
+      if (!currentSession || currentSession.telegramChatId !== task.chatId || currentSession.archived) {
+        await this.safeSendMessage(task.chatId, "语音已转写，但对应会话已不可用，请重新发送。");
+        return;
+      }
+
+      await this.safeSendMessage(task.chatId, `语音转写：${transcription.transcript}`);
+      await this.submitVoiceTranscript(task.chatId, currentSession, transcription.transcript);
+    } catch (error) {
+      await this.logger.warn("voice message handling failed", {
+        chatId: task.chatId,
+        sessionId: session.sessionId,
+        error: `${error}`
+      });
+      await this.safeSendMessage(task.chatId, "暂时无法处理这段语音，请稍后重试。");
+    } finally {
+      if (localVoicePath) {
+        await rm(localVoicePath, { force: true }).catch(() => {});
+      }
+    }
+  }
+
+  private async submitVoiceTranscript(chatId: string, session: SessionRow, transcript: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    if (session.status === "running") {
+      const steerAvailability = this.getBlockedTurnSteerAvailability(chatId, session);
+      if (steerAvailability.kind === "available") {
+        try {
+          await this.ensureAppServerAvailable();
+          await this.appServer?.steerTurn({
+            threadId: steerAvailability.activeTurn.threadId,
+            expectedTurnId: steerAvailability.activeTurn.turnId,
+            input: [{ type: "text", text: transcript }]
+          });
+        } catch (error) {
+          await this.logger.warn("voice turn steer failed", {
+            chatId,
+            sessionId: session.sessionId,
+            threadId: steerAvailability.activeTurn.threadId,
+            turnId: steerAvailability.activeTurn.turnId,
+            error: `${error}`
+          });
+          await this.safeSendMessage(chatId, "Codex 服务暂时不可用，请稍后重试。");
+        }
+        return;
+      }
+
+      if (steerAvailability.kind === "interaction_pending") {
+        await this.sendPendingInteractionBlockNotice(chatId);
+        return;
+      }
+
+      await this.safeSendMessage(chatId, "当前项目仍在执行，请等待完成或发送 /interrupt。");
+      return;
+    }
+
+    await this.startRealTurn(chatId, session, transcript, {
+      sourceKind: "voice",
+      transcript
+    });
+  }
+
+  private async transcribeVoiceWithOpenAi(localVoicePath: string): Promise<VoiceTranscriptionResult> {
+    const audioBytes = await readFile(localVoicePath);
+    const formData = new FormData();
+    formData.append("model", this.config.voiceOpenaiTranscribeModel);
+    formData.append("file", new Blob([audioBytes], {
+      type: "audio/ogg"
+    }), basename(localVoicePath));
+
+    const response = await fetch(OPENAI_AUDIO_TRANSCRIPT_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.config.voiceOpenaiApiKey}`
+      },
+      body: formData,
+      signal: AbortSignal.timeout(60_000)
+    });
+
+    if (!response.ok) {
+      const bodyText = normalizeWhitespace(await response.text());
+      throw new Error(bodyText || `OpenAI transcription failed: ${response.status}`);
+    }
+
+    const payload = asRecord(await response.json());
+    const transcript = normalizeWhitespace(getString(payload, "text") ?? "");
+    if (!transcript) {
+      throw new Error("OpenAI transcription returned empty text");
+    }
+
+    return {
+      transcript,
+      source: "openai"
+    };
+  }
+
+  private async transcribeVoiceWithRealtime(
+    session: SessionRow,
+    localVoicePath: string
+  ): Promise<VoiceTranscriptionResult> {
+    const realtimeModelId = await this.getRealtimeVoiceModelId();
+    if (!realtimeModelId) {
+      throw new Error("当前 Codex 模型不支持 realtime 音频输入。");
+    }
+
+    if (!await commandExists(this.config.voiceFfmpegBin)) {
+      throw new Error(`系统里找不到 ffmpeg：${this.config.voiceFfmpegBin}`);
+    }
+
+    await this.ensureAppServerAvailable();
+    if (!this.appServer) {
+      throw new Error("app-server unavailable");
+    }
+
+    const tempThread = await this.appServer.startThread({
+      cwd: session.projectPath,
+      model: realtimeModelId
+    });
+    const tempThreadId = tempThread.thread.id;
+    const existingTurns = await this.appServer.readThread(tempThreadId, true);
+    const existingTurnIds = new Set(
+      getArray(asRecord(existingTurns.thread), "turns")
+        .map((turn) => getString(turn, "id"))
+        .filter((turnId): turnId is string => Boolean(turnId))
+    );
+    const pcmPath = `${localVoicePath}.${randomUUID()}.pcm`;
+
+    try {
+      await this.convertVoiceToPcm(localVoicePath, pcmPath);
+      const pcmBytes = await readFile(pcmPath);
+
+      await this.appServer.startThreadRealtime({
+        threadId: tempThreadId,
+        prompt: VOICE_REALTIME_TRANSCRIPTION_PROMPT
+      });
+
+      for (let offset = 0; offset < pcmBytes.length; offset += VOICE_REALTIME_CHUNK_BYTES) {
+        const chunk = pcmBytes.subarray(offset, Math.min(offset + VOICE_REALTIME_CHUNK_BYTES, pcmBytes.length));
+        if (chunk.length === 0) {
+          continue;
+        }
+
+        await this.appServer.appendThreadRealtimeAudio(tempThreadId, {
+          data: chunk.toString("base64"),
+          sampleRate: VOICE_PCM_SAMPLE_RATE,
+          numChannels: VOICE_PCM_NUM_CHANNELS,
+          samplesPerChannel: Math.floor(chunk.length / (VOICE_PCM_BYTES_PER_SAMPLE * VOICE_PCM_NUM_CHANNELS))
+        });
+      }
+
+      await this.appServer.stopThreadRealtime(tempThreadId);
+      const turnId = await this.waitForRealtimeTurnCompletion(tempThreadId, existingTurnIds);
+      const transcript = normalizeWhitespace(await extractFinalAnswerFromHistory(this.appServer, tempThreadId, turnId) ?? "");
+      if (!transcript) {
+        throw new Error("realtime transcription returned empty text");
+      }
+
+      return {
+        transcript,
+        source: "realtime"
+      };
+    } finally {
+      await rm(pcmPath, { force: true }).catch(() => {});
+      await this.appServer.stopThreadRealtime(tempThreadId).catch(() => {});
+      await this.appServer.archiveThread(tempThreadId).catch(() => {});
+    }
+  }
+
+  private async getRealtimeVoiceModelId(): Promise<string | null> {
+    if (this.realtimeVoiceModelId !== undefined) {
+      return this.realtimeVoiceModelId;
+    }
+
+    await this.ensureAppServerAvailable();
+    const models = await this.fetchAllModels();
+    const realtimeModel = models.find((model) => (model.inputModalities ?? []).includes("audio")) ?? null;
+    this.realtimeVoiceModelId = realtimeModel?.id ?? null;
+    return this.realtimeVoiceModelId;
+  }
+
+  private async waitForRealtimeTurnCompletion(threadId: string, existingTurnIds: Set<string>): Promise<string> {
+    if (!this.appServer) {
+      throw new Error("app-server unavailable");
+    }
+
+    const deadline = Date.now() + VOICE_REALTIME_WAIT_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const thread = await this.appServer.readThread(threadId, true);
+      const turns = getArray(asRecord(thread.thread), "turns")
+        .map((turn) => asRecord(turn))
+        .filter((turn): turn is Record<string, unknown> => Boolean(turn));
+      const candidateTurns = turns.filter((turn) => {
+        const turnId = getString(turn, "id");
+        if (!turnId) {
+          return false;
+        }
+        return !existingTurnIds.has(turnId);
+      });
+
+      const completedTurn = candidateTurns.find((turn) => getString(turn, "status") === "completed");
+      if (completedTurn) {
+        const completedTurnId = getString(completedTurn, "id");
+        if (completedTurnId) {
+          return completedTurnId;
+        }
+      }
+
+      const failedTurn = candidateTurns.find((turn) => {
+        const status = getString(turn, "status");
+        return status === "failed" || status === "interrupted";
+      });
+      if (failedTurn) {
+        throw new Error(`realtime transcription turn ${getString(failedTurn, "status") ?? "failed"}`);
+      }
+
+      await this.sleep(VOICE_REALTIME_POLL_INTERVAL_MS);
+    }
+
+    throw new Error("realtime transcription timed out");
+  }
+
+  private async convertVoiceToPcm(inputPath: string, outputPath: string): Promise<void> {
+    const result = await runCommand(this.config.voiceFfmpegBin, [
+      "-y",
+      "-i",
+      inputPath,
+      "-f",
+      "s16le",
+      "-acodec",
+      "pcm_s16le",
+      "-ac",
+      `${VOICE_PCM_NUM_CHANNELS}`,
+      "-ar",
+      `${VOICE_PCM_SAMPLE_RATE}`,
+      outputPath
+    ]);
+
+    if (result.exitCode !== 0) {
+      throw new Error(result.stderr || result.stdout || "ffmpeg conversion failed");
+    }
   }
 
   private async handlePhotoMessage(chatId: string, message: TelegramMessage): Promise<void> {
@@ -3350,7 +4195,15 @@ export class BridgeService {
     }
   }
 
-  private async startRealTurn(chatId: string, session: SessionRow, text: string): Promise<void> {
+  private async startRealTurn(
+    chatId: string,
+    session: SessionRow,
+    text: string,
+    options?: {
+      sourceKind: "voice";
+      transcript: string;
+    }
+  ): Promise<void> {
     if (!this.store) {
       return;
     }
@@ -3368,6 +4221,14 @@ export class BridgeService {
 
       if (!turn) {
         throw new Error("turn start returned no result");
+      }
+      if (options?.sourceKind === "voice") {
+        this.store.saveTurnInputSource({
+          threadId,
+          turnId: turn.turn.id,
+          sourceKind: "voice",
+          transcript: options.transcript
+        });
       }
       await this.beginActiveTurn(chatId, session, threadId, turn.turn.id, turn.turn.status);
     } catch (error) {
@@ -3781,8 +4642,36 @@ export class BridgeService {
     return await this.api.downloadFile(fileId, targetPath, file);
   }
 
+  private async cacheTelegramVoice(
+    messageId: number,
+    fileId: string,
+    filePath: string,
+    file?: { file_id: string; file_path?: string }
+  ): Promise<string | null> {
+    if (!this.api) {
+      return null;
+    }
+
+    const cacheDir = await this.ensureTelegramVoiceCacheDir();
+    void this.pruneTelegramImageCache(cacheDir).catch(async (error) => {
+      await this.logger.warn("telegram voice cache cleanup failed", {
+        cacheDir,
+        error: `${error}`
+      });
+    });
+
+    const targetPath = join(cacheDir, `${messageId}-${randomUUID()}${getTelegramVoiceExtension(filePath)}`);
+    return await this.api.downloadFile(fileId, targetPath, file);
+  }
+
   private async ensureTelegramImageCacheDir(): Promise<string> {
     const cacheDir = join(this.paths.cacheDir, TELEGRAM_IMAGE_CACHE_DIRNAME);
+    await mkdir(cacheDir, { recursive: true });
+    return cacheDir;
+  }
+
+  private async ensureTelegramVoiceCacheDir(): Promise<string> {
+    const cacheDir = join(this.paths.cacheDir, TELEGRAM_VOICE_CACHE_DIRNAME);
     await mkdir(cacheDir, { recursive: true });
     return cacheDir;
   }
@@ -3825,17 +4714,78 @@ export class BridgeService {
       return;
     }
 
-    const inspectHtml = buildInspectText(payload.snapshot, {
+    const inspectHtml = this.buildInspectHtml(activeSession, payload);
+    const rendered = buildInspectViewMessage({
+      sessionId: activeSession.sessionId,
+      html: inspectHtml,
+      page: 0,
+      collapsed: false
+    });
+
+    if (!await this.safeSendHtmlMessage(chatId, rendered.text, rendered.replyMarkup)) {
+      await this.safeSendMessage(chatId, buildInspectPlainTextFallback(inspectHtml));
+    }
+  }
+
+  private async handleInspectViewCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    sessionId: string,
+    options: {
+      collapsed: boolean;
+      page: number;
+    }
+  ): Promise<void> {
+    const session = this.getInspectableSession(chatId, sessionId);
+    if (!session) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新发送 /inspect。");
+      return;
+    }
+
+    const payload = await this.getInspectRenderPayload(session);
+    if (!payload) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "当前没有可用的活动详情。");
+      return;
+    }
+
+    const inspectHtml = this.buildInspectHtml(session, payload);
+    const rendered = buildInspectViewMessage({
+      sessionId,
+      html: inspectHtml,
+      page: options.page,
+      collapsed: options.collapsed
+    });
+
+    const editResult = await this.safeEditHtmlMessageText(chatId, messageId, rendered.text, rendered.replyMarkup);
+    if (editResult.outcome === "edited") {
+      await this.safeAnswerCallbackQuery(callbackQueryId);
+      return;
+    }
+
+    const fallbackSent = await this.safeSendMessage(chatId, buildInspectPlainTextFallback(rendered.text));
+    await this.safeAnswerCallbackQuery(
+      callbackQueryId,
+      fallbackSent ? "详情过长，已改为纯文本发送。" : "暂时无法更新详情，请稍后重试。"
+    );
+  }
+
+  private getInspectableSession(chatId: string, sessionId: string): SessionRow | null {
+    const session = this.store?.getSessionById(sessionId) ?? null;
+    if (!session || session.telegramChatId !== chatId) {
+      return null;
+    }
+
+    return session;
+  }
+
+  private buildInspectHtml(activeSession: SessionRow, payload: InspectRenderPayload): string {
+    return buildInspectText(payload.snapshot, {
       sessionName: activeSession.displayName,
       projectName: activeSession.projectName,
       commands: payload.commands,
       note: payload.note
     });
-
-    // Keep `/inspect` usable even when Telegram rejects the richer HTML rendering.
-    if (!await this.safeSendHtmlMessage(chatId, inspectHtml)) {
-      await this.safeSendMessage(chatId, buildInspectPlainTextFallback(inspectHtml));
-    }
   }
 
   private async getInspectRenderPayload(activeSession: SessionRow): Promise<InspectRenderPayload | null> {
@@ -4151,6 +5101,7 @@ export class BridgeService {
     const context = this.getRuntimeCardContext(sessionId);
     const text = buildRuntimeStatusCard({
       ...context,
+      statusLine: this.buildRuntimeStatusLine(sessionId, inspect),
       state: formatVisibleRuntimeState(inspect),
       blockedReason: formatRuntimeBlockedReason(inspect.threadBlockedReason),
       progressText: selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null),
@@ -4205,10 +5156,15 @@ export class BridgeService {
       const client = new CodexAppServerClient(
         this.config.codexBin,
         this.paths.appServerLogPath,
-        this.bootstrapLogger
+        this.bootstrapLogger,
+        5000,
+        {
+          experimentalApi: this.config.voiceInputEnabled
+        }
       );
       await client.initializeAndProbe();
       this.appServer = client;
+      this.realtimeVoiceModelId = undefined;
       this.attachAppServerListeners();
       if (this.snapshot) {
         this.snapshot = {
@@ -4251,10 +5207,15 @@ export class BridgeService {
     const client = new CodexAppServerClient(
       this.config.codexBin,
       this.paths.appServerLogPath,
-      this.bootstrapLogger
+      this.bootstrapLogger,
+      5000,
+      {
+        experimentalApi: this.config.voiceInputEnabled
+      }
     );
     await client.initializeAndProbe();
     this.appServer = client;
+    this.realtimeVoiceModelId = undefined;
     this.attachAppServerListeners();
   }
 
@@ -5028,8 +5989,69 @@ export class BridgeService {
 
     return {
       sessionName: session.displayName ?? null,
-      projectName: session.projectName ?? null
+      projectName: this.projectDisplayName(session)
     };
+  }
+
+  private buildRuntimeStatusLine(sessionId: string, inspect: InspectSnapshot): string | null {
+    if (!this.store) {
+      return null;
+    }
+
+    const session = this.store.getSessionById(sessionId);
+    if (!session) {
+      return null;
+    }
+
+    const selectedFields = this.store.getRuntimeCardPreferences().fields;
+    const progressText = selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null);
+    const blockedReason = formatRuntimeBlockedReason(inspect.threadBlockedReason);
+    const parts = selectedFields
+      .map((field) => this.formatRuntimeStatusLineField(field, session, inspect, progressText, blockedReason))
+      .filter((value): value is string => Boolean(value));
+
+    return parts.length > 0 ? parts.join(" | ") : null;
+  }
+
+  private formatRuntimeStatusLineField(
+    field: RuntimeStatusField,
+    session: SessionRow,
+    inspect: InspectSnapshot,
+    progressText: string | null,
+    blockedReason: string | null
+  ): string | null {
+    switch (field) {
+      case "session_name":
+        return session.displayName ? `会话: ${session.displayName}` : null;
+      case "project_name":
+        return `项目: ${this.projectDisplayName(session)}`;
+      case "project_path":
+        return session.projectPath ? `路径: ${session.projectPath}` : null;
+      case "model_reasoning":
+        return `模型: ${formatSessionModelReasoningConfig(session)}`;
+      case "thread_id":
+        return session.threadId ? `线程: ${session.threadId}` : null;
+      case "turn_id":
+        return session.lastTurnId ? `Turn: ${session.lastTurnId}` : null;
+      case "blocked_reason":
+        return blockedReason ? `阻塞: ${blockedReason}` : null;
+      case "current_step":
+        return progressText ? `步骤: ${progressText}` : null;
+      case "last_token_usage":
+        return inspect.tokenUsage?.lastTotalTokens !== null && inspect.tokenUsage?.lastTotalTokens !== undefined
+          ? `本次Token: ${inspect.tokenUsage.lastTotalTokens}`
+          : null;
+      case "total_token_usage":
+        return inspect.tokenUsage?.totalTokens !== null && inspect.tokenUsage?.totalTokens !== undefined
+          ? `累计Token: ${inspect.tokenUsage.totalTokens}`
+          : null;
+      case "context_window":
+        return inspect.tokenUsage?.modelContextWindow !== null && inspect.tokenUsage?.modelContextWindow !== undefined
+          ? `上下文: ${inspect.tokenUsage.modelContextWindow}`
+          : null;
+      case "final_answer_ready":
+        return `终答: ${inspect.finalMessageAvailable ? "是" : "否"}`;
+    }
   }
 
   private async safeSendHtmlMessage(
@@ -5499,6 +6521,11 @@ async function isReadableImagePath(imagePath: string): Promise<boolean> {
 function getTelegramImageExtension(filePath: string): string {
   const extension = extname(filePath).toLowerCase();
   return /^\.[a-z0-9]{1,10}$/iu.test(extension) ? extension : ".jpg";
+}
+
+function getTelegramVoiceExtension(filePath: string): string {
+  const extension = extname(filePath).toLowerCase();
+  return /^\.[a-z0-9]{1,10}$/iu.test(extension) ? extension : ".ogg";
 }
 
 function isGlobalRuntimeNotice(

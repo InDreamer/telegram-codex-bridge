@@ -29,7 +29,7 @@ Before acting, read `references/install-strategy.md`.
 For first install, use the bundled script:
 
 ```bash
-bash scripts/install-bridge-from-github.sh --telegram-token '<token>'
+bash scripts/install-bridge-from-github.sh --telegram-token '<token>' --project-scan-roots '<path1:path2:path3>'
 ```
 
 That script is the default install path. Do not narrate the build steps unless the install fails.
@@ -42,6 +42,11 @@ That script is the default install path. Do not narrate the build steps unless t
 - ask only when the missing step is truly outside Codex control
 - use the bundled install script for first install
 - use `ctb` for post-install status, repair, authorization, restart, and update
+- collect or infer project scan roots before first install and pass them through `--project-scan-roots`
+- if the user gives roots, use them
+- if the user gives none, auto-select up to 3 disjoint roots under `HOME`
+- if the user gives fewer than 3, supplement with obvious disjoint roots when possible
+- do not invent junk roots and do not pass overlapping parent-child roots
 - do not ask the user to run local commands you can run yourself
 - do not reinstall a healthy bridge
 - if the skill can continue locally, continue locally
@@ -49,7 +54,7 @@ That script is the default install path. Do not narrate the build steps unless t
 ## Minimal Flow
 
 1. Precheck using the strategy reference.
-2. If install is needed and a token is available, run the bundled install script.
+2. If install is needed and a token is available, determine project scan roots and run the bundled install script.
 3. If install already exists, use `ctb status` and `ctb doctor`.
 4. Only interrupt for a token, a required Codex login, or one Telegram message to the bot.
 5. Finish by verifying the real Telegram path.

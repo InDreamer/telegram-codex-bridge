@@ -7,12 +7,17 @@ REF="master"
 REF_TYPE="branch"
 TELEGRAM_TOKEN=""
 CODEX_BIN=""
+PROJECT_SCAN_ROOTS=""
+VOICE_INPUT=""
+VOICE_OPENAI_API_KEY=""
+VOICE_OPENAI_MODEL=""
+VOICE_FFMPEG_BIN=""
 WORKDIR=""
 
 usage() {
   cat <<'EOF'
 Usage:
-  install-bridge-from-github.sh --telegram-token <token> [--codex-bin <path>] [--ref <name>] [--ref-type branch|tag]
+  install-bridge-from-github.sh --telegram-token <token> [--codex-bin <path>] [--project-scan-roots <path1:path2:...>] [--voice-input true|false] [--voice-openai-api-key <key>] [--voice-openai-model <model>] [--voice-ffmpeg-bin <bin>] [--ref <name>] [--ref-type branch|tag]
 EOF
 }
 
@@ -24,6 +29,26 @@ while [[ $# -gt 0 ]]; do
       ;;
     --codex-bin)
       CODEX_BIN="${2:-}"
+      shift 2
+      ;;
+    --project-scan-roots)
+      PROJECT_SCAN_ROOTS="${2:-}"
+      shift 2
+      ;;
+    --voice-input)
+      VOICE_INPUT="${2:-}"
+      shift 2
+      ;;
+    --voice-openai-api-key)
+      VOICE_OPENAI_API_KEY="${2:-}"
+      shift 2
+      ;;
+    --voice-openai-model)
+      VOICE_OPENAI_MODEL="${2:-}"
+      shift 2
+      ;;
+    --voice-ffmpeg-bin)
+      VOICE_FFMPEG_BIN="${2:-}"
       shift 2
       ;;
     --ref)
@@ -94,6 +119,21 @@ npm run build
 INSTALL_CMD=(node dist/cli.js install --telegram-token "$TELEGRAM_TOKEN")
 if [[ -n "$CODEX_BIN" ]]; then
   INSTALL_CMD+=(--codex-bin "$CODEX_BIN")
+fi
+if [[ -n "$PROJECT_SCAN_ROOTS" ]]; then
+  INSTALL_CMD+=(--project-scan-roots "$PROJECT_SCAN_ROOTS")
+fi
+if [[ -n "$VOICE_INPUT" ]]; then
+  INSTALL_CMD+=(--voice-input "$VOICE_INPUT")
+fi
+if [[ -n "$VOICE_OPENAI_API_KEY" ]]; then
+  INSTALL_CMD+=(--voice-openai-api-key "$VOICE_OPENAI_API_KEY")
+fi
+if [[ -n "$VOICE_OPENAI_MODEL" ]]; then
+  INSTALL_CMD+=(--voice-openai-model "$VOICE_OPENAI_MODEL")
+fi
+if [[ -n "$VOICE_FFMPEG_BIN" ]]; then
+  INSTALL_CMD+=(--voice-ffmpeg-bin "$VOICE_FFMPEG_BIN")
 fi
 
 "${INSTALL_CMD[@]}"

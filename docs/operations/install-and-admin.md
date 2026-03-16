@@ -22,6 +22,18 @@ Supported config keys in `bridge.env`:
 - `TELEGRAM_API_BASE_URL`
 - `TELEGRAM_POLL_TIMEOUT_SECONDS`
 - `TELEGRAM_POLL_INTERVAL_MS`
+- `PROJECT_SCAN_ROOTS`
+- `VOICE_INPUT_ENABLED`
+- `VOICE_OPENAI_API_KEY`
+- `VOICE_OPENAI_TRANSCRIBE_MODEL`
+- `VOICE_FFMPEG_BIN`
+
+`PROJECT_SCAN_ROOTS` rules:
+- path-delimited root list written into `bridge.env`
+- on Linux and macOS, use `:`
+- when set, project discovery scans only those roots
+- when empty or unset, runtime falls back to scanning the user's `HOME` as one bounded root
+- runtime fallback does not rewrite config; persistence belongs to install or repair flow
 
 macOS note:
 - `bridge.env` stays the source of truth for bridge config after install
@@ -93,7 +105,7 @@ Reason:
 ## Local Management Commands
 
 Supported subcommands:
-- `ctb install --telegram-token <token> [--codex-bin <bin>]`
+- `ctb install --telegram-token <token> [--codex-bin <bin>] [--project-scan-roots <path1:path2:...>] [--voice-input <true|false>] [--voice-openai-api-key <key>] [--voice-openai-model <model>] [--voice-ffmpeg-bin <bin>]`
 - `ctb install-skill`
 - `ctb status`
 - `ctb restart`
@@ -134,7 +146,7 @@ Reason:
 Bridge install from GitHub:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/master/scripts/install-from-github.sh | bash -s -- --telegram-token "<BOT_TOKEN>"
+curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/master/scripts/install-from-github.sh | bash -s -- --telegram-token "<BOT_TOKEN>" --project-scan-roots "$HOME/projects:$HOME/work"
 ```
 
 Bundled Codex skill install from GitHub:
@@ -147,6 +159,7 @@ Notes:
 - the bridge install shortcut downloads a repository archive, runs `npm install`, runs `npm run build`, and then runs `node dist/cli.js install`
 - the skill install shortcut copies `skills/telegram-codex-linker` into `${CODEX_HOME:-~/.codex}/skills/`
 - both scripts accept `--ref <name>` plus `--ref-type branch|tag`; default is `master`
+- the bridge install shortcut also accepts `--project-scan-roots <path1:path2:...>` and forwards it into `ctb install`
 - after skill install, restart Codex so the new skill is discovered
 
 Authorization intent:
@@ -204,6 +217,7 @@ Primary operator diagnostics:
 - Codex version and whether it satisfies the bridge's minimum supported floor
 - service-manager health summary
 - path writability summary for install/config/state roots
+- voice-input enablement plus backend availability summary
 - capability-check summary for the required V2 app-server surface
 
 `ctb doctor` behavior:
@@ -222,6 +236,7 @@ Readiness / preflight behavior:
 - current capability-check results are cached under `~/.local/state/codex-telegram-bridge/cache/`
 - missing `systemctl` or `launchctl` is reported as a warning, not a hard blocker, because `ctb service run` may still be supervised externally
 - non-writable state or config roots are treated as hard failures
+- if voice input is enabled but neither OpenAI transcription nor realtime audio transcription is usable, readiness is treated as `bridge_unhealthy`
 
 Structured activity visibility:
 - the Telegram chat keeps one bridge-owned status card per running turn

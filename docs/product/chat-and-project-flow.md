@@ -43,10 +43,11 @@ Rebinding flow:
 
 ## Project Discovery Rules
 
-Default scan roots, in order:
-1. `~/Repo`
-2. `~/workspace`
-3. `~/code`
+Scan root source:
+- read `PROJECT_SCAN_ROOTS` from `bridge.env`
+- when configured, scan only those roots in the configured order
+- when empty or unset, scan the user's `HOME` as one bounded root
+- install and repair flows should persist preferred roots; runtime fallback does not rewrite config
 
 A directory is a candidate project if it contains at least one of:
 - `.git/`
@@ -83,12 +84,14 @@ Tie-breakers:
 - group visible candidates into `已收藏`, `最近使用`, and `本地发现`
 - show up to 5 projects per group
 - each visible project shows display name plus path hint
+- paths under `HOME` render as `~/...`; other paths render as absolute paths
 - the same project path appears at most once; if it matches multiple sources, show it in the highest-priority group and expose the others as tags
 - always show `扫描本地项目` and `手动输入路径`
 
 Degradation:
 - partial scan results are acceptable
 - scan timeout does not fail `/new`
+- if every configured scan root is unavailable, show a degraded notice and fall back to historical results when available
 - if no candidates remain, show fallback actions and `未找到可用项目，请扫描本地项目或手动输入路径。`
 
 ## Telegram Command Contract
@@ -306,10 +309,11 @@ Behavior:
 - the new session becomes active immediately
 - the selected model follows the forked session when present
 
-### `/rollback <n>`
+### `/rollback` and `/rollback <n>`
 
 Behavior:
-- calls `thread/rollback`
+- bare `/rollback` opens a target picker built from thread history and asks for confirmation before calling `thread/rollback`
+- `/rollback <n>` remains as a direct compatibility path
 - updates the active session's latest turn pointer to the returned thread state
 - reminds the user that local file edits are not auto-reverted
 
@@ -370,6 +374,8 @@ Shows a structured activity snapshot for the active session.
 Responses:
 - with activity data:
   - Telegram HTML in compact Chinese, optimized for normal chat reading instead of debug-dump fidelity
+  - a collapsible default view with explicit expand/collapse controls
+  - paged detail when a full inspect view would be too large for one Telegram message
   - deduplicated session and project identity
   - current turn status, blocker, active step, and elapsed step time when available
   - one concise latest conclusion when available
@@ -387,6 +393,7 @@ Responses:
   - unresolved interaction summaries
   - when no live snapshot exists but the session has a completed turn, best-effort detail recovered from thread history
 - with no activity data: `当前没有可用的活动详情。`
+- if Telegram rejects an expanded inspect edit, the bridge sends a plain-text fallback message instead of leaving the callback silently broken
 
 Rules:
 - do not mirror raw delta, raw reasoning, or raw protocol frames

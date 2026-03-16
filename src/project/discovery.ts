@@ -6,7 +6,6 @@ import { basename, join, relative, resolve, sep } from "node:path";
 import type { BridgeStateStore } from "../state/store.js";
 import type { ProjectCandidate, ProjectPickerGroup, ProjectPickerResult, RecentProjectRow } from "../types.js";
 
-const SCAN_ROOT_NAMES = ["Repo", "workspace", "code"] as const;
 const PROJECT_MARKERS = [".git", "package.json", "pyproject.toml", "Cargo.toml", "go.mod", ".jj"] as const;
 const EXCLUDED_DIR_NAMES = new Set([
   "node_modules",
@@ -88,16 +87,12 @@ function normalizePathForDisplay(path: string): string {
 }
 
 function buildProjectPathLabel(projectPath: string, homeDir: string): string {
-  for (const rootName of SCAN_ROOT_NAMES) {
-    const rootPath = join(homeDir, rootName);
-    if (projectPath === rootPath) {
-      return rootName;
-    }
+  if (projectPath === homeDir) {
+    return "~";
+  }
 
-    if (projectPath.startsWith(`${rootPath}${sep}`)) {
-      const relativePath = normalizePathForDisplay(relative(rootPath, projectPath));
-      return `${rootName}/${relativePath}`;
-    }
+  if (projectPath.startsWith(`${homeDir}${sep}`)) {
+    return `~/${normalizePathForDisplay(relative(homeDir, projectPath))}`;
   }
 
   return normalizePathForDisplay(projectPath);
@@ -141,11 +136,15 @@ async function inspectProjectDirectory(path: string): Promise<{ markers: string[
   return { markers: [...markers], childDirectories };
 }
 
-async function scanProjects(homeDir: string, store: BridgeStateStore): Promise<ScanResult> {
+function resolveScanRoots(homeDir: string, configuredRoots: string[]): string[] {
+  return configuredRoots.length > 0 ? configuredRoots : [homeDir];
+}
+
+async function scanProjects(homeDir: string, configuredRoots: string[], store: BridgeStateStore): Promise<ScanResult> {
   const pinnedPaths = new Set(store.listPinnedProjectPaths());
-  const queue: ScanDirectory[] = SCAN_ROOT_NAMES.map((rootName) => ({
-    path: join(homeDir, rootName),
-    root: join(homeDir, rootName),
+  const queue: ScanDirectory[] = resolveScanRoots(homeDir, configuredRoots).map((rootPath) => ({
+    path: rootPath,
+    root: rootPath,
     depth: 0
   }));
 
@@ -389,7 +388,7 @@ function buildProjectGroups(candidates: ProjectCandidate[]): ProjectPickerGroup[
 function buildNoticeLines(scanResult: ScanResult): string[] {
   const lines: string[] = [];
   if (scanResult.allRootsFailed) {
-    lines.push("默认扫描目录当前不可用，以下结果可能主要来自历史记录。");
+    lines.push("扫描根目录当前不可用，以下结果可能主要来自历史记录。");
   } else if (scanResult.partial) {
     lines.push("本地扫描结果可能不完整。");
   }
@@ -427,8 +426,12 @@ function buildManualPathCandidate(
   };
 }
 
-export async function buildProjectPicker(homeDir: string, store: BridgeStateStore): Promise<ProjectPickerResult> {
-  const scanResult = await scanProjects(homeDir, store);
+export async function buildProjectPicker(
+  homeDir: string,
+  configuredRoots: string[],
+  store: BridgeStateStore
+): Promise<ProjectPickerResult> {
+  const scanResult = await scanProjects(homeDir, configuredRoots, store);
   const ranked = await buildCandidates(homeDir, store);
   const groups = buildProjectGroups(ranked);
   const projectMap = new Map<string, ProjectCandidate>(ranked.map((candidate) => [candidate.projectKey, candidate]));
@@ -446,10 +449,11 @@ export async function buildProjectPicker(homeDir: string, store: BridgeStateStor
 
 export async function refreshProjectPicker(
   homeDir: string,
+  configuredRoots: string[],
   store: BridgeStateStore,
   previousProjectKeys: Set<string>
 ): Promise<{ picker: ProjectPickerResult; hasNewResults: boolean }> {
-  const picker = await buildProjectPicker(homeDir, store);
+  const picker = await buildProjectPicker(homeDir, configuredRoots, store);
   const currentKeys = new Set([...picker.projectMap.keys()]);
   const hasNewResults = [...currentKeys].some((projectKey) => !previousProjectKeys.has(projectKey));
 

@@ -27,7 +27,12 @@ const testConfig: BridgeConfig = {
   codexBin: "codex",
   telegramApiBaseUrl: "https://api.telegram.org",
   telegramPollTimeoutSeconds: 20,
-  telegramPollIntervalMs: 1500
+  telegramPollIntervalMs: 1500,
+  projectScanRoots: [],
+  voiceInputEnabled: false,
+  voiceOpenaiApiKey: "",
+  voiceOpenaiTranscribeModel: "gpt-4o-mini-transcribe",
+  voiceFfmpegBin: "ffmpeg"
 };
 
 function createTestPaths(root: string): BridgePaths {
@@ -63,7 +68,8 @@ function createTestPaths(root: string): BridgePaths {
 }
 
 async function createServiceContext(
-  deps: ConstructorParameters<typeof BridgeService>[2] = {}
+  deps: ConstructorParameters<typeof BridgeService>[2] = {},
+  config: BridgeConfig = testConfig
 ): Promise<{
   service: BridgeService;
   store: BridgeStateStore;
@@ -79,7 +85,7 @@ async function createServiceContext(
   ]);
 
   const store = await BridgeStateStore.open(paths, testLogger);
-  const service = new BridgeService(paths, testConfig, deps);
+  const service = new BridgeService(paths, config, deps);
 
   (service as any).store = store;
   (service as any).logger = testLogger;
@@ -6463,6 +6469,258 @@ test("global runtime notices persist as app-server notices when Telegram deliver
     assert.equal(notices[0]?.type, "app_server_notice");
     assert.match(notices[0]?.message ?? "", /Codex 配置警告：bad config/u);
     assert.match(notices[0]?.message ?? "", /line 4/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("runtime command persists edited status-line fields through callbacks", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; options?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; options?: any }> = [];
+
+  try {
+    authorizeNumericChatWithSession(store, "1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const message = createFakeTelegramMessage(2000 + sent.length, text);
+        sent.push({ messageId: message.message_id, text, options });
+        return message;
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, options });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      answerCallbackQuery: async () => {}
+    };
+
+    await (service as any).routeCommand("1", "runtime", "");
+    const toggleCallback = getCallbackData(sent[0], 0, 0);
+
+    await (service as any).handleCallback({
+      id: "runtime-toggle",
+      from: { id: 1, is_bot: false, first_name: "Tester" },
+      message: {
+        message_id: sent[0]!.messageId,
+        chat: { id: 1, type: "private" },
+        date: 0,
+        text: sent[0]!.text
+      },
+      data: toggleCallback
+    });
+
+    const saveCallback = edited.at(-1)?.options?.replyMarkup?.inline_keyboard?.at(-2)?.[0]?.callback_data;
+    assert.equal(typeof saveCallback, "string");
+
+    await (service as any).handleCallback({
+      id: "runtime-save",
+      from: { id: 1, is_bot: false, first_name: "Tester" },
+      message: {
+        message_id: sent[0]!.messageId,
+        chat: { id: 1, type: "private" },
+        date: 0,
+        text: edited.at(-1)?.text ?? sent[0]!.text
+      },
+      data: saveCallback
+    });
+
+    assert.deepEqual(store.getRuntimeCardPreferences().fields, ["project_name", "model_reasoning"]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("bare rollback command opens a target picker and confirms rollback from thread history", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; options?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; options?: any }> = [];
+  const rollbackCalls: Array<{ threadId: string; numTurns: number }> = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.updateSessionThreadId(session.sessionId, "thread-rb-picker");
+    store.saveTurnInputSource({
+      threadId: "thread-rb-picker",
+      turnId: "turn-2",
+      sourceKind: "voice",
+      transcript: "打开日志"
+    });
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const message = createFakeTelegramMessage(2100 + sent.length, text);
+        sent.push({ messageId: message.message_id, text, options });
+        return message;
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, options });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      answerCallbackQuery: async () => {}
+    };
+    (service as any).appServer = {
+      isRunning: true,
+      readThread: async () => ({
+        thread: {
+          id: "thread-rb-picker",
+          turns: [
+            {
+              id: "turn-1",
+              status: "completed",
+              userMessage: {
+                content: [{ type: "text", text: "第一条" }]
+              }
+            },
+            {
+              id: "turn-2",
+              status: "completed",
+              userMessage: {
+                content: [{ type: "text", text: "voice placeholder" }]
+              }
+            },
+            {
+              id: "turn-3",
+              status: "completed",
+              userMessage: {
+                content: [{ type: "text", text: "最新一条" }]
+              }
+            }
+          ]
+        }
+      }),
+      rollbackThread: async (threadId: string, numTurns: number) => {
+        rollbackCalls.push({ threadId, numTurns });
+        return {
+          thread: {
+            id: threadId,
+            turns: [{ id: "turn-2", status: "completed" }]
+          }
+        };
+      }
+    };
+
+    await (service as any).routeCommand("1", "rollback", "");
+    assert.match(sent[0]?.text ?? "", /语音：打开日志/u);
+
+    await (service as any).handleCallback({
+      id: "rollback-pick",
+      from: { id: 1, is_bot: false, first_name: "Tester" },
+      message: {
+        message_id: sent[0]!.messageId,
+        chat: { id: 1, type: "private" },
+        date: 0,
+        text: sent[0]!.text
+      },
+      data: getCallbackData(sent[0], 0, 0)
+    });
+
+    const confirmCallback = edited.at(-1)?.options?.replyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data;
+    assert.equal(typeof confirmCallback, "string");
+
+    await (service as any).handleCallback({
+      id: "rollback-confirm",
+      from: { id: 1, is_bot: false, first_name: "Tester" },
+      message: {
+        message_id: sent[0]!.messageId,
+        chat: { id: 1, type: "private" },
+        date: 0,
+        text: edited.at(-1)?.text ?? sent[0]!.text
+      },
+      data: confirmCallback
+    });
+
+    assert.deepEqual(rollbackCalls, [{ threadId: "thread-rb-picker", numTurns: 1 }]);
+    assert.equal(store.getSessionById(session.sessionId)?.lastTurnId, "turn-2");
+    assert.match(edited.at(-1)?.text ?? "", /已回滚到/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("voice messages report disabled input when the feature flag is off", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+
+  try {
+    authorizeNumericChatWithSession(store, "1");
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string) => {
+        sent.push(text);
+        return createFakeTelegramMessage(2200 + sent.length, text);
+      },
+      getFile: async () => {
+        throw new Error("getFile should not run when voice input is disabled");
+      },
+      downloadFile: async () => {
+        throw new Error("downloadFile should not run when voice input is disabled");
+      }
+    };
+
+    await (service as any).handleMessage({
+      message_id: 1,
+      from: { id: 1, is_bot: false, first_name: "Tester", username: "tester" },
+      chat: { id: 1, type: "private" },
+      date: 0,
+      voice: {
+        file_id: "voice-1",
+        duration: 3
+      }
+    });
+
+    assert.equal(sent.at(-1), "未启用语音输入。");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("voice processing runs in the background so later commands are not blocked", async () => {
+  const voiceEnabledConfig: BridgeConfig = {
+    ...testConfig,
+    voiceInputEnabled: true
+  };
+  const { service, store, cleanup } = await createServiceContext({}, voiceEnabledConfig);
+  const sent: Array<{ text: string; parseMode?: string }> = [];
+  let releaseVoiceTask!: () => void;
+  const voiceTaskGate = new Promise<void>((resolve) => {
+    releaseVoiceTask = resolve;
+  });
+
+  try {
+    authorizeNumericChatWithSession(store, "1");
+    (service as any).processQueuedVoiceTask = async () => {
+      await voiceTaskGate;
+    };
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        sent.push({ text, parseMode: options?.parseMode });
+        return createFakeTelegramMessage(2300 + sent.length, text);
+      },
+      getFile: async () => ({
+        file_id: "voice-1",
+        file_path: "voice.ogg"
+      }),
+      downloadFile: async () => "/tmp/voice.ogg"
+    };
+
+    await (service as any).handleMessage({
+      message_id: 1,
+      from: { id: 1, is_bot: false, first_name: "Tester", username: "tester" },
+      chat: { id: 1, type: "private" },
+      date: 0,
+      voice: {
+        file_id: "voice-1",
+        duration: 3
+      }
+    });
+    await (service as any).routeCommand("1", "where", "");
+
+    assert.equal(sent[0]?.text, "已收到语音，正在转写。");
+    assert.match(sent[1]?.text ?? "", /Bridge 会话 ID/u);
+    assert.equal(sent[1]?.parseMode, "HTML");
+
+    releaseVoiceTask();
+    await (service as any).voiceTaskQueue;
   } finally {
     await cleanup();
   }

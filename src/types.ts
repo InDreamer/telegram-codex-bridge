@@ -18,6 +18,28 @@ export type RecentProjectSource = "mru" | "pin" | "scan" | "last_success";
 
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
+export type RuntimeStatusField =
+  | "session_name"
+  | "project_name"
+  | "project_path"
+  | "model_reasoning"
+  | "thread_id"
+  | "turn_id"
+  | "blocked_reason"
+  | "current_step"
+  | "last_token_usage"
+  | "total_token_usage"
+  | "context_window"
+  | "final_answer_ready";
+
+export const DEFAULT_RUNTIME_STATUS_FIELDS: RuntimeStatusField[] = [
+  "session_name",
+  "project_name",
+  "model_reasoning"
+];
+
+export type TurnInputSourceKind = "voice";
+
 export interface ReadinessDetails {
   codexInstalled: boolean;
   codexAuthenticated: boolean;
@@ -40,6 +62,10 @@ export interface ReadinessDetails {
   installRootWritable?: boolean;
   capabilityCheckPassed?: boolean;
   capabilityCheckSource?: "cache" | "generated_schema" | "unknown";
+  voiceInputEnabled?: boolean;
+  voiceOpenaiConfigured?: boolean;
+  voiceFfmpegAvailable?: boolean;
+  voiceRealtimeSupported?: boolean;
 }
 
 export interface ReadinessSnapshot {
@@ -98,6 +124,20 @@ export interface FinalAnswerViewRow {
   turnId: string;
   previewHtml: string;
   pages: string[];
+  createdAt: string;
+}
+
+export interface RuntimeCardPreferencesRow {
+  key: "global";
+  fields: RuntimeStatusField[];
+  updatedAt: string;
+}
+
+export interface TurnInputSourceRow {
+  threadId: string;
+  turnId: string;
+  sourceKind: TurnInputSourceKind;
+  transcript: string;
   createdAt: string;
 }
 

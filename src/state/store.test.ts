@@ -1358,3 +1358,74 @@ test("listPendingInteractionsByRequest returns only unresolved rows for the exac
     await cleanup();
   }
 });
+
+test("runtime card preferences persist across reopen and default when missing", async () => {
+  const { paths, store, cleanup } = await openStore();
+
+  try {
+    assert.deepEqual(store.getRuntimeCardPreferences().fields, [
+      "session_name",
+      "project_name",
+      "model_reasoning"
+    ]);
+
+    store.setRuntimeCardPreferences(["thread_id", "turn_id"]);
+    store.close();
+
+    const reopened = await BridgeStateStore.open(paths, testLogger);
+    try {
+      assert.deepEqual(reopened.getRuntimeCardPreferences().fields, ["thread_id", "turn_id"]);
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+test("runtime card preferences preserve an explicit empty selection", async () => {
+  const { paths, store, cleanup } = await openStore();
+
+  try {
+    store.setRuntimeCardPreferences([]);
+    store.close();
+
+    const reopened = await BridgeStateStore.open(paths, testLogger);
+    try {
+      assert.deepEqual(reopened.getRuntimeCardPreferences().fields, []);
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+test("turn input source records persist across reopen", async () => {
+  const { paths, store, cleanup } = await openStore();
+
+  try {
+    store.saveTurnInputSource({
+      threadId: "thread-voice",
+      turnId: "turn-voice",
+      sourceKind: "voice",
+      transcript: "打开日志"
+    });
+    store.close();
+
+    const reopened = await BridgeStateStore.open(paths, testLogger);
+    try {
+      assert.deepEqual(reopened.getTurnInputSource("thread-voice", "turn-voice"), {
+        threadId: "thread-voice",
+        turnId: "turn-voice",
+        sourceKind: "voice",
+        transcript: "打开日志",
+        createdAt: reopened.getTurnInputSource("thread-voice", "turn-voice")?.createdAt ?? ""
+      });
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await cleanup();
+  }
+});

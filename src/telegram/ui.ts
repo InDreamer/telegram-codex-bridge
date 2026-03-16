@@ -4,6 +4,7 @@ import type {
   ProjectPickerResult,
   ReasoningEffort,
   ReadinessSnapshot,
+  RuntimeStatusField,
   SessionRow
 } from "../types.js";
 import type { ActivityStatus, CollabAgentStateSnapshot, InspectSnapshot, StreamBlock, StreamSnapshot } from "../activity/types.js";
@@ -23,6 +24,19 @@ export interface RuntimeCommandEntryView {
   cwd?: string | null;
   exitCode?: number | null;
   durationMs?: number | null;
+}
+
+export interface RuntimeStatusFieldOptionView {
+  field: RuntimeStatusField;
+  label: string;
+  selected: boolean;
+}
+
+export interface RollbackTargetView {
+  index: number;
+  sequenceNumber: number;
+  label: string;
+  rollbackCount: number;
 }
 
 export type ParsedCallbackData =
@@ -45,6 +59,17 @@ export type ParsedCallbackData =
   | { kind: "final_open"; answerId: string }
   | { kind: "final_close"; answerId: string }
   | { kind: "final_page"; answerId: string; page: number }
+  | { kind: "runtime_page"; token: string; page: number }
+  | { kind: "runtime_toggle"; token: string; field: RuntimeStatusField }
+  | { kind: "runtime_save"; token: string }
+  | { kind: "runtime_reset"; token: string }
+  | { kind: "inspect_expand"; sessionId: string; page: number }
+  | { kind: "inspect_collapse"; sessionId: string }
+  | { kind: "inspect_page"; sessionId: string; page: number }
+  | { kind: "rollback_page"; sessionId: string; page: number }
+  | { kind: "rollback_pick"; sessionId: string; page: number; targetIndex: number }
+  | { kind: "rollback_confirm"; sessionId: string; targetIndex: number }
+  | { kind: "rollback_back"; sessionId: string; page: number }
   | { kind: "interaction_decision"; interactionId: string; decisionKey: string | null; decisionIndex: number | null }
   | {
       kind: "interaction_question";
@@ -162,6 +187,52 @@ export function encodeFinalAnswerPageCallback(answerId: string, page: number): s
   return `v1:final:page:${answerId}:${page}`;
 }
 
+export function encodeRuntimePageCallback(token: string, page: number): string {
+  return ensureTelegramCallbackDataLimit(`v4:rt:p:${token}:${encodeInteractionIndex(page)}`);
+}
+
+export function encodeRuntimeToggleCallback(token: string, field: RuntimeStatusField): string {
+  return ensureTelegramCallbackDataLimit(`v4:rt:t:${token}:${encodeRuntimeStatusField(field)}`);
+}
+
+export function encodeRuntimeSaveCallback(token: string): string {
+  return ensureTelegramCallbackDataLimit(`v4:rt:s:${token}`);
+}
+
+export function encodeRuntimeResetCallback(token: string): string {
+  return ensureTelegramCallbackDataLimit(`v4:rt:r:${token}`);
+}
+
+export function encodeInspectExpandCallback(sessionId: string, page = 0): string {
+  return ensureTelegramCallbackDataLimit(`v4:in:e:${sessionId}:${encodeInteractionIndex(page)}`);
+}
+
+export function encodeInspectCollapseCallback(sessionId: string): string {
+  return ensureTelegramCallbackDataLimit(`v4:in:c:${sessionId}`);
+}
+
+export function encodeInspectPageCallback(sessionId: string, page: number): string {
+  return ensureTelegramCallbackDataLimit(`v4:in:p:${sessionId}:${encodeInteractionIndex(page)}`);
+}
+
+export function encodeRollbackPageCallback(sessionId: string, page: number): string {
+  return ensureTelegramCallbackDataLimit(`v4:rb:p:${sessionId}:${encodeInteractionIndex(page)}`);
+}
+
+export function encodeRollbackPickCallback(sessionId: string, page: number, targetIndex: number): string {
+  return ensureTelegramCallbackDataLimit(
+    `v4:rb:k:${sessionId}:${encodeInteractionIndex(page)}:${encodeInteractionIndex(targetIndex)}`
+  );
+}
+
+export function encodeRollbackConfirmCallback(sessionId: string, targetIndex: number): string {
+  return ensureTelegramCallbackDataLimit(`v4:rb:c:${sessionId}:${encodeInteractionIndex(targetIndex)}`);
+}
+
+export function encodeRollbackBackCallback(sessionId: string, page: number): string {
+  return ensureTelegramCallbackDataLimit(`v4:rb:b:${sessionId}:${encodeInteractionIndex(page)}`);
+}
+
 function encodeInteractionToken(interactionId: string): string {
   return Buffer.from(interactionId, "utf8").toString("base64url");
 }
@@ -198,6 +269,66 @@ function ensureTelegramCallbackDataLimit(data: string): string {
   }
 
   return data;
+}
+
+function encodeRuntimeStatusField(field: RuntimeStatusField): string {
+  switch (field) {
+    case "session_name":
+      return "sn";
+    case "project_name":
+      return "pn";
+    case "project_path":
+      return "pp";
+    case "model_reasoning":
+      return "mr";
+    case "thread_id":
+      return "th";
+    case "turn_id":
+      return "tu";
+    case "blocked_reason":
+      return "br";
+    case "current_step":
+      return "cs";
+    case "last_token_usage":
+      return "lt";
+    case "total_token_usage":
+      return "tt";
+    case "context_window":
+      return "cw";
+    case "final_answer_ready":
+      return "fr";
+  }
+}
+
+function decodeRuntimeStatusField(value: string): RuntimeStatusField | null {
+  switch (value) {
+    case "sn":
+      return "session_name";
+    case "pn":
+      return "project_name";
+    case "pp":
+      return "project_path";
+    case "mr":
+      return "model_reasoning";
+    case "th":
+      return "thread_id";
+    case "tu":
+      return "turn_id";
+    case "br":
+      return "blocked_reason";
+    case "cs":
+      return "current_step";
+    case "lt":
+      return "last_token_usage";
+    case "tt":
+      return "total_token_usage";
+    case "cw":
+      return "context_window";
+    case "fr":
+      return "final_answer_ready";
+    default:
+      return null;
+  }
 }
 
 export function encodeInteractionDecisionCallback(interactionId: string, decisionIndex: number): string {
@@ -250,6 +381,87 @@ export function parseCallbackData(data: string): ParsedCallbackData | null {
         if (parts[5] === "default" || effort) {
           return { kind: "model_effort", sessionId: parts[3], modelIndex, effort };
         }
+      }
+    }
+
+    return null;
+  }
+
+  if (parts[0] === "v4" && parts[1] === "rt") {
+    if (parts[2] === "p" && parts[3] && parts[4]) {
+      const page = decodeInteractionIndex(parts[4]);
+      if (page !== null) {
+        return { kind: "runtime_page", token: parts[3], page };
+      }
+    }
+
+    if (parts[2] === "t" && parts[3] && parts[4]) {
+      const field = decodeRuntimeStatusField(parts[4]);
+      if (field) {
+        return { kind: "runtime_toggle", token: parts[3], field };
+      }
+    }
+
+    if (parts[2] === "s" && parts[3]) {
+      return { kind: "runtime_save", token: parts[3] };
+    }
+
+    if (parts[2] === "r" && parts[3]) {
+      return { kind: "runtime_reset", token: parts[3] };
+    }
+
+    return null;
+  }
+
+  if (parts[0] === "v4" && parts[1] === "in") {
+    if (parts[2] === "e" && parts[3] && parts[4]) {
+      const page = decodeInteractionIndex(parts[4]);
+      if (page !== null) {
+        return { kind: "inspect_expand", sessionId: parts[3], page };
+      }
+    }
+
+    if (parts[2] === "c" && parts[3]) {
+      return { kind: "inspect_collapse", sessionId: parts[3] };
+    }
+
+    if (parts[2] === "p" && parts[3] && parts[4]) {
+      const page = decodeInteractionIndex(parts[4]);
+      if (page !== null) {
+        return { kind: "inspect_page", sessionId: parts[3], page };
+      }
+    }
+
+    return null;
+  }
+
+  if (parts[0] === "v4" && parts[1] === "rb") {
+    if (parts[2] === "p" && parts[3] && parts[4]) {
+      const page = decodeInteractionIndex(parts[4]);
+      if (page !== null) {
+        return { kind: "rollback_page", sessionId: parts[3], page };
+      }
+    }
+
+    if (parts[2] === "k" && parts[3] && parts[4] && parts[5]) {
+      const page = decodeInteractionIndex(parts[4]);
+      const targetIndex = decodeInteractionIndex(parts[5]);
+      if (page !== null && targetIndex !== null) {
+        return { kind: "rollback_pick", sessionId: parts[3], page, targetIndex };
+      }
+    }
+
+    if (parts[2] === "c" && parts[3] && parts[4]) {
+      const targetIndex = decodeInteractionIndex(parts[4]);
+      if (targetIndex !== null) {
+        return { kind: "rollback_confirm", sessionId: parts[3], targetIndex };
+      }
+    }
+
+    if (parts[2] === "b" && parts[3] && parts[4]) {
+      const page = decodeInteractionIndex(parts[4]);
+      if (page !== null) {
+        return { kind: "rollback_back", sessionId: parts[3], page };
       }
     }
 
@@ -804,6 +1016,7 @@ export function buildUnsupportedCommandText(): string {
 export function buildRuntimeStatusCard(
   options: RuntimeCardContext & {
     state: string;
+    statusLine?: string | null;
     progressText?: string | null;
     blockedReason?: string | null;
     planEntries?: string[];
@@ -814,6 +1027,11 @@ export function buildRuntimeStatusCard(
 ): string {
   const lines: string[] = ["<b>Runtime Status</b>"];
   pushHtmlRuntimeCardContext(lines, options);
+
+  if (options.statusLine) {
+    lines.push(`<b>概览:</b> ${escapeHtml(options.statusLine)}`);
+  }
+
   lines.push(`<b>State:</b> ${escapeHtml(options.state)}`);
 
   if (options.blockedReason) {
@@ -886,6 +1104,224 @@ export function buildRuntimeStatusReplyMarkup(options: {
 
   return {
     inline_keyboard: rows
+  };
+}
+
+const RUNTIME_FIELD_PAGE_SIZE = 4;
+const ROLLBACK_TARGET_PAGE_SIZE = 6;
+const INSPECT_PAGE_CHAR_LIMIT = 3200;
+
+export function buildRuntimeStatusFieldLabel(field: RuntimeStatusField): string {
+  switch (field) {
+    case "session_name":
+      return "会话名";
+    case "project_name":
+      return "项目名";
+    case "project_path":
+      return "项目路径";
+    case "model_reasoning":
+      return "模型 + 强度";
+    case "thread_id":
+      return "线程 ID";
+    case "turn_id":
+      return "Turn ID";
+    case "blocked_reason":
+      return "阻塞原因";
+    case "current_step":
+      return "当前步骤";
+    case "last_token_usage":
+      return "本次 Token";
+    case "total_token_usage":
+      return "累计 Token";
+    case "context_window":
+      return "上下文窗口";
+    case "final_answer_ready":
+      return "最终答复已就绪";
+  }
+}
+
+export function buildRuntimePreferencesMessage(options: {
+  token: string;
+  fields: RuntimeStatusField[];
+  page: number;
+}): {
+  text: string;
+  replyMarkup: TelegramInlineKeyboardMarkup;
+} {
+  const allFields: RuntimeStatusField[] = [
+    "session_name",
+    "project_name",
+    "project_path",
+    "model_reasoning",
+    "thread_id",
+    "turn_id",
+    "blocked_reason",
+    "current_step",
+    "last_token_usage",
+    "total_token_usage",
+    "context_window",
+    "final_answer_ready"
+  ];
+  const totalPages = Math.max(1, Math.ceil(allFields.length / RUNTIME_FIELD_PAGE_SIZE));
+  const safePage = Math.min(Math.max(options.page, 0), totalPages - 1);
+  const pageFields = allFields.slice(safePage * RUNTIME_FIELD_PAGE_SIZE, (safePage + 1) * RUNTIME_FIELD_PAGE_SIZE);
+  const selectedSet = new Set(options.fields);
+
+  const selectedSummary = options.fields.length > 0
+    ? options.fields.map((field, index) => `${index + 1}. ${buildRuntimeStatusFieldLabel(field)}`).join("\n")
+    : "当前没有已选字段。";
+
+  const rows = pageFields.map((field) => [{
+    text: `${selectedSet.has(field) ? "✓" : "＋"} ${buildRuntimeStatusFieldLabel(field)}`,
+    callback_data: encodeRuntimeToggleCallback(options.token, field)
+  }]);
+
+  const navigation: Array<{ text: string; callback_data: string }> = [];
+  if (safePage > 0) {
+    navigation.push({ text: "上一页", callback_data: encodeRuntimePageCallback(options.token, safePage - 1) });
+  }
+  if (safePage + 1 < totalPages) {
+    navigation.push({ text: "下一页", callback_data: encodeRuntimePageCallback(options.token, safePage + 1) });
+  }
+  if (navigation.length > 0) {
+    rows.push(navigation);
+  }
+
+  rows.push([{ text: "保存并应用", callback_data: encodeRuntimeSaveCallback(options.token) }]);
+  rows.push([{ text: "恢复默认", callback_data: encodeRuntimeResetCallback(options.token) }]);
+
+  return {
+    text: [
+      formatHtmlHeading("Runtime 状态行"),
+      "按按钮选择要显示的字段。",
+      "选择顺序就是显示顺序；新选中的字段会追加到末尾。",
+      formatHtmlField("已选字段：", `${options.fields.length} 个`),
+      selectedSummary,
+      formatHtmlField("页码：", `${safePage + 1}/${totalPages}`)
+    ].join("\n"),
+    replyMarkup: {
+      inline_keyboard: rows
+    }
+  };
+}
+
+export function buildInspectViewMessage(options: {
+  sessionId: string;
+  html: string;
+  page: number;
+  collapsed: boolean;
+}): {
+  text: string;
+  replyMarkup: TelegramInlineKeyboardMarkup;
+  totalPages: number;
+} {
+  const pages = paginateInspectHtml(options.html);
+  const safePage = Math.min(Math.max(options.page, 0), pages.length - 1);
+
+  if (options.collapsed) {
+    return {
+      text: buildCollapsedInspectText(options.html),
+      replyMarkup: {
+        inline_keyboard: [[{
+          text: "展开详情",
+          callback_data: encodeInspectExpandCallback(options.sessionId, safePage)
+        }]]
+      },
+      totalPages: pages.length
+    };
+  }
+
+  const buttons: Array<{ text: string; callback_data: string }> = [];
+  if (safePage > 0) {
+    buttons.push({ text: "上一页", callback_data: encodeInspectPageCallback(options.sessionId, safePage - 1) });
+  }
+  if (safePage + 1 < pages.length) {
+    buttons.push({ text: "下一页", callback_data: encodeInspectPageCallback(options.sessionId, safePage + 1) });
+  }
+
+  const rows: TelegramInlineKeyboardMarkup["inline_keyboard"] = [];
+  if (buttons.length > 0) {
+    rows.push(buttons);
+  }
+  rows.push([{ text: "收起详情", callback_data: encodeInspectCollapseCallback(options.sessionId) }]);
+
+  return {
+    text: `${pages[safePage]}\n\n${formatHtmlField("详情页：", `${safePage + 1}/${pages.length}`)}`,
+    replyMarkup: {
+      inline_keyboard: rows
+    },
+    totalPages: pages.length
+  };
+}
+
+export function buildRollbackPickerMessage(options: {
+  sessionId: string;
+  page: number;
+  targets: RollbackTargetView[];
+}): {
+  text: string;
+  replyMarkup: TelegramInlineKeyboardMarkup;
+  totalPages: number;
+} {
+  const totalPages = Math.max(1, Math.ceil(options.targets.length / ROLLBACK_TARGET_PAGE_SIZE));
+  const safePage = Math.min(Math.max(options.page, 0), totalPages - 1);
+  const pageTargets = options.targets.slice(safePage * ROLLBACK_TARGET_PAGE_SIZE, (safePage + 1) * ROLLBACK_TARGET_PAGE_SIZE);
+  const rows = pageTargets.map((target) => [{
+    text: `${target.sequenceNumber}. ${truncateText(target.label, 24)}`,
+    callback_data: encodeRollbackPickCallback(options.sessionId, safePage, target.index)
+  }]);
+
+  const navigation: Array<{ text: string; callback_data: string }> = [];
+  if (safePage > 0) {
+    navigation.push({ text: "上一页", callback_data: encodeRollbackPageCallback(options.sessionId, safePage - 1) });
+  }
+  if (safePage + 1 < totalPages) {
+    navigation.push({ text: "下一页", callback_data: encodeRollbackPageCallback(options.sessionId, safePage + 1) });
+  }
+  if (navigation.length > 0) {
+    rows.push(navigation);
+  }
+
+  const lines = [
+    formatHtmlHeading("选择回滚目标"),
+    "只展示用户输入，不展示 agent 输出。",
+    formatHtmlField("页码：", `${safePage + 1}/${totalPages}`)
+  ];
+
+  pageTargets.forEach((target) => {
+    lines.push(`${target.sequenceNumber}. ${escapeHtml(target.label)}`);
+  });
+
+  return {
+    text: lines.join("\n"),
+    replyMarkup: {
+      inline_keyboard: rows
+    },
+    totalPages
+  };
+}
+
+export function buildRollbackConfirmMessage(options: {
+  sessionId: string;
+  page: number;
+  target: RollbackTargetView;
+}): {
+  text: string;
+  replyMarkup: TelegramInlineKeyboardMarkup;
+} {
+  return {
+    text: [
+      formatHtmlHeading("确认回滚"),
+      formatHtmlField("目标：", `${options.target.sequenceNumber}. ${options.target.label}`),
+      formatHtmlField("将删除的 turn 数：", `${options.target.rollbackCount}`),
+      "本地文件改动不会自动撤销。"
+    ].join("\n"),
+    replyMarkup: {
+      inline_keyboard: [
+        [{ text: "确认回滚", callback_data: encodeRollbackConfirmCallback(options.sessionId, options.target.index) }],
+        [{ text: "返回列表", callback_data: encodeRollbackBackCallback(options.sessionId, options.page) }]
+      ]
+    }
   };
 }
 
@@ -1216,6 +1652,150 @@ export function buildInspectText(
   }
 
   return lines.join("\n");
+}
+
+function buildCollapsedInspectText(html: string): string {
+  const blocks = html.split("\n\n");
+  const summary = blocks[0] ?? html;
+  return `${summary}\n${formatHtmlField("说明：", "详情已折叠，点击按钮展开。")}`;
+}
+
+function paginateInspectHtml(html: string): string[] {
+  const blocks = html.split("\n\n");
+  const summary = blocks[0] ?? html;
+  const sections = blocks.slice(1);
+  if (sections.length === 0) {
+    return [html];
+  }
+
+  const sectionLengthLimit = Math.max(200, INSPECT_PAGE_CHAR_LIMIT - summary.length - 2);
+  const normalizedSections = sections.flatMap((section) => splitOversizedInspectSection(section, sectionLengthLimit));
+  const pages: string[] = [];
+  let current = summary;
+
+  for (const section of normalizedSections) {
+    const candidate = `${current}\n\n${section}`;
+    if (candidate.length <= INSPECT_PAGE_CHAR_LIMIT) {
+      current = candidate;
+      continue;
+    }
+
+    pages.push(current);
+    current = `${summary}\n\n${section}`;
+  }
+
+  pages.push(current);
+  return pages;
+}
+
+function splitOversizedInspectSection(section: string, maxLength: number): string[] {
+  if (section.length <= maxLength) {
+    return [section];
+  }
+
+  const lines = section.split("\n");
+  const header = isStandaloneInspectHeading(lines[0] ?? "") ? lines[0] ?? null : null;
+  const bodyLines = header ? lines.slice(1) : lines;
+  if (bodyLines.length === 0) {
+    return [section];
+  }
+
+  const chunks: string[] = [];
+  const lineLengthLimit = Math.max(32, maxLength - (header ? header.length + 1 : 0));
+  let currentLines = header ? [header] : [];
+
+  for (const line of bodyLines) {
+    const lineChunks = splitOversizedInspectLine(line, lineLengthLimit);
+    for (const lineChunk of lineChunks) {
+      const candidateLines = [...currentLines, lineChunk];
+      const candidate = candidateLines.join("\n");
+      if (candidate.length <= maxLength) {
+        currentLines = candidateLines;
+        continue;
+      }
+
+      if (currentLines.length > (header ? 1 : 0)) {
+        chunks.push(currentLines.join("\n"));
+      }
+      currentLines = header ? [header, lineChunk] : [lineChunk];
+    }
+  }
+
+  if (currentLines.length > (header ? 1 : 0)) {
+    chunks.push(currentLines.join("\n"));
+  }
+
+  return chunks.length > 0 ? chunks : [section];
+}
+
+function splitOversizedInspectLine(line: string, maxLength: number): string[] {
+  if (line.length <= maxLength) {
+    return [line];
+  }
+
+  const { prefix, content } = splitInspectLinePrefix(line);
+  const contentLengthLimit = Math.max(16, maxLength - prefix.length);
+  if (!content || prefix.length >= maxLength) {
+    return splitEscapedInspectText(line, maxLength);
+  }
+
+  return splitEscapedInspectText(content, contentLengthLimit).map((chunk) => `${prefix}${chunk}`);
+}
+
+function splitInspectLinePrefix(line: string): { prefix: string; content: string } {
+  const patterns = [
+    /^(\d+\.\s+<b>[^<]+<\/b>\s+)(.+)$/u,
+    /^(-\s+<b>[^<]+<\/b>\s+)(.+)$/u,
+    /^(\d+\.\s+)(.+)$/u,
+    /^(-\s+)(.+)$/u,
+    /^(<b>[^<]+<\/b>\s+)(.+)$/u
+  ];
+
+  for (const pattern of patterns) {
+    const match = line.match(pattern);
+    if (match) {
+      return {
+        prefix: match[1] ?? "",
+        content: match[2] ?? ""
+      };
+    }
+  }
+
+  return {
+    prefix: "",
+    content: line
+  };
+}
+
+function splitEscapedInspectText(text: string, maxLength: number): string[] {
+  const tokens = text.match(/&(?:[a-z]+|#\d+|#x[0-9a-f]+);|\s+|./giu) ?? [text];
+  const chunks: string[] = [];
+  let current = "";
+
+  for (const token of tokens) {
+    if (current.length + token.length <= maxLength) {
+      current += token;
+      continue;
+    }
+
+    if (current.length > 0) {
+      chunks.push(current.trimEnd());
+      current = token.trimStart();
+      continue;
+    }
+
+    chunks.push(token);
+  }
+
+  if (current.length > 0) {
+    chunks.push(current.trimEnd());
+  }
+
+  return chunks.filter((chunk) => chunk.length > 0);
+}
+
+function isStandaloneInspectHeading(line: string): boolean {
+  return /^<b>[^<]+<\/b>$/u.test(line.trim());
 }
 
 function formatRelativeTime(isoTime: string): string {

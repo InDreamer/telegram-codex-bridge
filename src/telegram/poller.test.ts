@@ -113,7 +113,12 @@ test("TelegramPoller.run survives a corrupted offset file at startup", async () 
     codexBin: "codex",
     telegramApiBaseUrl: "https://api.telegram.org",
     telegramPollTimeoutSeconds: 1,
-    telegramPollIntervalMs: 0
+    telegramPollIntervalMs: 0,
+    projectScanRoots: [],
+    voiceInputEnabled: false,
+    voiceOpenaiApiKey: "",
+    voiceOpenaiTranscribeModel: "gpt-4o-mini-transcribe",
+    voiceFfmpegBin: "ffmpeg"
   };
 
   try {

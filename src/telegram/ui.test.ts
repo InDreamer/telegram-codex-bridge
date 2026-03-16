@@ -15,10 +15,14 @@ import {
   buildProjectPickerMessage,
   buildProjectSelectedText,
   buildRenameTargetPicker,
+  buildRollbackConfirmMessage,
+  buildRollbackPickerMessage,
   buildRuntimeErrorCard,
+  buildRuntimePreferencesMessage,
   buildSessionCreatedText,
   buildWhereText,
   buildStatusText,
+  buildInspectViewMessage,
   buildRuntimeStatusReplyMarkup,
   buildRuntimeStatusCard,
   buildSessionsText,
@@ -486,6 +490,36 @@ test("buildRuntimeStatusCard renders expanded running agents inline", () => {
   assert.match(text, /2\. agent-x9k2p1 \(pending\)/u);
 });
 
+test("buildRuntimeStatusCard renders the optional status summary line", () => {
+  const text = buildRuntimeStatusCard({
+    sessionName: "Session Alpha",
+    projectName: "Project One",
+    statusLine: "会话: Session Alpha | 模型: gpt-5 + 高",
+    state: "Running"
+  });
+
+  assert.match(text, /<b>概览:<\/b> 会话: Session Alpha \| 模型: gpt-5 \+ 高/u);
+});
+
+test("buildRuntimePreferencesMessage renders v4 callbacks for toggle and save actions", () => {
+  const rendered = buildRuntimePreferencesMessage({
+    token: "token123",
+    fields: ["session_name", "thread_id"],
+    page: 0
+  });
+
+  assert.match(rendered.text, /已选字段：<\/b> 2 个/u);
+  assert.deepEqual(parseCallbackData(rendered.replyMarkup.inline_keyboard[0]?.[0]?.callback_data ?? ""), {
+    kind: "runtime_toggle",
+    token: "token123",
+    field: "session_name"
+  });
+  assert.deepEqual(parseCallbackData(rendered.replyMarkup.inline_keyboard.at(-2)?.[0]?.callback_data ?? ""), {
+    kind: "runtime_save",
+    token: "token123"
+  });
+});
+
 test("buildRuntimeStatusReplyMarkup adds an agent button when running subagents exist", () => {
   const replyMarkup = buildRuntimeStatusReplyMarkup({
     sessionId: "session-agent",
@@ -584,6 +618,109 @@ test("buildInspectText renders a concise Chinese inspect view without duplicate 
   assert.match(text, /- Checked &lt;final&gt; answer/u);
   assert.doesNotMatch(text, /Debug file/u);
   assert.doesNotMatch(text, /最近网页搜索/u);
+});
+
+test("buildInspectViewMessage supports collapse and paged expansion", () => {
+  const html = [
+    "<b>当前任务详情</b>",
+    `<b>补充说明</b>\n${"A".repeat(2600)}`,
+    `<b>最近命令</b>\n${"B".repeat(2600)}`
+  ].join("\n\n");
+
+  const collapsed = buildInspectViewMessage({
+    sessionId: "session-1",
+    html,
+    page: 0,
+    collapsed: true
+  });
+  assert.match(collapsed.text, /详情已折叠/u);
+  assert.deepEqual(parseCallbackData(collapsed.replyMarkup.inline_keyboard[0]?.[0]?.callback_data ?? ""), {
+    kind: "inspect_expand",
+    sessionId: "session-1",
+    page: 0
+  });
+
+  const expanded = buildInspectViewMessage({
+    sessionId: "session-1",
+    html,
+    page: 1,
+    collapsed: false
+  });
+  assert.ok(expanded.totalPages >= 2);
+  assert.match(expanded.text, /详情页：<\/b> 2\//u);
+  assert.deepEqual(parseCallbackData(expanded.replyMarkup.inline_keyboard[0]?.[0]?.callback_data ?? ""), {
+    kind: "inspect_page",
+    sessionId: "session-1",
+    page: 0
+  });
+});
+
+test("buildInspectViewMessage splits oversized single sections below Telegram-safe length", () => {
+  const html = [
+    "<b>当前任务详情</b>",
+    `<b>补充说明</b>\n${"A".repeat(5000)}`
+  ].join("\n\n");
+
+  const firstPage = buildInspectViewMessage({
+    sessionId: "session-1",
+    html,
+    page: 0,
+    collapsed: false
+  });
+  const secondPage = buildInspectViewMessage({
+    sessionId: "session-1",
+    html,
+    page: 1,
+    collapsed: false
+  });
+
+  assert.ok(firstPage.totalPages >= 2);
+  assert.ok(firstPage.text.length < 4096);
+  assert.ok(secondPage.text.length < 4096);
+});
+
+test("rollback picker and confirm messages use v4 callbacks", () => {
+  const picker = buildRollbackPickerMessage({
+    sessionId: "session-rb",
+    page: 0,
+    targets: [
+      { index: 5, sequenceNumber: 1, label: "语音：打开日志", rollbackCount: 1 },
+      { index: 4, sequenceNumber: 2, label: "检查状态", rollbackCount: 2 },
+      { index: 3, sequenceNumber: 3, label: "第三条", rollbackCount: 3 },
+      { index: 2, sequenceNumber: 4, label: "第四条", rollbackCount: 4 },
+      { index: 1, sequenceNumber: 5, label: "第五条", rollbackCount: 5 },
+      { index: 0, sequenceNumber: 6, label: "第六条", rollbackCount: 6 },
+      { index: 7, sequenceNumber: 7, label: "第七条", rollbackCount: 7 }
+    ]
+  });
+
+  assert.deepEqual(parseCallbackData(picker.replyMarkup.inline_keyboard[0]?.[0]?.callback_data ?? ""), {
+    kind: "rollback_pick",
+    sessionId: "session-rb",
+    page: 0,
+    targetIndex: 5
+  });
+  assert.deepEqual(parseCallbackData(picker.replyMarkup.inline_keyboard.at(-1)?.[0]?.callback_data ?? ""), {
+    kind: "rollback_page",
+    sessionId: "session-rb",
+    page: 1
+  });
+
+  const confirm = buildRollbackConfirmMessage({
+    sessionId: "session-rb",
+    page: 1,
+    target: { index: 5, sequenceNumber: 1, label: "语音：打开日志", rollbackCount: 1 }
+  });
+  assert.deepEqual(parseCallbackData(confirm.replyMarkup.inline_keyboard[0]?.[0]?.callback_data ?? ""), {
+    kind: "rollback_confirm",
+    sessionId: "session-rb",
+    targetIndex: 5
+  });
+  assert.deepEqual(parseCallbackData(confirm.replyMarkup.inline_keyboard[1]?.[0]?.callback_data ?? ""), {
+    kind: "rollback_back",
+    sessionId: "session-rb",
+    page: 1
+  });
 });
 
 test("parseCallbackData understands compact and legacy v3 interaction callbacks", () => {

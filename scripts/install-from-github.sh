@@ -7,12 +7,13 @@ REF="master"
 REF_TYPE="branch"
 TELEGRAM_TOKEN=""
 CODEX_BIN=""
+PROJECT_SCAN_ROOTS=""
 WORKDIR=""
 
 usage() {
   cat <<'EOF'
 Usage:
-  install-from-github.sh --telegram-token <token> [--codex-bin <path>] [--ref <name>] [--ref-type branch|tag]
+  install-from-github.sh --telegram-token <token> [--codex-bin <path>] [--project-scan-roots <path1:path2:...>] [--ref <name>] [--ref-type branch|tag]
 EOF
 }
 
@@ -24,6 +25,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --codex-bin)
       CODEX_BIN="${2:-}"
+      shift 2
+      ;;
+    --project-scan-roots)
+      PROJECT_SCAN_ROOTS="${2:-}"
       shift 2
       ;;
     --ref)
@@ -94,6 +99,9 @@ npm run build
 INSTALL_CMD=(node dist/cli.js install --telegram-token "$TELEGRAM_TOKEN")
 if [[ -n "$CODEX_BIN" ]]; then
   INSTALL_CMD+=(--codex-bin "$CODEX_BIN")
+fi
+if [[ -n "$PROJECT_SCAN_ROOTS" ]]; then
+  INSTALL_CMD+=(--project-scan-roots "$PROJECT_SCAN_ROOTS")
 fi
 
 "${INSTALL_CMD[@]}"

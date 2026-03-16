@@ -212,6 +212,10 @@ The product must not ship broad control-surface additions while still leaving ap
 3. keystroke-level remote console interaction
 4. making Telegram the preferred transport for every realtime or terminal-native workflow
 5. cross-machine session migration as a committed scope item
+6. arbitrary Telegram browsing of host directories outside the configured project-scan boundary
+
+Deferred note:
+- if Telegram-side directory browsing is revisited later, bind it to configured project scan roots instead of exposing the whole host filesystem
 
 ---
 

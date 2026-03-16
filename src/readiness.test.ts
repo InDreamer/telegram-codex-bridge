@@ -21,7 +21,12 @@ const testConfig: BridgeConfig = {
   codexBin: "codex",
   telegramApiBaseUrl: "https://api.telegram.org",
   telegramPollTimeoutSeconds: 20,
-  telegramPollIntervalMs: 1500
+  telegramPollIntervalMs: 1500,
+  projectScanRoots: [],
+  voiceInputEnabled: false,
+  voiceOpenaiApiKey: "",
+  voiceOpenaiTranscribeModel: "gpt-4o-mini-transcribe",
+  voiceFfmpegBin: "ffmpeg"
 };
 const REQUIRED_CLIENT_REQUESTS = [
   "thread/list",
@@ -236,6 +241,140 @@ test("probeReadiness warns when no supported service manager is available but do
     assert.equal(result.snapshot.details.serviceManager, "none");
     assert.equal(result.snapshot.details.serviceManagerHealth, "warning");
     assert.match(result.snapshot.details.issues.join("\n"), /service manager/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("probeReadiness fails hard when voice input is enabled without any usable transcription backend", async () => {
+  const { paths, store, cleanup } = await createReadinessContext();
+
+  try {
+    const result = await probeReadiness({
+      config: {
+        ...testConfig,
+        voiceInputEnabled: true
+      },
+      store,
+      paths,
+      logger: testLogger,
+      persist: false,
+      deps: {
+        nodeVersion: process.version,
+        detectServiceManager: async () => ({
+          manager: "none",
+          health: "warning",
+          issues: []
+        }),
+        commandExists: async (command: string) => command !== "ffmpeg",
+        runCommand: async (_command: string, args: string[]) => {
+          if (args[0] === "--version") {
+            return { exitCode: 0, stdout: "codex-cli 0.114.0", stderr: "" };
+          }
+          if (args[0] === "login") {
+            return { exitCode: 0, stdout: "Logged in", stderr: "" };
+          }
+          throw new Error(`unexpected command: ${args.join(" ")}`);
+        },
+        validateTelegramToken: async () => ({
+          ok: true,
+          botId: "1",
+          username: "bridge_bot"
+        }),
+        createAppServer: () => ({
+          pid: 123,
+          initializeAndProbe: async () => {},
+          listModels: async () => ({
+            data: [],
+            nextCursor: null
+          }),
+          stop: async () => {}
+        }),
+        evaluateCapabilities: async () => ({
+          ok: true,
+          source: "cache",
+          issues: []
+        })
+      }
+    } as any);
+
+    assert.equal(result.snapshot.state, "bridge_unhealthy");
+    assert.equal(result.snapshot.details.voiceInputEnabled, true);
+    assert.equal(result.snapshot.details.voiceOpenaiConfigured, false);
+    assert.equal(result.snapshot.details.voiceFfmpegAvailable, false);
+    assert.equal(result.snapshot.details.voiceRealtimeSupported, false);
+    assert.match(result.snapshot.details.issues.join("\n"), /no usable transcription backend/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("probeReadiness checks every model page before reporting realtime voice support", async () => {
+  const { paths, store, cleanup } = await createReadinessContext();
+
+  try {
+    const seenCursors: Array<string | null> = [];
+    const result = await probeReadiness({
+      config: {
+        ...testConfig,
+        voiceInputEnabled: true
+      },
+      store,
+      paths,
+      logger: testLogger,
+      persist: false,
+      deps: {
+        nodeVersion: process.version,
+        detectServiceManager: async () => ({
+          manager: "none",
+          health: "warning",
+          issues: []
+        }),
+        commandExists: async () => true,
+        runCommand: async (_command: string, args: string[]) => {
+          if (args[0] === "--version") {
+            return { exitCode: 0, stdout: "codex-cli 0.114.0", stderr: "" };
+          }
+          if (args[0] === "login") {
+            return { exitCode: 0, stdout: "Logged in", stderr: "" };
+          }
+          throw new Error(`unexpected command: ${args.join(" ")}`);
+        },
+        validateTelegramToken: async () => ({
+          ok: true,
+          botId: "1",
+          username: "bridge_bot"
+        }),
+        createAppServer: () => ({
+          pid: 123,
+          initializeAndProbe: async () => {},
+          listModels: async (options?: { cursor?: string }) => {
+            seenCursors.push(options?.cursor ?? null);
+            if (!options?.cursor) {
+              return {
+                data: [{ inputModalities: ["text", "image"] }],
+                nextCursor: "page-2"
+              };
+            }
+
+            return {
+              data: [{ inputModalities: ["text", "audio"] }],
+              nextCursor: null
+            };
+          },
+          stop: async () => {}
+        }),
+        evaluateCapabilities: async () => ({
+          ok: true,
+          source: "cache",
+          issues: []
+        })
+      }
+    } as any);
+
+    assert.equal(result.snapshot.state, "awaiting_authorization");
+    assert.deepEqual(seenCursors, [null, "page-2"]);
+    assert.equal(result.snapshot.details.voiceRealtimeSupported, true);
   } finally {
     await cleanup();
   }

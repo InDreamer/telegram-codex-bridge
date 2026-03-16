@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 
 import type { Logger } from "../logger.js";
 import type { BridgePaths } from "../paths.js";
+import { DEFAULT_RUNTIME_STATUS_FIELDS } from "../types.js";
 import type {
   AuthorizedUserRow,
   ChatBindingRow,
@@ -19,10 +20,14 @@ import type {
   RecentProjectRow,
   RecentProjectSource,
   ReasoningEffort,
+  RuntimeCardPreferencesRow,
+  RuntimeStatusField,
   RuntimeNotice,
   SessionProjectStatsRow,
   SessionRow,
-  SessionStatus
+  SessionStatus,
+  TurnInputSourceKind,
+  TurnInputSourceRow
 } from "../types.js";
 
 const PENDING_AUTH_TTL_MS = 24 * 60 * 60 * 1000;
@@ -157,6 +162,12 @@ interface FinalAnswerViewRecord {
   created_at: string;
 }
 
+interface RuntimeCardPreferencesRecord {
+  key: "global";
+  fields_json: string;
+  updated_at: string;
+}
+
 interface PendingInteractionRecord {
   interaction_id: string;
   telegram_chat_id: string;
@@ -174,6 +185,14 @@ interface PendingInteractionRecord {
   updated_at: string;
   resolved_at: string | null;
   error_reason: string | null;
+}
+
+interface TurnInputSourceRecord {
+  thread_id: string;
+  turn_id: string;
+  source_kind: TurnInputSourceKind;
+  transcript: string;
+  created_at: string;
 }
 
 function nowIso(): string {
@@ -194,6 +213,40 @@ function mapPending(record: PendingAuthorizationRecord): PendingAuthorizationRow
     lastSeenAt: record.last_seen_at,
     expired: isExpired(record.last_seen_at)
   };
+}
+
+function parseRuntimeStatusFields(fieldsJson: string): RuntimeStatusField[] {
+  try {
+    const parsed = JSON.parse(fieldsJson) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [...DEFAULT_RUNTIME_STATUS_FIELDS];
+    }
+
+    const allowed = new Set<RuntimeStatusField>([
+      "session_name",
+      "project_name",
+      "project_path",
+      "model_reasoning",
+      "thread_id",
+      "turn_id",
+      "blocked_reason",
+      "current_step",
+      "last_token_usage",
+      "total_token_usage",
+      "context_window",
+      "final_answer_ready"
+    ]);
+    const fields = parsed.filter((field): field is RuntimeStatusField =>
+      typeof field === "string" && allowed.has(field as RuntimeStatusField)
+    );
+    if (parsed.length === 0) {
+      return [];
+    }
+
+    return fields.length > 0 ? fields : [...DEFAULT_RUNTIME_STATUS_FIELDS];
+  } catch {
+    return [...DEFAULT_RUNTIME_STATUS_FIELDS];
+  }
 }
 
 function mapAuthorizedUser(record: AuthorizedUserRecord): AuthorizedUserRow {
@@ -339,6 +392,24 @@ function mapPendingInteraction(record: PendingInteractionRecord): PendingInterac
   };
 }
 
+function mapRuntimeCardPreferences(record: RuntimeCardPreferencesRecord): RuntimeCardPreferencesRow {
+  return {
+    key: "global",
+    fields: parseRuntimeStatusFields(record.fields_json),
+    updatedAt: record.updated_at
+  };
+}
+
+function mapTurnInputSource(record: TurnInputSourceRecord): TurnInputSourceRow {
+  return {
+    threadId: record.thread_id,
+    turnId: record.turn_id,
+    sourceKind: record.source_kind,
+    transcript: record.transcript,
+    createdAt: record.created_at
+  };
+}
+
 function choosePreferredActiveSessionId(bindings: ChatBindingRecord[]): string | null {
   const preferred = bindings
     .filter((binding) => binding.active_session_id !== null)
@@ -447,6 +518,12 @@ function initialSchema(): string {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS runtime_card_preferences (
+      key TEXT PRIMARY KEY,
+      fields_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS pending_interaction (
       interaction_id TEXT PRIMARY KEY,
       telegram_chat_id TEXT NOT NULL,
@@ -466,6 +543,15 @@ function initialSchema(): string {
       error_reason TEXT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS turn_input_source (
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      source_kind TEXT NOT NULL,
+      transcript TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (thread_id, turn_id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_pending_authorization_last_seen
       ON pending_authorization(last_seen_at DESC);
 
@@ -480,10 +566,13 @@ function initialSchema(): string {
 
     CREATE INDEX IF NOT EXISTS idx_pending_interaction_turn
       ON pending_interaction(thread_id, turn_id, created_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_turn_input_source_thread_created_at
+      ON turn_input_source(thread_id, created_at DESC);
   `;
 }
 
-const CURRENT_SCHEMA_VERSION = 7;
+const CURRENT_SCHEMA_VERSION = 8;
 
 function listColumns(db: DatabaseSync, tableName: string): string[] {
   const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
@@ -628,6 +717,40 @@ function applyMigrations(db: DatabaseSync): void {
     }
 
     recordMigration(db, 7);
+  }
+
+  if (!applied.has(8)) {
+    db.exec(
+      `
+        CREATE TABLE IF NOT EXISTS runtime_card_preferences (
+          key TEXT PRIMARY KEY,
+          fields_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      `
+    );
+
+    db.exec(
+      `
+        CREATE TABLE IF NOT EXISTS turn_input_source (
+          thread_id TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          source_kind TEXT NOT NULL,
+          transcript TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (thread_id, turn_id)
+        )
+      `
+    );
+
+    db.exec(
+      `
+        CREATE INDEX IF NOT EXISTS idx_turn_input_source_thread_created_at
+          ON turn_input_source(thread_id, created_at DESC)
+      `
+    );
+
+    recordMigration(db, 8);
   }
 }
 
@@ -1835,6 +1958,53 @@ export class BridgeStateStore {
     return rows.map((row) => row.telegram_chat_id);
   }
 
+  getRuntimeCardPreferences(): RuntimeCardPreferencesRow {
+    const row = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM runtime_card_preferences
+          WHERE key = 'global'
+        `
+      )
+      .get() as RuntimeCardPreferencesRecord | undefined;
+
+    if (row) {
+      return mapRuntimeCardPreferences(row);
+    }
+
+    return {
+      key: "global",
+      fields: [...DEFAULT_RUNTIME_STATUS_FIELDS],
+      updatedAt: nowIso()
+    };
+  }
+
+  setRuntimeCardPreferences(fields: RuntimeStatusField[]): RuntimeCardPreferencesRow {
+    const updatedAt = nowIso();
+    const uniqueFields = [...new Set(fields)];
+    const sanitizedFields = uniqueFields;
+
+    this.db
+      .prepare(
+        `
+          INSERT OR REPLACE INTO runtime_card_preferences (
+            key,
+            fields_json,
+            updated_at
+          )
+          VALUES ('global', ?, ?)
+        `
+      )
+      .run(JSON.stringify(sanitizedFields), updatedAt);
+
+    return {
+      key: "global",
+      fields: sanitizedFields,
+      updatedAt
+    };
+  }
+
   saveFinalAnswerView(options: {
     answerId?: string;
     telegramChatId: string;
@@ -1952,6 +2122,52 @@ export class BridgeStateStore {
 
   deleteFinalAnswerView(answerId: string): void {
     this.db.prepare("DELETE FROM final_answer_view WHERE answer_id = ?").run(answerId);
+  }
+
+  saveTurnInputSource(options: {
+    threadId: string;
+    turnId: string;
+    sourceKind: TurnInputSourceKind;
+    transcript: string;
+  }): TurnInputSourceRow {
+    const record: TurnInputSourceRow = {
+      threadId: options.threadId,
+      turnId: options.turnId,
+      sourceKind: options.sourceKind,
+      transcript: options.transcript,
+      createdAt: nowIso()
+    };
+
+    this.db
+      .prepare(
+        `
+          INSERT OR REPLACE INTO turn_input_source (
+            thread_id,
+            turn_id,
+            source_kind,
+            transcript,
+            created_at
+          )
+          VALUES (?, ?, ?, ?, ?)
+        `
+      )
+      .run(record.threadId, record.turnId, record.sourceKind, record.transcript, record.createdAt);
+
+    return record;
+  }
+
+  getTurnInputSource(threadId: string, turnId: string): TurnInputSourceRow | null {
+    const row = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM turn_input_source
+          WHERE thread_id = ? AND turn_id = ?
+        `
+      )
+      .get(threadId, turnId) as TurnInputSourceRecord | undefined;
+
+    return row ? mapTurnInputSource(row) : null;
   }
 
   createPendingInteraction(options: {

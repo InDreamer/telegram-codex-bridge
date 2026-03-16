@@ -1,7 +1,8 @@
-import { cp, chmod, mkdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { constants } from "node:fs";
+import { access, cp, chmod, mkdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { join, resolve, sep } from "node:path";
 
-import { loadConfig, withInstallOverrides, writeConfig, type BridgeConfig } from "./config.js";
+import { loadConfig, serializeProjectScanRoots, withInstallOverrides, writeConfig, type BridgeConfig } from "./config.js";
 import { collectArchiveDriftDiagnostics } from "./archive-drift.js";
 import { CodexAppServerClient } from "./codex/app-server.js";
 import type { Logger } from "./logger.js";
@@ -48,6 +49,67 @@ interface InstallDependencies {
 
 const SERVICE_LABEL = "com.codex.telegram-bridge";
 const CODEX_SKILL_NAME = "telegram-codex-linker";
+
+function resolveProjectScanRoot(inputPath: string, homeDir: string): string {
+  if (inputPath === "~") {
+    return homeDir;
+  }
+
+  if (inputPath.startsWith("~/")) {
+    return join(homeDir, inputPath.slice(2));
+  }
+
+  return resolve(inputPath);
+}
+
+function pathsOverlap(left: string, right: string): boolean {
+  return left === right || left.startsWith(`${right}${sep}`) || right.startsWith(`${left}${sep}`);
+}
+
+async function validateProjectScanRoots(
+  homeDir: string,
+  roots: string[],
+  logger: Logger
+): Promise<string[]> {
+  const validatedRoots: string[] = [];
+
+  for (const root of roots) {
+    const resolvedRoot = resolveProjectScanRoot(root, homeDir);
+    let stats;
+
+    try {
+      stats = await stat(resolvedRoot);
+    } catch (error) {
+      throw new Error(`project scan root does not exist: ${resolvedRoot}`);
+    }
+
+    if (!stats.isDirectory()) {
+      throw new Error(`project scan root is not a directory: ${resolvedRoot}`);
+    }
+
+    try {
+      await access(resolvedRoot, constants.R_OK);
+    } catch {
+      throw new Error(`project scan root is not readable: ${resolvedRoot}`);
+    }
+
+    if (validatedRoots.includes(resolvedRoot)) {
+      continue;
+    }
+
+    if (validatedRoots.some((existingRoot) => pathsOverlap(existingRoot, resolvedRoot))) {
+      await logger.warn("skipping overlapping project scan root", {
+        root: resolvedRoot,
+        keptRoots: validatedRoots
+      });
+      continue;
+    }
+
+    validatedRoots.push(resolvedRoot);
+  }
+
+  return validatedRoots;
+}
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -105,6 +167,10 @@ function formatSnapshot(snapshot: ReadinessSnapshot | null): string {
     `state_root_writable=${formatOptionalBoolean(snapshot.details.stateRootWritable)}`,
     `config_root_writable=${formatOptionalBoolean(snapshot.details.configRootWritable)}`,
     `install_root_writable=${formatOptionalBoolean(snapshot.details.installRootWritable)}`,
+    `voice_input_enabled=${formatOptionalBoolean(snapshot.details.voiceInputEnabled)}`,
+    `voice_openai_configured=${formatOptionalBoolean(snapshot.details.voiceOpenaiConfigured)}`,
+    `voice_ffmpeg_available=${formatOptionalBoolean(snapshot.details.voiceFfmpegAvailable)}`,
+    `voice_realtime_supported=${formatOptionalBoolean(snapshot.details.voiceRealtimeSupported)}`,
     `capability_check_passed=${formatOptionalBoolean(snapshot.details.capabilityCheckPassed)}`,
     `capability_check_source=${formatOptionalValue(snapshot.details.capabilityCheckSource)}`,
     issueText
@@ -432,6 +498,11 @@ export async function installBridge(
   overrides: {
     telegramBotToken?: string;
     codexBin?: string;
+    projectScanRoots?: string[];
+    voiceInputEnabled?: boolean;
+    voiceOpenaiApiKey?: string;
+    voiceOpenaiTranscribeModel?: string;
+    voiceFfmpegBin?: string;
   },
   deps: InstallDependencies = {}
 ): Promise<void> {
@@ -448,6 +519,27 @@ export async function installBridge(
 
   if (overrides.codexBin) {
     overrideConfig.codexBin = overrides.codexBin;
+  }
+
+  if (overrides.projectScanRoots !== undefined) {
+    overrideConfig.projectScanRoots = await validateProjectScanRoots(
+      paths.homeDir,
+      overrides.projectScanRoots,
+      logger
+    );
+  }
+
+  if (overrides.voiceInputEnabled !== undefined) {
+    overrideConfig.voiceInputEnabled = overrides.voiceInputEnabled;
+  }
+  if (overrides.voiceOpenaiApiKey !== undefined) {
+    overrideConfig.voiceOpenaiApiKey = overrides.voiceOpenaiApiKey;
+  }
+  if (overrides.voiceOpenaiTranscribeModel !== undefined) {
+    overrideConfig.voiceOpenaiTranscribeModel = overrides.voiceOpenaiTranscribeModel;
+  }
+  if (overrides.voiceFfmpegBin !== undefined) {
+    overrideConfig.voiceFfmpegBin = overrides.voiceFfmpegBin;
   }
 
   const config = withInstallOverrides(await loadConfig(paths), overrideConfig);
@@ -707,7 +799,12 @@ export async function updateBridge(paths: BridgePaths): Promise<void> {
     ...process.env,
     TELEGRAM_BOT_TOKEN: config.telegramBotToken,
     CODEX_BIN: config.codexBin,
-    TELEGRAM_API_BASE_URL: config.telegramApiBaseUrl
+    TELEGRAM_API_BASE_URL: config.telegramApiBaseUrl,
+    PROJECT_SCAN_ROOTS: serializeProjectScanRoots(config.projectScanRoots),
+    VOICE_INPUT_ENABLED: config.voiceInputEnabled ? "1" : "0",
+    VOICE_OPENAI_API_KEY: config.voiceOpenaiApiKey,
+    VOICE_OPENAI_TRANSCRIBE_MODEL: config.voiceOpenaiTranscribeModel,
+    VOICE_FFMPEG_BIN: config.voiceFfmpegBin
   };
 
   const installResult = await runCommand("npm", ["install"], {
