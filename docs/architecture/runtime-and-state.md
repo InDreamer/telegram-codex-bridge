@@ -137,6 +137,7 @@ Important fields:
 - `telegram_chat_id`
 - `thread_id`
 - `selected_model`
+- `selected_reasoning_effort`
 - `display_name`
 - `project_name`
 - `project_path`

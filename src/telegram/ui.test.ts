@@ -57,6 +57,7 @@ function createSession(overrides: Partial<SessionRow>): SessionRow {
     telegramChatId: overrides.telegramChatId ?? "chat-1",
     threadId: overrides.threadId ?? null,
     selectedModel: "selectedModel" in overrides ? overrides.selectedModel ?? null : null,
+    selectedReasoningEffort: "selectedReasoningEffort" in overrides ? overrides.selectedReasoningEffort ?? null : null,
     displayName: overrides.displayName ?? "Session Alpha",
     projectName: overrides.projectName ?? "Project One",
     projectPath: overrides.projectPath ?? "/tmp/project-one",
@@ -155,7 +156,9 @@ test("buildStatusText renders bold field labels and escapes values for Telegram 
     }),
     createSession({
       displayName: "Session <Alpha>",
-      projectName: "Project & One"
+      projectName: "Project & One",
+      selectedModel: "gpt-5",
+      selectedReasoningEffort: "high"
     })
   );
 
@@ -166,7 +169,7 @@ test("buildStatusText renders bold field labels and escapes values for Telegram 
       "<b>桥接状态：</b> ready",
       "<b>Telegram 连通：</b> 异常",
       "<b>Codex 可用：</b> 正常",
-      "<b>当前会话：</b> Project &amp; One / Session &lt;Alpha&gt; / 空闲 / 上次已完成",
+      "<b>当前会话：</b> Project &amp; One / Session &lt;Alpha&gt; / 空闲 / gpt-5 + 高 / 上次已完成",
       "<b>最近检查：</b> 2026-03-10T10:00:00.000Z",
       "<b>问题：</b> token &lt;expired&gt;"
     ].join("\n")
@@ -236,7 +239,9 @@ test("buildWhereText includes stable bridge and Codex identifiers when available
       projectName: "Project & One",
       projectPath: "/tmp/project<one>",
       status: "idle",
-      lastTurnStatus: "completed"
+      lastTurnStatus: "completed",
+      selectedModel: "gpt-5",
+      selectedReasoningEffort: "minimal"
     })
   );
 
@@ -248,6 +253,7 @@ test("buildWhereText includes stable bridge and Codex identifiers when available
       "<b>项目：</b> Project &amp; One",
       "<b>路径：</b> /tmp/project&lt;one&gt;",
       "<b>状态：</b> 空闲",
+      "<b>模型 + 思考强度：</b> gpt-5 + 极省",
       "<b>Bridge 会话 ID：</b> session-where",
       "<b>Codex 线程 ID：</b> thread-where",
       "<b>最近 Turn ID：</b> turn-where",
@@ -266,7 +272,9 @@ test("buildWhereText explains when the Codex thread has not been created yet", (
       projectName: "Project One",
       projectPath: "/tmp/project-one",
       status: "idle",
-      lastTurnStatus: null
+      lastTurnStatus: null,
+      selectedModel: null,
+      selectedReasoningEffort: null
     })
   );
 
@@ -278,6 +286,7 @@ test("buildWhereText explains when the Codex thread has not been created yet", (
       "<b>项目：</b> Project One",
       "<b>路径：</b> /tmp/project-one",
       "<b>状态：</b> 空闲",
+      "<b>模型 + 思考强度：</b> 默认模型 + 默认",
       "<b>Bridge 会话 ID：</b> session-pending-thread",
       "<b>Codex 线程 ID：</b> 尚未创建（首次发送任务后生成）",
       "<b>最近 Turn ID：</b> 暂无"

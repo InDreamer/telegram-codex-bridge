@@ -16,6 +16,8 @@ export type FailureReason =
 
 export type RecentProjectSource = "mru" | "pin" | "scan" | "last_success";
 
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
 export interface ReadinessDetails {
   codexInstalled: boolean;
   codexAuthenticated: boolean;
@@ -145,6 +147,7 @@ export interface SessionRow {
   telegramChatId: string;
   threadId: string | null;
   selectedModel: string | null;
+  selectedReasoningEffort: ReasoningEffort | null;
   displayName: string;
   projectName: string;
   projectPath: string;

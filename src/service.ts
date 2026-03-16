@@ -30,9 +30,11 @@ import {
   buildInspectText,
   buildManualPathConfirmMessage,
   buildManualPathPrompt,
+  buildModelPickerMessage,
   buildNoNewProjectsMessage,
   buildProjectPinnedText,
   buildProjectPickerMessage,
+  buildReasoningEffortPickerMessage,
   buildProjectSelectedText,
   buildRuntimeErrorCard,
   buildRuntimeStatusReplyMarkup,
@@ -44,6 +46,7 @@ import {
   buildUnarchiveSuccessText,
   buildUnsupportedCommandText,
   buildWhereText,
+  formatSessionModelReasoningConfig,
   renderFinalAnswerHtmlChunks,
   parseCallbackData,
   parseCommand,
@@ -58,6 +61,7 @@ import type {
   ProjectCandidate,
   ProjectPickerResult,
   ReadinessSnapshot,
+  ReasoningEffort,
   SessionRow
 } from "./types.js";
 import { CodexAppServerClient } from "./codex/app-server.js";
@@ -496,6 +500,33 @@ export class BridgeService {
         return;
       }
 
+      case "model_default": {
+        await this.handleModelDefaultCallback(callbackQuery.id, chatId, message.message_id, parsed.sessionId);
+        return;
+      }
+
+      case "model_page": {
+        await this.handleModelPageCallback(callbackQuery.id, chatId, message.message_id, parsed.sessionId, parsed.page);
+        return;
+      }
+
+      case "model_pick": {
+        await this.handleModelPickCallback(callbackQuery.id, chatId, message.message_id, parsed.sessionId, parsed.modelIndex);
+        return;
+      }
+
+      case "model_effort": {
+        await this.handleModelEffortCallback(
+          callbackQuery.id,
+          chatId,
+          message.message_id,
+          parsed.sessionId,
+          parsed.modelIndex,
+          parsed.effort
+        );
+        return;
+      }
+
       case "plan_expand": {
         await this.handlePlanToggle(callbackQuery.id, message.message_id, parsed.sessionId, true);
         return;
@@ -577,6 +608,151 @@ export class BridgeService {
         return;
       }
     }
+  }
+
+  private getActiveSessionForModelCallback(chatId: string, sessionId: string): SessionRow | null {
+    if (!this.store) {
+      return null;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession || activeSession.sessionId !== sessionId) {
+      return null;
+    }
+
+    return activeSession;
+  }
+
+  private async handleModelDefaultCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    sessionId: string
+  ): Promise<void> {
+    if (!this.store) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    const session = this.getActiveSessionForModelCallback(chatId, sessionId);
+    if (!session) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    await this.safeAnswerCallbackQuery(callbackQueryId);
+    this.store.setSessionSelectedModel(session.sessionId, null);
+    this.store.setSessionSelectedReasoningEffort(session.sessionId, null);
+    await this.safeEditMessageText(
+      chatId,
+      messageId,
+      "已设置当前会话模型：默认模型 + 默认\n下次任务开始时生效。"
+    );
+  }
+
+  private async handleModelPageCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    sessionId: string,
+    page: number
+  ): Promise<void> {
+    const session = this.getActiveSessionForModelCallback(chatId, sessionId);
+    if (!session) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    await this.safeAnswerCallbackQuery(callbackQueryId);
+    await this.ensureAppServerAvailable();
+    const models = await this.fetchAllModels();
+    const picker = buildModelPickerMessage({ session, models, page });
+    await this.safeEditMessageText(chatId, messageId, picker.text, picker.replyMarkup);
+  }
+
+  private async handleModelPickCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    sessionId: string,
+    modelIndex: number
+  ): Promise<void> {
+    const session = this.getActiveSessionForModelCallback(chatId, sessionId);
+    if (!session) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    await this.safeAnswerCallbackQuery(callbackQueryId);
+    await this.ensureAppServerAvailable();
+    const models = await this.fetchAllModels();
+    const model = models[modelIndex];
+    if (!model) {
+      await this.safeEditMessageText(chatId, messageId, "这个模型列表已过期，请重新发送 /model。");
+      return;
+    }
+
+    if (model.supportedReasoningEfforts.length > 1) {
+      const picker = buildReasoningEffortPickerMessage({ session, model, modelIndex });
+      await this.safeEditMessageText(chatId, messageId, picker.text, picker.replyMarkup);
+      return;
+    }
+
+    await this.persistSessionModelSelection(chatId, messageId, session, model.id, null);
+  }
+
+  private async handleModelEffortCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    sessionId: string,
+    modelIndex: number,
+    effort: ReasoningEffort | null
+  ): Promise<void> {
+    const session = this.getActiveSessionForModelCallback(chatId, sessionId);
+    if (!session) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    await this.safeAnswerCallbackQuery(callbackQueryId);
+    await this.ensureAppServerAvailable();
+    const models = await this.fetchAllModels();
+    const model = models[modelIndex];
+    if (!model) {
+      await this.safeEditMessageText(chatId, messageId, "这个模型列表已过期，请重新发送 /model。");
+      return;
+    }
+
+    await this.persistSessionModelSelection(chatId, messageId, session, model.id, effort);
+  }
+
+  private async persistSessionModelSelection(
+    chatId: string,
+    messageId: number | null,
+    session: SessionRow,
+    modelId: string | null,
+    effort: ReasoningEffort | null
+  ): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    this.store.setSessionSelectedModel(session.sessionId, modelId);
+    this.store.setSessionSelectedReasoningEffort(session.sessionId, effort);
+
+    const nextConfig = formatSessionModelReasoningConfig({
+      selectedModel: modelId,
+      selectedReasoningEffort: effort
+    });
+    const text = `已设置当前会话模型：${nextConfig}\n下次任务开始时生效。`;
+
+    if (messageId === null) {
+      await this.safeSendMessage(chatId, text);
+      return;
+    }
+
+    await this.safeEditMessageText(chatId, messageId, text);
   }
 
   private async handlePlanToggle(
@@ -2198,27 +2374,38 @@ export class BridgeService {
     const models = await this.fetchAllModels();
 
     if (!requestedModel) {
-      const selectedModel = activeSession.selectedModel;
-      const lines = ["可用模型"];
-      for (const model of models.slice(0, 12)) {
-        const marker = selectedModel
-          ? model.id === selectedModel ? "[当前] " : ""
-          : model.isDefault ? "[默认] " : "";
-        lines.push(`${marker}${model.id} | ${model.displayName}`);
-      }
-      lines.push("", "使用 /model <模型ID> 设置当前会话的模型。");
-      await this.safeSendMessage(chatId, lines.join("\n"));
+      const picker = buildModelPickerMessage({
+        session: activeSession,
+        models,
+        page: 0
+      });
+      await this.safeSendMessage(chatId, picker.text, picker.replyMarkup);
+      return;
+    }
+
+    if (requestedModel === "default" || requestedModel === "默认") {
+      await this.persistSessionModelSelection(chatId, null, activeSession, null, null);
       return;
     }
 
     const matched = models.find((model) => model.id === requestedModel || model.model === requestedModel);
     if (!matched) {
-      await this.safeSendMessage(chatId, "找不到这个模型，请先发送 /model 查看可用列表。");
+      await this.safeSendMessage(chatId, "找不到这个模型，请先发送 /model 用按钮选择。");
       return;
     }
 
-    this.store.setSessionSelectedModel(activeSession.sessionId, matched.id);
-    await this.safeSendMessage(chatId, `已为当前会话设置模型：${matched.id}\n下次任务开始时生效。`);
+    if (matched.supportedReasoningEfforts.length > 1) {
+      const modelIndex = models.findIndex((model) => model.id === matched.id);
+      const picker = buildReasoningEffortPickerMessage({
+        session: activeSession,
+        model: matched,
+        modelIndex
+      });
+      await this.safeSendMessage(chatId, picker.text, picker.replyMarkup);
+      return;
+    }
+
+    await this.persistSessionModelSelection(chatId, null, activeSession, matched.id, null);
   }
 
   private async handleSkills(chatId: string): Promise<void> {
@@ -2562,7 +2749,8 @@ export class BridgeService {
         projectName: activeSession.projectName,
         projectPath: activeSession.projectPath,
         displayName: `Review: ${activeSession.displayName}`,
-        selectedModel: activeSession.selectedModel
+        selectedModel: activeSession.selectedModel,
+        selectedReasoningEffort: activeSession.selectedReasoningEffort
       });
       this.store.updateSessionThreadId(reviewSession.sessionId, result.reviewThreadId);
       reviewSession = this.store.getSessionById(reviewSession.sessionId) ?? reviewSession;
@@ -2604,6 +2792,7 @@ export class BridgeService {
       projectPath: activeSession.projectPath,
       displayName: args.trim() || `Fork: ${activeSession.displayName}`,
       selectedModel: activeSession.selectedModel ?? forked.model,
+      selectedReasoningEffort: activeSession.selectedReasoningEffort ?? forked.reasoningEffort ?? null,
       threadId: forked.thread.id,
       lastTurnId: lastForkTurn?.id ?? activeSession.lastTurnId,
       lastTurnStatus: lastForkTurn?.status ?? activeSession.lastTurnStatus
@@ -2943,7 +3132,8 @@ export class BridgeService {
         threadId,
         cwd: session.projectPath,
         input,
-        ...(session.selectedModel ? { model: session.selectedModel } : {})
+        ...(session.selectedModel ? { model: session.selectedModel } : {}),
+        ...(session.selectedReasoningEffort ? { effort: session.selectedReasoningEffort } : {})
       });
       if (!turn) {
         throw new Error("turn start returned no result");
@@ -3034,7 +3224,8 @@ export class BridgeService {
         threadId,
         cwd: session.projectPath,
         text,
-        ...(session.selectedModel ? { model: session.selectedModel } : {})
+        ...(session.selectedModel ? { model: session.selectedModel } : {}),
+        ...(session.selectedReasoningEffort ? { effort: session.selectedReasoningEffort } : {})
       });
 
       if (!turn) {

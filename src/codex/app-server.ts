@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 
 import type { Logger } from "../logger.js";
+import type { ReasoningEffort } from "../types.js";
 
 interface JsonRpcSuccess {
   id: JsonRpcRequestId;
@@ -60,6 +61,7 @@ interface TurnStartParams {
   };
   input: UserInput[];
   model?: string;
+  effort?: ReasoningEffort;
 }
 
 export type UserInput =
@@ -105,6 +107,11 @@ export interface ModelListResult {
     description: string;
     hidden: boolean;
     isDefault: boolean;
+    defaultReasoningEffort: ReasoningEffort;
+    supportedReasoningEfforts: Array<{
+      reasoningEffort: ReasoningEffort;
+      description: string;
+    }>;
     inputModalities?: string[];
     supportsPersonality?: boolean;
   }>;
@@ -234,6 +241,7 @@ export interface AccountRateLimitsReadResult {
 export interface ThreadResumeResult {
   thread: {
     id: string;
+    reasoningEffort?: ReasoningEffort | null;
     turns: Array<{
       id: string;
       items: Array<{
@@ -270,6 +278,7 @@ export interface ThreadForkResult {
   };
   cwd: string;
   model: string;
+  reasoningEffort?: ReasoningEffort | null;
 }
 
 export interface ThreadRollbackResult {
@@ -326,6 +335,7 @@ export function buildTurnStartParams(options: {
   text?: string;
   input?: UserInput[];
   model?: string;
+  effort?: ReasoningEffort;
 }): TurnStartParams {
   const input = options.input ?? (options.text ? [{ type: "text", text: options.text }] : []);
   return {
@@ -334,7 +344,8 @@ export function buildTurnStartParams(options: {
     approvalPolicy: "never",
     sandboxPolicy: { type: "dangerFullAccess" },
     input,
-    ...(options.model ? { model: options.model } : {})
+    ...(options.model ? { model: options.model } : {}),
+    ...(options.effort ? { effort: options.effort } : {})
   };
 }
 
@@ -590,6 +601,7 @@ export class CodexAppServerClient {
     text?: string;
     input?: UserInput[];
     model?: string;
+    effort?: ReasoningEffort;
   }): Promise<TurnStartResult> {
     return await this.request<TurnStartResult>("turn/start", buildTurnStartParams(options));
   }

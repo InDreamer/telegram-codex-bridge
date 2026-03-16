@@ -18,6 +18,7 @@ import type {
   ReadinessSnapshot,
   RecentProjectRow,
   RecentProjectSource,
+  ReasoningEffort,
   RuntimeNotice,
   SessionProjectStatsRow,
   SessionRow,
@@ -93,6 +94,7 @@ interface SessionRecord {
   telegram_chat_id: string;
   thread_id: string | null;
   selected_model: string | null;
+  selected_reasoning_effort: ReasoningEffort | null;
   display_name: string;
   project_name: string;
   project_path: string;
@@ -218,6 +220,7 @@ function mapSession(record: SessionRecord): SessionRow {
     telegramChatId: record.telegram_chat_id,
     threadId: record.thread_id,
     selectedModel: record.selected_model,
+    selectedReasoningEffort: record.selected_reasoning_effort,
     displayName: record.display_name,
     projectName: record.project_name,
     projectPath: record.project_path,
@@ -355,6 +358,7 @@ function initialSchema(): string {
       telegram_chat_id TEXT NOT NULL,
       thread_id TEXT NULL,
       selected_model TEXT NULL,
+      selected_reasoning_effort TEXT NULL,
       display_name TEXT NOT NULL,
       project_name TEXT NOT NULL,
       project_path TEXT NOT NULL,
@@ -581,6 +585,14 @@ function applyMigrations(db: DatabaseSync): void {
     }
 
     recordMigration(db, 5);
+  }
+
+  if (!applied.has(6)) {
+    if (!hasColumn(db, "session", "selected_reasoning_effort")) {
+      db.exec("ALTER TABLE session ADD COLUMN selected_reasoning_effort TEXT NULL");
+    }
+
+    recordMigration(db, 6);
   }
 }
 
@@ -1092,6 +1104,7 @@ export class BridgeStateStore {
     projectPath: string;
     displayName?: string;
     selectedModel?: string | null;
+    selectedReasoningEffort?: ReasoningEffort | null;
     threadId?: string | null;
     lastTurnId?: string | null;
     lastTurnStatus?: string | null;
@@ -1103,6 +1116,7 @@ export class BridgeStateStore {
       telegramChatId: options.telegramChatId,
       threadId: options.threadId ?? null,
       selectedModel: options.selectedModel ?? null,
+      selectedReasoningEffort: options.selectedReasoningEffort ?? null,
       displayName: options.displayName ?? options.projectName,
       projectName: options.projectName,
       projectPath: options.projectPath,
@@ -1127,6 +1141,7 @@ export class BridgeStateStore {
               telegram_chat_id,
               thread_id,
               selected_model,
+              selected_reasoning_effort,
               display_name,
               project_name,
               project_path,
@@ -1139,7 +1154,7 @@ export class BridgeStateStore {
               last_turn_id,
               last_turn_status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `
         )
         .run(
@@ -1147,6 +1162,7 @@ export class BridgeStateStore {
           session.telegramChatId,
           session.threadId,
           session.selectedModel,
+          session.selectedReasoningEffort,
           session.displayName,
           session.projectName,
           session.projectPath,
@@ -1525,6 +1541,18 @@ export class BridgeStateStore {
         `
       )
       .run(selectedModel, nowIso(), sessionId);
+  }
+
+  setSessionSelectedReasoningEffort(sessionId: string, selectedReasoningEffort: ReasoningEffort | null): void {
+    this.db
+      .prepare(
+        `
+          UPDATE session
+          SET selected_reasoning_effort = ?, last_used_at = ?
+          WHERE session_id = ?
+        `
+      )
+      .run(selectedReasoningEffort, nowIso(), sessionId);
   }
 
   updateSessionStatus(

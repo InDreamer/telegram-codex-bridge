@@ -1147,7 +1147,7 @@ test("markRunningSessionsFailedWithNotices also fails unresolved pending interac
   }
 });
 
-test("selected model persists on sessions and survives reopen", async () => {
+test("selected model and reasoning effort persist on sessions and survive reopen", async () => {
   const { paths, store, cleanup } = await openStore();
 
   try {
@@ -1155,18 +1155,23 @@ test("selected model persists on sessions and survives reopen", async () => {
       telegramChatId: "chat-model",
       projectName: "Project One",
       projectPath: "/tmp/project-one",
-      selectedModel: "gpt-5"
+      selectedModel: "gpt-5",
+      selectedReasoningEffort: "medium"
     });
 
     assert.equal(store.getSessionById(session.sessionId)?.selectedModel, "gpt-5");
+    assert.equal(store.getSessionById(session.sessionId)?.selectedReasoningEffort, "medium");
 
     store.setSessionSelectedModel(session.sessionId, "gpt-5-codex");
+    store.setSessionSelectedReasoningEffort(session.sessionId, "high");
     assert.equal(store.getSessionById(session.sessionId)?.selectedModel, "gpt-5-codex");
+    assert.equal(store.getSessionById(session.sessionId)?.selectedReasoningEffort, "high");
 
     store.close();
     const reopened = await BridgeStateStore.open(paths, testLogger);
     try {
       assert.equal(reopened.getSessionById(session.sessionId)?.selectedModel, "gpt-5-codex");
+      assert.equal(reopened.getSessionById(session.sessionId)?.selectedReasoningEffort, "high");
     } finally {
       reopened.close();
     }

@@ -3333,6 +3333,7 @@ test("where command returns the active session with bridge and Codex identifiers
         "<b>项目：</b> Project One",
         "<b>路径：</b> /tmp/project-one",
         "<b>状态：</b> 空闲",
+        "<b>模型 + 思考强度：</b> 默认模型 + 默认",
         `<b>Bridge 会话 ID：</b> ${session.sessionId}`,
         "<b>Codex 线程 ID：</b> 尚未创建（首次发送任务后生成）",
         "<b>最近 Turn ID：</b> 暂无"
@@ -3375,6 +3376,7 @@ test("where command includes the current Codex thread and latest turn identifier
         "<b>项目：</b> Project One",
         "<b>路径：</b> /tmp/project-one",
         "<b>状态：</b> 空闲",
+        "<b>模型 + 思考强度：</b> 默认模型 + 默认",
         `<b>Bridge 会话 ID：</b> ${session.sessionId}`,
         "<b>Codex 线程 ID：</b> thread-where",
         "<b>最近 Turn ID：</b> turn-where",
@@ -3418,7 +3420,7 @@ test("status command renders structured fields with Telegram HTML", async () => 
     assert.equal(sent.length, 1);
     assert.equal(sent[0]?.parseMode, "HTML");
     assert.match(sent[0]?.text ?? "", /^<b>服务状态<\/b>/u);
-    assert.match(sent[0]?.text ?? "", /<b>当前会话：<\/b> Project One \/ Project One \/ 空闲/u);
+    assert.match(sent[0]?.text ?? "", /<b>当前会话：<\/b> Project One \/ Project One \/ 空闲 \/ 默认模型 \+ 默认/u);
     assert.match(sent[0]?.text ?? "", /<b>最近检查：<\/b> 2026-03-10T10:00:00\.000Z/u);
     assert.equal(store.getActiveSession("chat-1")?.sessionId, session.sessionId);
   } finally {
@@ -5131,30 +5133,109 @@ test("blocked turns do not queue rich input prompts while an interaction card is
   }
 });
 
-test("model command lists models, persists the selected model, and uses it on the next turn", async () => {
+test("model command opens a paginated picker and supports two-step model plus reasoning selection", async () => {
   const { service, store, cleanup } = await createServiceContext();
-  const sent: string[] = [];
+  const sent: Array<{ text: string; options?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; options?: any }> = [];
   const startThreadCalls: unknown[] = [];
   const startTurnCalls: unknown[] = [];
+  const callbackAnswers: string[] = [];
 
   try {
-    authorizeNumericChatWithSession(store, "1");
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.setSessionSelectedModel(session.sessionId, "gpt-5");
+    store.setSessionSelectedReasoningEffort(session.sessionId, "medium");
 
     (service as any).api = {
-      sendMessage: async (_chatId: string, text: string, _options?: any) => {
-        sent.push(text);
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        sent.push({ text, options });
         return createFakeTelegramMessage(1200 + sent.length, text);
       },
-      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) =>
-        createFakeTelegramMessage(messageId, text)
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, options });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      answerCallbackQuery: async (_callbackQueryId: string, text?: string) => {
+        callbackAnswers.push(text ?? "");
+      }
     };
 
     (service as any).appServer = {
       isRunning: true,
       listModels: async () => ({
         data: [
-          { id: "gpt-5", model: "gpt-5", displayName: "GPT-5", isDefault: true },
-          { id: "o3", model: "o3", displayName: "o3", isDefault: false }
+          {
+            id: "gpt-5",
+            model: "gpt-5",
+            displayName: "GPT-5",
+            isDefault: true,
+            hidden: false,
+            description: "default",
+            defaultReasoningEffort: "medium",
+            supportedReasoningEfforts: [
+              { reasoningEffort: "minimal", description: "minimal" },
+              { reasoningEffort: "medium", description: "medium" },
+              { reasoningEffort: "high", description: "high" }
+            ]
+          },
+          {
+            id: "o4-mini",
+            model: "o4-mini",
+            displayName: "o4-mini",
+            isDefault: false,
+            hidden: false,
+            description: "fast",
+            defaultReasoningEffort: "low",
+            supportedReasoningEfforts: [
+              { reasoningEffort: "minimal", description: "minimal" },
+              { reasoningEffort: "low", description: "low" }
+            ]
+          },
+          {
+            id: "o3",
+            model: "o3",
+            displayName: "o3",
+            isDefault: false,
+            hidden: false,
+            description: "reasoning",
+            defaultReasoningEffort: "high",
+            supportedReasoningEfforts: [
+              { reasoningEffort: "low", description: "low" },
+              { reasoningEffort: "medium", description: "medium" },
+              { reasoningEffort: "high", description: "high" },
+              { reasoningEffort: "xhigh", description: "xhigh" }
+            ]
+          },
+          {
+            id: "gpt-4.1",
+            model: "gpt-4.1",
+            displayName: "GPT-4.1",
+            isDefault: false,
+            hidden: false,
+            description: "balanced",
+            defaultReasoningEffort: "minimal",
+            supportedReasoningEfforts: [{ reasoningEffort: "minimal", description: "minimal" }]
+          },
+          {
+            id: "gpt-4.1-mini",
+            model: "gpt-4.1-mini",
+            displayName: "GPT-4.1 mini",
+            isDefault: false,
+            hidden: false,
+            description: "small",
+            defaultReasoningEffort: "minimal",
+            supportedReasoningEfforts: [{ reasoningEffort: "minimal", description: "minimal" }]
+          },
+          {
+            id: "gpt-4.1-nano",
+            model: "gpt-4.1-nano",
+            displayName: "GPT-4.1 nano",
+            isDefault: false,
+            hidden: false,
+            description: "tiny",
+            defaultReasoningEffort: "minimal",
+            supportedReasoningEfforts: [{ reasoningEffort: "minimal", description: "minimal" }]
+          }
         ],
         nextCursor: null
       }),
@@ -5170,11 +5251,70 @@ test("model command lists models, persists the selected model, and uses it on th
     };
 
     await (service as any).routeCommand("1", "model", "");
-    assert.match(sent[0] ?? "", /可用模型/u);
-    assert.match(sent[0] ?? "", /\[默认\] gpt-5 \| GPT-5/u);
+    assert.match(sent[0]?.text ?? "", /选择模型/u);
+    assert.match(sent[0]?.text ?? "", /当前配置：gpt-5 \+ 中/u);
+    assert.equal(sent[0]?.options?.replyMarkup?.inline_keyboard?.length, 7);
+    assert.equal(sent[0]?.options?.replyMarkup?.inline_keyboard?.[1]?.[0]?.text, "GPT-5 [当前/默认]");
+    assert.equal(sent[0]?.options?.replyMarkup?.inline_keyboard?.[6]?.[0]?.text, "下一页");
 
-    await (service as any).routeCommand("1", "model", "o3");
+    await (service as any).handleCallback({
+      id: "cb-model-page-2",
+      from: { id: 1, is_bot: false, first_name: "Tester" },
+      message: {
+        message_id: 1201,
+        chat: { id: 1, type: "private" },
+        date: 0,
+        text: sent[0]?.text
+      },
+      data: getCallbackData(sent[0], 6, 0)
+    });
+    assert.equal(callbackAnswers.at(-1), "");
+    assert.match(edited.at(-1)?.text ?? "", /第 2\/2 页/u);
+    assert.equal(edited.at(-1)?.options?.replyMarkup?.inline_keyboard?.[1]?.[0]?.text, "GPT-4.1 nano");
+
+    await (service as any).handleCallback({
+      id: "cb-model-page-1",
+      from: { id: 1, is_bot: false, first_name: "Tester" },
+      message: {
+        message_id: 1201,
+        chat: { id: 1, type: "private" },
+        date: 0,
+        text: edited.at(-1)?.text ?? ""
+      },
+      data: getCallbackData(edited.at(-1), 2, 0)
+    });
+    assert.match(edited.at(-1)?.text ?? "", /第 1\/2 页/u);
+
+    await (service as any).handleCallback({
+      id: "cb-model-pick-o3",
+      from: { id: 1, is_bot: false, first_name: "Tester" },
+      message: {
+        message_id: 1201,
+        chat: { id: 1, type: "private" },
+        date: 0,
+        text: edited.at(-1)?.text ?? ""
+      },
+      data: getCallbackData(edited.at(-1), 3, 0)
+    });
+    assert.match(edited.at(-1)?.text ?? "", /选择思考强度/u);
+    assert.match(edited.at(-1)?.text ?? "", /o3/u);
+    assert.equal(edited.at(-1)?.options?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "默认（高）");
+    assert.equal(edited.at(-1)?.options?.replyMarkup?.inline_keyboard?.[2]?.[1]?.text, "极高");
+
+    await (service as any).handleCallback({
+      id: "cb-effort-xhigh",
+      from: { id: 1, is_bot: false, first_name: "Tester" },
+      message: {
+        message_id: 1201,
+        chat: { id: 1, type: "private" },
+        date: 0,
+        text: edited.at(-1)?.text ?? ""
+      },
+      data: getCallbackData(edited.at(-1), 2, 1)
+    });
     assert.equal(store.getActiveSession("1")?.selectedModel, "o3");
+    assert.equal(store.getActiveSession("1")?.selectedReasoningEffort, "xhigh");
+    assert.match(edited.at(-1)?.text ?? "", /已设置当前会话模型：o3 \+ 极高/u);
 
     await (service as any).handleNormalText("1", "Use the selected model");
 
@@ -5186,8 +5326,68 @@ test("model command lists models, persists the selected model, and uses it on th
       threadId: "thread-model",
       cwd: "/tmp/project-one",
       text: "Use the selected model",
-      model: "o3"
+      model: "o3",
+      effort: "xhigh"
     }]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("model picker skips the second step when the chosen model does not offer multiple reasoning efforts", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ text: string; options?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; options?: any }> = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.setSessionSelectedReasoningEffort(session.sessionId, "high");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        sent.push({ text, options });
+        return createFakeTelegramMessage(1300 + sent.length, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, options });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      answerCallbackQuery: async () => {}
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      listModels: async () => ({
+        data: [{
+          id: "gpt-4.1",
+          model: "gpt-4.1",
+          displayName: "GPT-4.1",
+          isDefault: true,
+          hidden: false,
+          description: "balanced",
+          defaultReasoningEffort: "minimal",
+          supportedReasoningEfforts: [{ reasoningEffort: "minimal", description: "minimal" }]
+        }],
+        nextCursor: null
+      })
+    };
+
+    await (service as any).routeCommand("1", "model", "");
+    await (service as any).handleCallback({
+      id: "cb-model-single",
+      from: { id: 1, is_bot: false, first_name: "Tester" },
+      message: {
+        message_id: 1301,
+        chat: { id: 1, type: "private" },
+        date: 0,
+        text: sent[0]?.text
+      },
+      data: getCallbackData(sent[0], 1, 0)
+    });
+
+    assert.equal(store.getActiveSession("1")?.selectedModel, "gpt-4.1");
+    assert.equal(store.getActiveSession("1")?.selectedReasoningEffort, null);
+    assert.match(edited.at(-1)?.text ?? "", /已设置当前会话模型：gpt-4.1 \+ 默认/u);
   } finally {
     await cleanup();
   }

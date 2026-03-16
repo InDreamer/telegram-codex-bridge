@@ -2,6 +2,7 @@ import type {
   PendingInteractionState,
   ProjectCandidate,
   ProjectPickerResult,
+  ReasoningEffort,
   ReadinessSnapshot,
   SessionRow
 } from "../types.js";
@@ -30,6 +31,10 @@ export type ParsedCallbackData =
   | { kind: "path_manual" }
   | { kind: "path_back" }
   | { kind: "path_confirm"; projectKey: string }
+  | { kind: "model_default"; sessionId: string }
+  | { kind: "model_page"; sessionId: string; page: number }
+  | { kind: "model_pick"; sessionId: string; modelIndex: number }
+  | { kind: "model_effort"; sessionId: string; modelIndex: number; effort: ReasoningEffort | null }
   | { kind: "plan_expand"; sessionId: string }
   | { kind: "plan_collapse"; sessionId: string }
   | { kind: "agent_expand"; sessionId: string }
@@ -90,6 +95,28 @@ export function encodePathBackCallback(): string {
 
 export function encodePathConfirmCallback(projectKey: string): string {
   return `v1:path:confirm:${projectKey}`;
+}
+
+export function encodeModelDefaultCallback(sessionId: string): string {
+  return ensureTelegramCallbackDataLimit(`v2:model:default:${sessionId}`);
+}
+
+export function encodeModelPageCallback(sessionId: string, page: number): string {
+  return ensureTelegramCallbackDataLimit(`v2:model:page:${sessionId}:${encodeInteractionIndex(page)}`);
+}
+
+export function encodeModelPickCallback(sessionId: string, modelIndex: number): string {
+  return ensureTelegramCallbackDataLimit(`v2:model:pick:${sessionId}:${encodeInteractionIndex(modelIndex)}`);
+}
+
+export function encodeModelEffortCallback(
+  sessionId: string,
+  modelIndex: number,
+  effort: ReasoningEffort | null
+): string {
+  return ensureTelegramCallbackDataLimit(
+    `v2:model:effort:${sessionId}:${encodeInteractionIndex(modelIndex)}:${effort ?? "default"}`
+  );
 }
 
 export function encodePlanExpandCallback(sessionId: string): string {
@@ -182,6 +209,38 @@ export function encodeInteractionCancelCallback(interactionId: string): string {
 
 export function parseCallbackData(data: string): ParsedCallbackData | null {
   const parts = data.split(":");
+  if (parts[0] === "v2" && parts[1] === "model") {
+    if (parts[2] === "default" && parts[3]) {
+      return { kind: "model_default", sessionId: parts[3] };
+    }
+
+    if (parts[2] === "page" && parts[3] && parts[4]) {
+      const page = decodeInteractionIndex(parts[4]);
+      if (page !== null) {
+        return { kind: "model_page", sessionId: parts[3], page };
+      }
+    }
+
+    if (parts[2] === "pick" && parts[3] && parts[4]) {
+      const modelIndex = decodeInteractionIndex(parts[4]);
+      if (modelIndex !== null) {
+        return { kind: "model_pick", sessionId: parts[3], modelIndex };
+      }
+    }
+
+    if (parts[2] === "effort" && parts[3] && parts[4] && parts[5]) {
+      const modelIndex = decodeInteractionIndex(parts[4]);
+      if (modelIndex !== null) {
+        const effort = parts[5] === "default" ? null : parseReasoningEffort(parts[5]);
+        if (parts[5] === "default" || effort) {
+          return { kind: "model_effort", sessionId: parts[3], modelIndex, effort };
+        }
+      }
+    }
+
+    return null;
+  }
+
   if (parts[0] !== "v1") {
     if (parts[0] === "v3" && parts[1] === "ix") {
       if (parts[2] === "d" && parts[3] && parts[4]) {
@@ -425,6 +484,94 @@ export function buildNoNewProjectsMessage(): {
   };
 }
 
+interface ModelPickerOption {
+  id: string;
+  displayName: string;
+  isDefault: boolean;
+}
+
+interface ReasoningEffortOption {
+  reasoningEffort: ReasoningEffort;
+  description: string;
+}
+
+const MODEL_PAGE_SIZE = 5;
+
+export function buildModelPickerMessage(options: {
+  session: SessionRow;
+  models: ModelPickerOption[];
+  page: number;
+}): {
+  text: string;
+  replyMarkup: TelegramInlineKeyboardMarkup;
+} {
+  const totalPages = Math.max(1, Math.ceil(options.models.length / MODEL_PAGE_SIZE));
+  const safePage = Math.min(Math.max(options.page, 0), totalPages - 1);
+  const pageModels = options.models.slice(safePage * MODEL_PAGE_SIZE, (safePage + 1) * MODEL_PAGE_SIZE);
+  const rows: TelegramInlineKeyboardMarkup["inline_keyboard"] = [
+    [{ text: buildDefaultModelButtonLabel(options.models, options.session), callback_data: encodeModelDefaultCallback(options.session.sessionId) }],
+    ...pageModels.map((model, index) => [{
+      text: buildModelButtonLabel(model, options.session),
+      callback_data: encodeModelPickCallback(options.session.sessionId, safePage * MODEL_PAGE_SIZE + index)
+    }])
+  ];
+  const navigation: Array<{ text: string; callback_data: string }> = [];
+  if (safePage > 0) {
+    navigation.push({ text: "上一页", callback_data: encodeModelPageCallback(options.session.sessionId, safePage - 1) });
+  }
+  if (safePage + 1 < totalPages) {
+    navigation.push({ text: "下一页", callback_data: encodeModelPageCallback(options.session.sessionId, safePage + 1) });
+  }
+  if (navigation.length > 0) {
+    rows.push(navigation);
+  }
+
+  return {
+    text: [
+      "选择模型",
+      `当前配置：${formatSessionModelReasoningConfig(options.session)}`,
+      `第 ${safePage + 1}/${totalPages} 页`,
+      "先选模型，再按该模型支持情况选择思考强度。"
+    ].join("\n"),
+    replyMarkup: { inline_keyboard: rows }
+  };
+}
+
+export function buildReasoningEffortPickerMessage(options: {
+  session: SessionRow;
+  model: ModelPickerOption & {
+    defaultReasoningEffort: ReasoningEffort;
+    supportedReasoningEfforts: ReasoningEffortOption[];
+  };
+  modelIndex: number;
+}): {
+  text: string;
+  replyMarkup: TelegramInlineKeyboardMarkup;
+} {
+  const isCurrentModel = options.session.selectedModel === options.model.id;
+  const effortButtons = options.model.supportedReasoningEfforts.map((option) => ({
+    text: buildReasoningEffortButtonLabel(option.reasoningEffort, options.session, isCurrentModel),
+    callback_data: encodeModelEffortCallback(options.session.sessionId, options.modelIndex, option.reasoningEffort)
+  }));
+  const rows = [
+    [{
+      text: buildDefaultEffortButtonLabel(options.model.defaultReasoningEffort, options.session, isCurrentModel),
+      callback_data: encodeModelEffortCallback(options.session.sessionId, options.modelIndex, null)
+    }],
+    ...chunkButtons(effortButtons, 2)
+  ];
+
+  return {
+    text: [
+      "选择思考强度",
+      `模型：${options.model.id}`,
+      `当前配置：${formatSessionModelReasoningConfig(options.session)}`,
+      "仅展示这个模型实际支持的档位。"
+    ].join("\n"),
+    replyMarkup: { inline_keyboard: rows }
+  };
+}
+
 export function buildStatusText(
   snapshot: ReadinessSnapshot,
   activeSession: SessionRow | null
@@ -435,6 +582,7 @@ export function buildStatusText(
         activeSession.projectName,
         activeSession.displayName,
         formatSessionState(activeSession),
+        formatSessionModelReasoningConfig(activeSession),
         formatLastTurnSummary(activeSession)
       ]
         .filter((value): value is string => Boolean(value))
@@ -465,16 +613,13 @@ export function buildWhereText(session: SessionRow | null): string {
     formatHtmlField("会话名：", session.displayName),
     formatHtmlField("项目：", session.projectName),
     formatHtmlField("路径：", session.projectPath),
-    formatHtmlField("状态：", formatSessionState(session))
+    formatHtmlField("状态：", formatSessionState(session)),
+    formatHtmlField("模型 + 思考强度：", formatSessionModelReasoningConfig(session))
   ];
 
   lines.push(formatHtmlField("Bridge 会话 ID：", session.sessionId));
   lines.push(formatHtmlField("Codex 线程 ID：", session.threadId ?? "尚未创建（首次发送任务后生成）"));
   lines.push(formatHtmlField("最近 Turn ID：", session.lastTurnId ?? "暂无"));
-  if (session.selectedModel) {
-    lines.push(formatHtmlField("模型：", session.selectedModel));
-  }
-
   const lastTurnSummary = formatLastTurnSummary(session);
   if (lastTurnSummary) {
     lines.push(formatHtmlField("上次结果：", lastTurnSummary));
@@ -1163,6 +1308,43 @@ function formatSessionState(session: SessionRow): string {
   }
 }
 
+function parseReasoningEffort(value: string): ReasoningEffort | null {
+  switch (value) {
+    case "none":
+    case "minimal":
+    case "low":
+    case "medium":
+    case "high":
+    case "xhigh":
+      return value;
+    default:
+      return null;
+  }
+}
+
+export function formatReasoningEffortLabel(effort: ReasoningEffort): string {
+  switch (effort) {
+    case "none":
+      return "关闭";
+    case "minimal":
+      return "极省";
+    case "low":
+      return "低";
+    case "medium":
+      return "中";
+    case "high":
+      return "高";
+    case "xhigh":
+      return "极高";
+  }
+}
+
+export function formatSessionModelReasoningConfig(session: Pick<SessionRow, "selectedModel" | "selectedReasoningEffort">): string {
+  const modelLabel = session.selectedModel ?? "默认模型";
+  const effortLabel = session.selectedReasoningEffort ? formatReasoningEffortLabel(session.selectedReasoningEffort) : "默认";
+  return `${modelLabel} + ${effortLabel}`;
+}
+
 function formatSessionFailureReason(reason: SessionRow["failureReason"]): string {
   switch (reason) {
     case "bridge_restart":
@@ -1192,6 +1374,43 @@ function formatLastTurnSummary(session: SessionRow): string | null {
     default:
       return null;
   }
+}
+
+function buildDefaultModelButtonLabel(models: ModelPickerOption[], session: SessionRow): string {
+  const defaultModel = models.find((model) => model.isDefault);
+  const suffix = defaultModel ? `（${defaultModel.displayName}）` : "";
+  const marker = session.selectedModel === null ? " [当前]" : "";
+  return `默认模型${suffix}${marker}`;
+}
+
+function buildModelButtonLabel(model: ModelPickerOption, session: SessionRow): string {
+  const markers: string[] = [];
+  if (session.selectedModel === model.id || (session.selectedModel === null && model.isDefault)) {
+    markers.push("当前");
+  }
+  if (model.isDefault) {
+    markers.push("默认");
+  }
+  const markerText = markers.length > 0 ? ` [${markers.join("/")}]` : "";
+  return `${model.displayName}${markerText}`;
+}
+
+function buildDefaultEffortButtonLabel(
+  defaultReasoningEffort: ReasoningEffort,
+  session: SessionRow,
+  isCurrentModel: boolean
+): string {
+  const marker = isCurrentModel && session.selectedReasoningEffort === null ? " [当前]" : "";
+  return `默认（${formatReasoningEffortLabel(defaultReasoningEffort)}）${marker}`;
+}
+
+function buildReasoningEffortButtonLabel(
+  effort: ReasoningEffort,
+  session: SessionRow,
+  isCurrentModel: boolean
+): string {
+  const marker = isCurrentModel && session.selectedReasoningEffort === effort ? " [当前]" : "";
+  return `${formatReasoningEffortLabel(effort)}${marker}`;
 }
 
 function formatInspectSummarySection(values: string[]): string[] {

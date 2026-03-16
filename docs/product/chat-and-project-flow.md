@@ -204,11 +204,15 @@ Responses:
 ### `/model` and `/model <model_id>`
 
 Shows:
-- the available model list from the current app-server runtime
-- the per-session selected model when one is pinned for the active session
+- a two-step inline-button picker driven by the current app-server `model/list`
+- step 1 shows only 4-6 visible model candidates at a time, marks `当前` and `默认`, and paginates when needed
+- step 2 appears only when the chosen model exposes multiple `supportedReasoningEfforts`; otherwise the bridge skips directly to confirmation
+- reasoning effort button copy translates protocol values into user-facing Chinese labels
+- the active session's effective selection as `模型 + 思考强度`
 
 Rules:
 - selection is stored on the bridge session and applied on the next `thread/start` or `turn/start`
+- the bridge stores model and reasoning effort separately; `默认` means "do not pin an override for this field"
 - the bridge does not expose provider setup or arbitrary config editing through Telegram
 
 ### `/skills`
@@ -346,7 +350,7 @@ Shows:
 - current project name
 - current project path
 - session status
-- selected model when present
+- current `模型 + 思考强度`
 - bridge `session_id`
 - Codex `thread_id` when available, otherwise an explicit not-created-yet note
 - latest `turn_id` when available
