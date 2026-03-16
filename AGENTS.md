@@ -1,122 +1,271 @@
-# Project Documents Guide
+# AGENTS.md
 
-Low-token docs router for the bridge. There is no root `README`.
-Read the smallest relevant file first.
+Agent router for `telegram-codex-bridge`.
 
-Truth-source priority for this repo:
-1. project runtime and code
-2. live Codex API / generated schema
-3. repository docs
+This file is for LLM coding agents.
+Goal: use the **least context** that still allows a correct answer or change.
 
-Practical rule:
-- shipped bridge behavior follows the repository first
-- Codex protocol shape follows the live CLI/schema first
-- docs summarize both and should be corrected when either one disagrees
+## Prime directive
 
-## Read In This Order
+Read the **smallest relevant source first**.
+Then stop.
+Read more only if you are blocked by missing detail, ambiguity, or a real conflict.
 
-1. `docs/product/v1-scope.md`
-   - Product boundary, trust model, and what v1 includes or excludes.
+Do **not** preload the repo.
+Do **not** read all linked docs.
+Do **not** mistake planned behavior for shipped behavior.
 
-2. `docs/product/chat-and-project-flow.md`
-   - Telegram UX, auth flow, project picker, sessions, and user-facing command behavior.
+## What this project is
 
-3. `docs/architecture/runtime-and-state.md`
-   - App-server model, SQLite state, runtime-card reduction, final-answer delivery, recovery rules, and concurrency limits.
+A VPS-hosted Telegram bridge that controls the Codex installation already present on the server.
 
-4. `docs/operations/install-and-admin.md`
-   - Install paths, env keys, Node floor, `ctb` commands, service ownership, update flow, restart caveats, and diagnostics.
+- Telegram = control surface
+- Codex = execution engine
+- the bridge is not a second Codex runtime
+- the bridge is not a second permission system
+- the bridge is not a provider-management layer
 
-5. `docs/research/codex-app-server-authoritative-reference.md`
-   - Use this first for current Codex app-server usage guidance, source priority, API inventory, and refresh workflow.
-   - This is the LLM-first app-server reference and should outrank older runtime samples when they disagree.
+## Retrieval budget
 
-6. `docs/research/codex-app-server-api-quick-reference.md`
-   - Use this for per-method app-server lookup, schema file names, required params, and approval/notification gotchas.
-   - Read this after the authoritative reference when implementation needs exact API guidance.
+Default budget for most tasks:
 
-7. `docs/research/app-server-phase-0-verification.md`
-   - Verified protocol facts, event names, and final-answer extraction details.
-   - Treat this as dated runtime verification rather than the top source for the latest CLI surface.
+1. Read **1 doc** from the router below.
+2. If needed, read **1 more doc or 1-2 code files**.
+3. Stop as soon as the answer or edit is well-supported.
 
-8. `docs/roadmap/phase-1-delivery.md`
-   - Use this for acceptance criteria and delivery sequencing.
-   - Treat it as roadmap intent, not proof that a behavior is already shipped.
+Only exceed this when the task is explicitly architectural, cross-cutting, or conflict-heavy.
 
-## Current Truth vs Planning
+## Evidence model
 
-- Current bridge behavior docs: `docs/product/`, `docs/architecture/`, `docs/operations/`.
-- API/protocol reference docs: `docs/research/`.
-- If a current-state doc conflicts with runtime behavior, trust the repository and verify against `package.json`, `src/cli.ts`, `src/config.ts`, `src/install.ts`, `src/paths.ts`, `src/service.ts`, `src/state/store.ts`, `src/telegram/ui.ts`, and `src/codex/app-server.ts`.
-- For Codex app-server questions, split them cleanly:
-  - bridge adoption and shipped Telegram UX follow repository code first
-  - protocol availability and exact request or notification shapes follow the live CLI plus generated schema
-- Never treat API availability as proof that the bridge already exposes that surface.
-- Planning and non-primary docs: `docs/roadmap/`, `docs/future/`, `docs/plans/`, `docs/archive/`.
-- In `docs/future/`, treat `v2-prd.md`, `v3-prd.md`, and `v2-engineering-evaluation*.md` as product/evaluation inputs, not shipped behavior.
-- Do not treat roadmap, future, plan, or archive docs as shipped behavior.
+This repo is still evolving.
+There is **no single permanent source of truth**.
+Use the right source for the right question.
 
-## Fast Lookup
+### Source categories
 
-- Scope, trust model, out-of-scope
-  - `docs/product/v1-scope.md`
+1. **Active user/task instruction**
+   - Highest priority for the active task.
 
-- Telegram commands, buttons, auth, `/new`, `/use`, `/pin`, `/inspect`
-  - `docs/product/chat-and-project-flow.md`
+2. **Active product/spec docs**
+   - Intended behavior.
+   - Answer: **what should happen**.
 
-- Runtime shape, app-server lifecycle, state, recovery, failure modes
-  - `docs/architecture/runtime-and-state.md`
+3. **Repository code/runtime**
+   - Observed current behavior.
+   - Answer: **what happens today**.
 
-- Final-answer rendering, runtime-card vs final-message boundary
-  - `docs/architecture/runtime-and-state.md`
-  - `docs/product/chat-and-project-flow.md`
+4. **Live Codex API / generated schema**
+   - Protocol capability and exact method/notification shape.
+   - Answer: **what Codex supports in principle**.
 
-- Install, config, env vars, Node version, systemd, `ctb`, update, diagnostics
-  - `docs/operations/install-and-admin.md`
+5. **Roadmap / future / plans / archive docs**
+   - Context only, unless the active task explicitly promotes one of them.
 
-- Update, reinstall, and service restart expectations
-  - `docs/operations/install-and-admin.md`
+## Required separation in reasoning and answers
 
-- Verified protocol fields, event names, final-answer extraction
-  - `docs/research/app-server-phase-0-verification.md`
+When sources differ, keep these separate:
 
-- Current Codex app-server usage guidance and source priority
-  - `docs/research/codex-app-server-authoritative-reference.md`
-  - Use this for protocol facts and for the repo-vs-API split, not as a substitute for checking `src/`.
+- **Observed behavior** = what current code/runtime does
+- **Intended behavior** = what the active spec says should happen
+- **Protocol capability** = what Codex supports
+- **Required action** = update code, update docs, or both
 
-- Per-method Codex app-server API quick reference
-  - `docs/research/codex-app-server-api-quick-reference.md`
-  - Use this for method lookup after checking whether the bridge actually wires that method today.
+Never collapse those into one vague claim.
 
-- Current bridge app-server adoption versus broader protocol surface
-  - `docs/research/codex-app-server-authoritative-reference.md`
-  - `docs/research/codex-app-server-api-quick-reference.md`
-  - verify implementation against `src/codex/app-server.ts` and `src/service.ts`
+## Conflict policy
 
-- Phase 1 acceptance criteria
-  - `docs/roadmap/phase-1-delivery.md`
+- If the **user gives a direct instruction**, follow it for the active task.
+- If **code differs from current spec docs**, treat it as a real mismatch.
+- If **docs lag behind accepted implementation**, update docs to match confirmed behavior.
+- If **code lags behind active intended behavior**, update code to match the active spec.
+- If **protocol docs show a capability**, verify bridge adoption before claiming Telegram UX supports it.
+- If you cannot tell which doc is active, say so explicitly.
 
-- V2 product intent and scope
-  - `docs/future/v2-prd.md`
+## First-file router
 
-- V3 product intent and capability-alignment scope
-  - `docs/future/v3-prd.md`
+Pick **one** starting file based on the task.
 
-- V2 feasibility and engineering assessment
-  - `docs/future/v2-engineering-evaluation.md`
+### Scope / trust model / v1 boundary
+Read first:
+- `docs/product/v1-scope.md`
 
-- V2 evaluation response template
-  - `docs/future/v2-engineering-evaluation-template.md`
+Use for:
+- in-scope vs out-of-scope
+- trust model
+- operator assumptions
+- product boundary
 
-- Future implementation handoffs and rollout sequencing
-  - `docs/plans/`
-  - Treat these as implementation records, not current behavior.
+### Telegram UX / commands / auth / project flow / sessions
+Read first:
+- `docs/product/chat-and-project-flow.md`
 
-- V3 engineering design for protocol-capability alignment
-  - `docs/plans/2026-03-14-codex-cli-capability-alignment-design.md`
+Use for:
+- `/new`, `/use`, `/pin`, `/inspect`, `/where`
+- auth flow
+- project picker
+- session switching
+- user-visible Telegram behavior
 
-- V3 first implementation plan for interaction broker and blocked-turn recovery
-  - `docs/plans/2026-03-14-v3-interaction-broker-phase-1-2-implementation-plan.md`
+### Runtime / lifecycle / state / recovery / answer delivery
+Read first:
+- `docs/architecture/runtime-and-state.md`
 
-- Historical drafts
-  - `docs/archive/`
+Use for:
+- app-server lifecycle
+- SQLite state
+- recovery rules
+- readiness/degraded behavior
+- runtime-card reduction
+- final-answer delivery
+
+### Install / config / service / update / diagnostics
+Read first:
+- `docs/operations/install-and-admin.md`
+
+Use for:
+- `ctb` commands
+- install flow
+- env/config keys
+- service ownership
+- restart/update/doctor/status
+- Node/Codex version floors
+
+### Codex protocol / app-server methods
+Read first:
+- `docs/research/codex-app-server-authoritative-reference.md`
+
+Then only if needed:
+- `docs/research/codex-app-server-api-quick-reference.md`
+
+Use for:
+- app-server methods
+- notifications
+- request/response shape
+- protocol capability
+- current schema guidance
+
+### Historical verification detail
+Read only if needed:
+- `docs/research/app-server-phase-0-verification.md`
+
+Use only for:
+- older confirmed event names
+- earlier extraction notes
+- historical verification detail
+
+Do **not** use it as the top source for the latest CLI surface.
+
+### Planning / future direction / history
+Read only when the task is explicitly about planning or future direction:
+- `docs/roadmap/phase-1-delivery.md`
+- `docs/future/v2-prd.md`
+- `docs/future/v3-prd.md`
+- `docs/future/v2-engineering-evaluation.md`
+- `docs/future/v2-engineering-evaluation-template.md`
+- `docs/plans/`
+- `docs/archive/`
+
+These are **not shipped behavior** unless the active task explicitly says otherwise.
+
+## Code anchors
+
+If docs are insufficient, verify against the **narrowest relevant source file**.
+
+### CLI / admin surface
+- `src/cli.ts`
+
+### Config / install / service / paths
+- `src/config.ts`
+- `src/install.ts`
+- `src/service.ts`
+- `src/paths.ts`
+
+### Telegram behavior
+- `src/telegram/commands.ts`
+- `src/telegram/ui.ts`
+- `src/telegram/api.ts`
+- `src/telegram/poller.ts`
+
+### Codex integration
+- `src/codex/app-server.ts`
+- `src/codex/notification-classifier.ts`
+
+### Runtime state
+- `src/state/store.ts`
+
+### Interaction handling
+- `src/interactions/normalize.ts`
+- `src/util/blocked-progress.ts`
+
+### Activity/debug tracking
+- `src/activity/tracker.ts`
+- `src/activity/debug-journal.ts`
+
+## Minimal retrieval patterns
+
+Use these patterns unless the task clearly needs more.
+
+### User-visible command behavior
+1. `docs/product/chat-and-project-flow.md`
+2. then `src/telegram/commands.ts` or `src/telegram/ui.ts` if needed
+
+### Actual runtime behavior
+1. `docs/architecture/runtime-and-state.md`
+2. then the relevant `src/` file
+
+### Install or operations
+1. `docs/operations/install-and-admin.md`
+2. then `src/install.ts`, `src/service.ts`, `src/config.ts`, or `src/paths.ts`
+
+### Codex protocol support
+1. `docs/research/codex-app-server-authoritative-reference.md`
+2. then `docs/research/codex-app-server-api-quick-reference.md` if needed
+3. then `src/codex/app-server.ts` to confirm bridge adoption
+
+### Shipped vs planned
+1. check current product/architecture/operations docs
+2. check code
+3. only then consult roadmap/future/plans if needed
+
+## Stop conditions
+
+Stop reading when one of these is true:
+
+- you can answer the question with clear source support
+- you can make the requested change safely
+- the remaining uncertainty is explicitly about an unresolved source conflict
+
+If a conflict remains, report the conflict instead of reading the whole repo.
+
+## Directory labels
+
+Use these labels mentally:
+
+- `docs/product/` = current intended product behavior
+- `docs/architecture/` = current intended runtime behavior
+- `docs/operations/` = current operational reference
+- `docs/research/` = protocol/reference evidence; freshness varies
+- `docs/roadmap/` = delivery intent
+- `docs/future/` = future product/evaluation input
+- `docs/plans/` = implementation planning / handoff history
+- `docs/archive/` = historical context only
+
+## Anti-patterns
+
+Avoid these mistakes:
+
+- reading every doc listed here "just in case"
+- treating roadmap/future/plans as shipped behavior
+- claiming protocol support means bridge support
+- assuming current code is automatically correct intent
+- assuming current docs are automatically implemented
+- giving one blended answer when observed, intended, and protocol differ
+
+## Final instruction
+
+Default behavior:
+- read less
+- verify narrowly
+- separate observed vs intended vs protocol
+- stop early when supported
+- do not over-claim
