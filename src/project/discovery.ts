@@ -1,10 +1,11 @@
 import { access, readdir, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { createHash } from "node:crypto";
-import { basename, join, relative, resolve, sep } from "node:path";
+import { basename, join, relative, sep } from "node:path";
 
 import type { BridgeStateStore } from "../state/store.js";
 import type { ProjectCandidate, ProjectPickerGroup, ProjectPickerResult, RecentProjectRow } from "../types.js";
+import { expandHomePath } from "../util/path.js";
 
 const PROJECT_MARKERS = [".git", "package.json", "pyproject.toml", "Cargo.toml", "go.mod", ".jj"] as const;
 const EXCLUDED_DIR_NAMES = new Set([
@@ -68,18 +69,6 @@ function computeConfidence(markers: string[]): number {
 
 function isHiddenPath(path: string): boolean {
   return basename(path).startsWith(".");
-}
-
-function expandProjectPath(inputPath: string, homeDir: string): string {
-  if (inputPath === "~") {
-    return homeDir;
-  }
-
-  if (inputPath.startsWith("~/")) {
-    return join(homeDir, inputPath.slice(2));
-  }
-
-  return resolve(inputPath);
 }
 
 function normalizePathForDisplay(path: string): string {
@@ -465,7 +454,7 @@ export async function validateManualProjectPath(
   homeDir: string,
   store: BridgeStateStore
 ): Promise<ProjectCandidate | null> {
-  const resolvedPath = expandProjectPath(inputPath.trim(), homeDir);
+  const resolvedPath = expandHomePath(inputPath.trim(), homeDir);
 
   try {
     const stats = await stat(resolvedPath);

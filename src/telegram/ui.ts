@@ -7,6 +7,7 @@ import type {
   RuntimeStatusField,
   SessionRow
 } from "../types.js";
+import { ALL_RUNTIME_STATUS_FIELDS } from "../types.js";
 import type { ActivityStatus, CollabAgentStateSnapshot, InspectSnapshot, StreamBlock, StreamSnapshot } from "../activity/types.js";
 import type { TelegramInlineKeyboardMarkup } from "./api.js";
 import { truncateText } from "../util/text.js";
@@ -271,64 +272,35 @@ function ensureTelegramCallbackDataLimit(data: string): string {
   return data;
 }
 
+const RUNTIME_STATUS_FIELD_CODES: ReadonlyMap<RuntimeStatusField, string> = new Map([
+  ["session_name", "sn"],
+  ["project_name", "pn"],
+  ["project_path", "pp"],
+  ["model_reasoning", "mr"],
+  ["thread_id", "th"],
+  ["turn_id", "tu"],
+  ["blocked_reason", "br"],
+  ["current_step", "cs"],
+  ["last_token_usage", "lt"],
+  ["total_token_usage", "tt"],
+  ["context_window", "cw"],
+  ["final_answer_ready", "fr"]
+]);
+
+const RUNTIME_STATUS_CODE_TO_FIELD: ReadonlyMap<string, RuntimeStatusField> = new Map(
+  [...RUNTIME_STATUS_FIELD_CODES].map(([field, code]) => [code, field])
+);
+
 function encodeRuntimeStatusField(field: RuntimeStatusField): string {
-  switch (field) {
-    case "session_name":
-      return "sn";
-    case "project_name":
-      return "pn";
-    case "project_path":
-      return "pp";
-    case "model_reasoning":
-      return "mr";
-    case "thread_id":
-      return "th";
-    case "turn_id":
-      return "tu";
-    case "blocked_reason":
-      return "br";
-    case "current_step":
-      return "cs";
-    case "last_token_usage":
-      return "lt";
-    case "total_token_usage":
-      return "tt";
-    case "context_window":
-      return "cw";
-    case "final_answer_ready":
-      return "fr";
+  const code = RUNTIME_STATUS_FIELD_CODES.get(field);
+  if (!code) {
+    throw new Error(`unknown RuntimeStatusField: ${field}`);
   }
+  return code;
 }
 
 function decodeRuntimeStatusField(value: string): RuntimeStatusField | null {
-  switch (value) {
-    case "sn":
-      return "session_name";
-    case "pn":
-      return "project_name";
-    case "pp":
-      return "project_path";
-    case "mr":
-      return "model_reasoning";
-    case "th":
-      return "thread_id";
-    case "tu":
-      return "turn_id";
-    case "br":
-      return "blocked_reason";
-    case "cs":
-      return "current_step";
-    case "lt":
-      return "last_token_usage";
-    case "tt":
-      return "total_token_usage";
-    case "cw":
-      return "context_window";
-    case "fr":
-      return "final_answer_ready";
-    default:
-      return null;
-  }
+  return RUNTIME_STATUS_CODE_TO_FIELD.get(value) ?? null;
 }
 
 export function encodeInteractionDecisionCallback(interactionId: string, decisionIndex: number): string {
@@ -1148,20 +1120,7 @@ export function buildRuntimePreferencesMessage(options: {
   text: string;
   replyMarkup: TelegramInlineKeyboardMarkup;
 } {
-  const allFields: RuntimeStatusField[] = [
-    "session_name",
-    "project_name",
-    "project_path",
-    "model_reasoning",
-    "thread_id",
-    "turn_id",
-    "blocked_reason",
-    "current_step",
-    "last_token_usage",
-    "total_token_usage",
-    "context_window",
-    "final_answer_ready"
-  ];
+  const allFields = ALL_RUNTIME_STATUS_FIELDS;
   const totalPages = Math.max(1, Math.ceil(allFields.length / RUNTIME_FIELD_PAGE_SIZE));
   const safePage = Math.min(Math.max(options.page, 0), totalPages - 1);
   const pageFields = allFields.slice(safePage * RUNTIME_FIELD_PAGE_SIZE, (safePage + 1) * RUNTIME_FIELD_PAGE_SIZE);
@@ -1820,11 +1779,11 @@ function formatRelativeTime(isoTime: string): string {
 
 function pushHtmlRuntimeCardContext(lines: string[], context: RuntimeCardContext): void {
   if (context.sessionName) {
-    lines.push(`<b>Session:</b> ${escapeHtml(context.sessionName)}`);
+    lines.push(formatHtmlField("Session:", context.sessionName));
   }
 
   if (context.projectName && context.projectName !== context.sessionName) {
-    lines.push(`<b>Project:</b> ${escapeHtml(context.projectName)}`);
+    lines.push(formatHtmlField("Project:", context.projectName));
   }
 }
 
@@ -1854,7 +1813,6 @@ function selectCurrentPlanEntry(entries: string[]): string | null {
   return entries.find((entry) => /\(inProgress\)$/u.test(entry))
     ?? entries.find((entry) => /\((pending|todo)\)$/u.test(entry))
     ?? entries.at(-1)
-    ?? entries[0]
     ?? null;
 }
 
@@ -2114,12 +2072,8 @@ function formatHtmlHeading(text: string): string {
   return `<b>${escapeHtml(text)}</b>`;
 }
 
-function formatHtmlFieldLabel(label: string): string {
-  return `<b>${escapeHtml(label)}</b>`;
-}
-
 function formatHtmlField(label: string, value: string): string {
-  return `${formatHtmlFieldLabel(label)} ${escapeHtml(value)}`;
+  return `${formatHtmlHeading(label)} ${escapeHtml(value)}`;
 }
 
 function formatHtmlListItem(value: string): string {

@@ -36,6 +36,21 @@ export type RuntimeStatusField =
   | "context_window"
   | "final_answer_ready";
 
+export const ALL_RUNTIME_STATUS_FIELDS: readonly RuntimeStatusField[] = [
+  "session_name",
+  "project_name",
+  "project_path",
+  "model_reasoning",
+  "thread_id",
+  "turn_id",
+  "blocked_reason",
+  "current_step",
+  "last_token_usage",
+  "total_token_usage",
+  "context_window",
+  "final_answer_ready"
+] as const;
+
 export const DEFAULT_RUNTIME_STATUS_FIELDS: RuntimeStatusField[] = [
   "session_name",
   "project_name",

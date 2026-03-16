@@ -90,7 +90,7 @@ import {
 import { buildProjectPicker, refreshProjectPicker, validateManualProjectPath } from "./project/discovery.js";
 import { commandExists, runCommand } from "./process.js";
 import { parseBooleanLike } from "./util/boolean.js";
-import { asRecord, asRecord as getRecord, getString, getNumber, getArray, getStringArray } from "./util/untyped.js";
+import { asRecord, getString, getNumber, getArray, getStringArray } from "./util/untyped.js";
 import { normalizeWhitespace, truncateText, normalizeAndTruncate, normalizeNullableText } from "./util/text.js";
 
 interface RecentActivityEntry {
@@ -611,42 +611,47 @@ export class BridgeService {
       }
 
       case "plan_expand": {
-        await this.handlePlanToggle(callbackQuery.id, message.message_id, parsed.sessionId, true);
+        await this.handleStatusCardSectionToggle(callbackQuery.id, message.message_id, parsed.sessionId, true, "plan");
         return;
       }
 
       case "plan_collapse": {
-        await this.handlePlanToggle(callbackQuery.id, message.message_id, parsed.sessionId, false);
+        await this.handleStatusCardSectionToggle(callbackQuery.id, message.message_id, parsed.sessionId, false, "plan");
         return;
       }
 
       case "agent_expand": {
-        await this.handleAgentToggle(callbackQuery.id, message.message_id, parsed.sessionId, true);
+        await this.handleStatusCardSectionToggle(callbackQuery.id, message.message_id, parsed.sessionId, true, "agents");
         return;
       }
 
       case "agent_collapse": {
-        await this.handleAgentToggle(callbackQuery.id, message.message_id, parsed.sessionId, false);
+        await this.handleStatusCardSectionToggle(callbackQuery.id, message.message_id, parsed.sessionId, false, "agents");
         return;
       }
 
       case "final_open": {
-        await this.handleFinalAnswerOpen(callbackQuery.id, chatId, message.message_id, parsed.answerId);
+        await this.renderPersistedFinalAnswer(callbackQuery.id, chatId, message.message_id, parsed.answerId, {
+          expanded: true,
+          page: 1
+        });
         return;
       }
 
       case "final_close": {
-        await this.handleFinalAnswerClose(callbackQuery.id, chatId, message.message_id, parsed.answerId);
+        await this.renderPersistedFinalAnswer(callbackQuery.id, chatId, message.message_id, parsed.answerId, {
+          expanded: false
+        });
         return;
       }
 
       case "final_page": {
-        await this.handleFinalAnswerPage(
+        await this.renderPersistedFinalAnswer(
           callbackQuery.id,
           chatId,
           message.message_id,
           parsed.answerId,
-          parsed.page
+          { expanded: true, page: parsed.page }
         );
         return;
       }
@@ -677,7 +682,8 @@ export class BridgeService {
         return;
       }
 
-      case "inspect_expand": {
+      case "inspect_expand":
+      case "inspect_page": {
         await this.handleInspectViewCallback(callbackQuery.id, chatId, message.message_id, parsed.sessionId, {
           collapsed: false,
           page: parsed.page
@@ -693,15 +699,8 @@ export class BridgeService {
         return;
       }
 
-      case "inspect_page": {
-        await this.handleInspectViewCallback(callbackQuery.id, chatId, message.message_id, parsed.sessionId, {
-          collapsed: false,
-          page: parsed.page
-        });
-        return;
-      }
-
-      case "rollback_page": {
+      case "rollback_page":
+      case "rollback_back": {
         await this.handleRollbackPickerCallback(callbackQuery.id, chatId, message.message_id, parsed.sessionId, {
           mode: "list",
           page: parsed.page
@@ -726,14 +725,6 @@ export class BridgeService {
           parsed.sessionId,
           parsed.targetIndex
         );
-        return;
-      }
-
-      case "rollback_back": {
-        await this.handleRollbackPickerCallback(callbackQuery.id, chatId, message.message_id, parsed.sessionId, {
-          mode: "list",
-          page: parsed.page
-        });
         return;
       }
 
@@ -1076,11 +1067,12 @@ export class BridgeService {
     });
   }
 
-  private async handlePlanToggle(
+  private async handleStatusCardSectionToggle(
     callbackQueryId: string,
     messageId: number,
     sessionId: string,
-    expanded: boolean
+    expanded: boolean,
+    section: "plan" | "agents"
   ): Promise<void> {
     const activeTurn = this.activeTurn;
     if (!activeTurn || activeTurn.sessionId !== sessionId || activeTurn.statusCard.messageId !== messageId) {
@@ -1089,25 +1081,29 @@ export class BridgeService {
     }
 
     const inspect = activeTurn.tracker.getInspectSnapshot();
-    if (inspect.planSnapshot.length === 0) {
+    const snapshotData = section === "plan" ? inspect.planSnapshot : inspect.agentSnapshot;
+    if (snapshotData.length === 0) {
       await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
       return;
     }
 
-    if (activeTurn.statusCard.planExpanded === expanded) {
+    const expandedField = section === "plan" ? "planExpanded" : "agentsExpanded";
+    if (activeTurn.statusCard[expandedField] === expanded) {
       await this.safeAnswerCallbackQuery(callbackQueryId, "这个操作已处理。");
       return;
     }
 
-    activeTurn.statusCard.planExpanded = expanded;
+    activeTurn.statusCard[expandedField] = expanded;
     await this.safeAnswerCallbackQuery(callbackQueryId);
 
+    const expandedLabel = `${section === "plan" ? "plan" : "agents"}_${expanded ? "expanded" : "collapsed"}`;
+    const triggerMethod = `v1:${section === "plan" ? "plan" : "agent"}:${expanded ? "expand" : "collapse"}`;
     const rendered = this.buildStatusCardRenderPayload(activeTurn.sessionId, activeTurn.tracker, activeTurn.statusCard);
     await this.logRuntimeCardEvent(this.getRuntimeCardTraceContext(activeTurn), activeTurn.statusCard, "state_transition", {
-      reason: expanded ? "plan_expanded" : "plan_collapsed",
+      reason: expandedLabel,
       forced: true,
       triggerKind: "callback",
-      triggerMethod: expanded ? "v1:plan:expand" : "v1:plan:collapse",
+      triggerMethod,
       commandStateChanged: false,
       statusProgressTextChanged: false,
       previousStatus: summarizeActivityStatus(inspect),
@@ -1120,91 +1116,7 @@ export class BridgeService {
     });
     await this.requestRuntimeCardRender(activeTurn, activeTurn.statusCard, rendered.text, rendered.replyMarkup, {
       force: true,
-      reason: expanded ? "plan_expanded" : "plan_collapsed"
-    });
-  }
-
-  private async handleAgentToggle(
-    callbackQueryId: string,
-    messageId: number,
-    sessionId: string,
-    expanded: boolean
-  ): Promise<void> {
-    const activeTurn = this.activeTurn;
-    if (!activeTurn || activeTurn.sessionId !== sessionId || activeTurn.statusCard.messageId !== messageId) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
-      return;
-    }
-
-    const inspect = activeTurn.tracker.getInspectSnapshot();
-    if (inspect.agentSnapshot.length === 0) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
-      return;
-    }
-
-    if (activeTurn.statusCard.agentsExpanded === expanded) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "这个操作已处理。");
-      return;
-    }
-
-    activeTurn.statusCard.agentsExpanded = expanded;
-    await this.safeAnswerCallbackQuery(callbackQueryId);
-
-    const rendered = this.buildStatusCardRenderPayload(activeTurn.sessionId, activeTurn.tracker, activeTurn.statusCard);
-    await this.logRuntimeCardEvent(this.getRuntimeCardTraceContext(activeTurn), activeTurn.statusCard, "state_transition", {
-      reason: expanded ? "agents_expanded" : "agents_collapsed",
-      forced: true,
-      triggerKind: "callback",
-      triggerMethod: expanded ? "v1:agent:expand" : "v1:agent:collapse",
-      commandStateChanged: false,
-      statusProgressTextChanged: false,
-      previousStatus: summarizeActivityStatus(inspect),
-      nextStatus: summarizeActivityStatus(inspect),
-      selectedProgressText: selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null),
-      commands: summarizeRuntimeCommands(activeTurn.statusCard.commandOrder),
-      card: summarizeRuntimeCardSurface(activeTurn.statusCard),
-      renderedText: rendered.text,
-      replyMarkup: rendered.replyMarkup ?? null
-    });
-    await this.requestRuntimeCardRender(activeTurn, activeTurn.statusCard, rendered.text, rendered.replyMarkup, {
-      force: true,
-      reason: expanded ? "agents_expanded" : "agents_collapsed"
-    });
-  }
-
-  private async handleFinalAnswerOpen(
-    callbackQueryId: string,
-    chatId: string,
-    messageId: number,
-    answerId: string
-  ): Promise<void> {
-    await this.renderPersistedFinalAnswer(callbackQueryId, chatId, messageId, answerId, {
-      expanded: true,
-      page: 1
-    });
-  }
-
-  private async handleFinalAnswerClose(
-    callbackQueryId: string,
-    chatId: string,
-    messageId: number,
-    answerId: string
-  ): Promise<void> {
-    await this.renderPersistedFinalAnswer(callbackQueryId, chatId, messageId, answerId, {
-      expanded: false
-    });
-  }
-
-  private async handleFinalAnswerPage(
-    callbackQueryId: string,
-    chatId: string,
-    messageId: number,
-    answerId: string,
-    page: number
-  ): Promise<void> {
-    await this.renderPersistedFinalAnswer(callbackQueryId, chatId, messageId, answerId, {
-      expanded: true,
-      page
+      reason: expandedLabel
     });
   }
 
@@ -6911,7 +6823,7 @@ function buildInspectPayloadFromThreadHistory(
   turn: unknown,
   fallbackTurnStatus: string | null
 ): InspectRenderPayload | null {
-  const turnRecord = getRecord(turn);
+  const turnRecord = asRecord(turn);
   const items = getArray(turnRecord?.items);
   if (items.length === 0) {
     return null;
@@ -6928,7 +6840,7 @@ function buildInspectPayloadFromThreadHistory(
   let latestConclusion: string | null = null;
 
   for (const item of items) {
-    const itemRecord = getRecord(item);
+    const itemRecord = asRecord(item);
     const itemType = getString(itemRecord, "type");
     switch (itemType) {
       case "commandExecution": {
@@ -6958,7 +6870,7 @@ function buildInspectPayloadFromThreadHistory(
         const changes = getArray(itemRecord?.changes);
         const paths = changes
           .map((change) => {
-            const changeRecord = getRecord(change);
+            const changeRecord = asRecord(change);
             const path = getString(changeRecord, "path");
             const kind = getString(changeRecord, "kind");
             if (!path) {
@@ -6980,8 +6892,8 @@ function buildInspectPayloadFromThreadHistory(
         const server = getString(itemRecord, "server");
         const tool = getString(itemRecord, "tool");
         const label = [server, tool].filter((value): value is string => Boolean(value)).join(" / ");
-        const resultSummary = summarizeHistoryToolResult(getRecord(itemRecord?.result));
-        const errorSummary = getString(getRecord(itemRecord?.error), "message");
+        const resultSummary = summarizeHistoryToolResult(asRecord(itemRecord?.result));
+        const errorSummary = getString(asRecord(itemRecord?.error), "message");
         const summary = resultSummary ?? errorSummary;
         const line = summary
           ? `${label || "MCP 工具"} -> ${summary}`
@@ -6993,8 +6905,8 @@ function buildInspectPayloadFromThreadHistory(
 
       case "webSearch": {
         const query = getString(itemRecord, "query")
-          ?? getString(getRecord(itemRecord?.action), "query")
-          ?? getString(getRecord(itemRecord?.action), "url")
+          ?? getString(asRecord(itemRecord?.action), "query")
+          ?? getString(asRecord(itemRecord?.action), "url")
           ?? "web search";
         pushHistorySummary(recentWebSearches, query);
         latestConclusion = truncateHistoryText(query) ?? latestConclusion;

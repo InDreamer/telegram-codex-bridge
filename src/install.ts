@@ -1,8 +1,8 @@
 import { constants } from "node:fs";
 import { access, cp, chmod, mkdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
-import { delimiter, join, sep } from "node:path";
+import { join, sep } from "node:path";
 
-import { loadConfig, parseProjectScanRootsValue, serializeProjectScanRoots, withInstallOverrides, writeConfig, type BridgeConfig } from "./config.js";
+import { loadConfig, serializeProjectScanRoots, withInstallOverrides, writeConfig, type BridgeConfig } from "./config.js";
 import { collectArchiveDriftDiagnostics } from "./archive-drift.js";
 import { CodexAppServerClient } from "./codex/app-server.js";
 import type { Logger } from "./logger.js";
@@ -62,12 +62,12 @@ async function validateProjectScanRoots(
 ): Promise<string[]> {
   const validatedRoots: string[] = [];
 
-  for (const resolvedRoot of parseProjectScanRootsValue(roots.join(delimiter), homeDir)) {
+  for (const resolvedRoot of roots) {
     let stats;
 
     try {
       stats = await stat(resolvedRoot);
-    } catch (error) {
+    } catch {
       throw new Error(`project scan root does not exist: ${resolvedRoot}`);
     }
 

@@ -321,15 +321,13 @@ export class ActivityTracker {
           }
 
           this.pushTransition(receivedAt, "progress", notification.message);
-          if (this.state.activeItemType === "mcpToolCall") {
+          const progressSummaryList =
+            this.state.activeItemType === "mcpToolCall" ? this.recentMcpSummaries
+            : this.state.activeItemType === "webSearch" ? this.recentWebSearches
+            : null;
+          if (progressSummaryList) {
             const summary = cleanSummary(notification.message);
-            this.pushUniqueSummary(this.recentMcpSummaries, summary);
-            this.setHighValueEvent("found", `Found: ${summary}`, summary);
-            this.pushStatusUpdate(summary);
-            this.pushDeduplicatedToolSummary(summary);
-          } else if (this.state.activeItemType === "webSearch") {
-            const summary = cleanSummary(notification.message);
-            this.pushUniqueSummary(this.recentWebSearches, summary);
+            this.pushUniqueSummary(progressSummaryList, summary);
             this.setHighValueEvent("found", `Found: ${summary}`, summary);
             this.pushStatusUpdate(summary);
             this.pushDeduplicatedToolSummary(summary);
@@ -527,22 +525,24 @@ export class ActivityTracker {
         this.pushStatusUpdate("Turn interrupted");
         return;
 
-      case "error":
+      case "error": {
+        const errorSummary = cleanSummary(notification.message ?? "unknown error");
         this.state.turnStatus = "failed";
         this.state.activeItemType = null;
         this.state.activeItemId = null;
         this.state.activeItemLabel = null;
         this.state.currentItemStartedAt = null;
-        this.state.latestProgress = cleanSummary(notification.message ?? "unknown error");
+        this.state.latestProgress = errorSummary;
         this.state.threadBlockedReason = null;
         this.state.lastActivityAt = receivedAt;
         this.state.errorState = "unknown";
         this.commandOutputBuffers.clear();
-        this.setHighValueEvent("blocked", `Blocked: ${cleanSummary(notification.message ?? "unknown error")}`);
+        this.setHighValueEvent("blocked", `Blocked: ${errorSummary}`);
         this.pushTransition(receivedAt, "error", notification.message ?? "error");
-        this.pushStatusUpdate(cleanSummary(notification.message ?? "unknown error"));
-        this.pushStreamBlock({ kind: "error", text: cleanSummary(notification.message ?? "unknown error") });
+        this.pushStatusUpdate(errorSummary);
+        this.pushStreamBlock({ kind: "error", text: errorSummary });
         return;
+      }
 
       case "other":
         return;
@@ -900,23 +900,7 @@ export class ActivityTracker {
     identity: SubagentIdentityUpdate,
     mergeMode: SubagentIdentityMergeMode = "replace"
   ): boolean {
-    let changed = false;
-    const nextNickname = mergeSubagentIdentityValue(subagent.agentNickname, identity.agentNickname, mergeMode);
-    if (nextNickname.changed) {
-      subagent.agentNickname = nextNickname.value;
-      changed = true;
-    }
-    const nextRole = mergeSubagentIdentityValue(subagent.agentRole, identity.agentRole, mergeMode);
-    if (nextRole.changed) {
-      subagent.agentRole = nextRole.value;
-      changed = true;
-    }
-    const nextThreadName = mergeSubagentIdentityValue(subagent.threadName, identity.threadName, mergeMode);
-    if (nextThreadName.changed) {
-      subagent.threadName = nextThreadName.value;
-      changed = true;
-    }
-    return changed;
+    return mergeIdentityFields(subagent, identity, mergeMode);
   }
 
   private getSubagentLabel(subagent: TrackedSubagent): {
@@ -1013,23 +997,7 @@ export class ActivityTracker {
     mergeMode: SubagentIdentityMergeMode
   ): boolean {
     const existing = this.pendingSubagentIdentities.get(threadId) ?? {};
-    let changed = false;
-
-    const nextNickname = mergeSubagentIdentityValue(existing.agentNickname ?? null, identity.agentNickname, mergeMode);
-    if (nextNickname.changed) {
-      existing.agentNickname = nextNickname.value;
-      changed = true;
-    }
-    const nextRole = mergeSubagentIdentityValue(existing.agentRole ?? null, identity.agentRole, mergeMode);
-    if (nextRole.changed) {
-      existing.agentRole = nextRole.value;
-      changed = true;
-    }
-    const nextThreadName = mergeSubagentIdentityValue(existing.threadName ?? null, identity.threadName, mergeMode);
-    if (nextThreadName.changed) {
-      existing.threadName = nextThreadName.value;
-      changed = true;
-    }
+    const changed = mergeIdentityFields(existing, identity, mergeMode);
 
     if (changed) {
       this.pendingSubagentIdentities.set(threadId, existing);
@@ -1337,7 +1305,7 @@ function isTerminalStatus(status: TurnStatus): boolean {
 }
 
 function cleanSummary(value: string): string {
-  return normalizeWhitespace(value).slice(0, 240);
+  return truncateText(normalizeWhitespace(value), 240);
 }
 
 function summarizeCommandOutput(text: string): { command: string; detail: string | null } {
@@ -1444,6 +1412,22 @@ function mergeSubagentIdentityValue(
   }
 
   return { value: nextValue, changed: true };
+}
+
+function mergeIdentityFields(
+  target: { agentNickname?: string | null; agentRole?: string | null; threadName?: string | null },
+  source: SubagentIdentityUpdate,
+  mergeMode: SubagentIdentityMergeMode
+): boolean {
+  let changed = false;
+  for (const key of ["agentNickname", "agentRole", "threadName"] as const) {
+    const result = mergeSubagentIdentityValue(target[key] ?? null, source[key], mergeMode);
+    if (result.changed) {
+      target[key] = result.value;
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 function computeDurationSec(startIso: string, endIso: string): number | null {

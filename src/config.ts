@@ -1,8 +1,9 @@
 import { readFile, writeFile } from "node:fs/promises";
-import { delimiter, join, resolve } from "node:path";
+import { delimiter } from "node:path";
 
 import type { BridgePaths } from "./paths.js";
 import { parseBooleanLike } from "./util/boolean.js";
+import { expandHomePath } from "./util/path.js";
 
 export interface BridgeConfig {
   telegramBotToken: string;
@@ -54,18 +55,6 @@ function parseEnvFile(content: string): Record<string, string> {
   return Object.fromEntries(entries);
 }
 
-function expandConfiguredPath(inputPath: string, homeDir: string): string {
-  if (inputPath === "~") {
-    return homeDir;
-  }
-
-  if (inputPath.startsWith("~/")) {
-    return join(homeDir, inputPath.slice(2));
-  }
-
-  return resolve(inputPath);
-}
-
 export function parseProjectScanRootsValue(value: string | undefined, homeDir: string): string[] {
   if (typeof value !== "string" || value.trim().length === 0) {
     return [];
@@ -75,7 +64,7 @@ export function parseProjectScanRootsValue(value: string | undefined, homeDir: s
   const roots: string[] = [];
 
   for (const entry of value.split(delimiter).map((part) => part.trim()).filter((part) => part.length > 0)) {
-    const resolved = expandConfiguredPath(entry, homeDir);
+    const resolved = expandHomePath(entry, homeDir);
     if (seen.has(resolved)) {
       continue;
     }

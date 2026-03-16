@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 
 import type { Logger } from "../logger.js";
 import type { BridgePaths } from "../paths.js";
-import { DEFAULT_RUNTIME_STATUS_FIELDS } from "../types.js";
+import { ALL_RUNTIME_STATUS_FIELDS, DEFAULT_RUNTIME_STATUS_FIELDS } from "../types.js";
 import type {
   AuthorizedUserRow,
   ChatBindingRow,
@@ -222,20 +222,7 @@ function parseRuntimeStatusFields(fieldsJson: string): RuntimeStatusField[] {
       return [...DEFAULT_RUNTIME_STATUS_FIELDS];
     }
 
-    const allowed = new Set<RuntimeStatusField>([
-      "session_name",
-      "project_name",
-      "project_path",
-      "model_reasoning",
-      "thread_id",
-      "turn_id",
-      "blocked_reason",
-      "current_step",
-      "last_token_usage",
-      "total_token_usage",
-      "context_window",
-      "final_answer_ready"
-    ]);
+    const allowed = new Set<RuntimeStatusField>(ALL_RUNTIME_STATUS_FIELDS);
     const fields = parsed.filter((field): field is RuntimeStatusField =>
       typeof field === "string" && allowed.has(field as RuntimeStatusField)
     );
@@ -1983,7 +1970,6 @@ export class BridgeStateStore {
   setRuntimeCardPreferences(fields: RuntimeStatusField[]): RuntimeCardPreferencesRow {
     const updatedAt = nowIso();
     const uniqueFields = [...new Set(fields)];
-    const sanitizedFields = uniqueFields;
 
     this.db
       .prepare(
@@ -1996,11 +1982,11 @@ export class BridgeStateStore {
           VALUES ('global', ?, ?)
         `
       )
-      .run(JSON.stringify(sanitizedFields), updatedAt);
+      .run(JSON.stringify(uniqueFields), updatedAt);
 
     return {
       key: "global",
-      fields: sanitizedFields,
+      fields: uniqueFields,
       updatedAt
     };
   }
