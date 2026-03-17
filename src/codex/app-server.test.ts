@@ -41,7 +41,16 @@ test("buildTurnStartParams includes collaboration mode when requested", () => {
       threadId: "thread-1",
       cwd: "/tmp/project",
       text: "plan the work",
-      collaborationMode: { mode: "plan" }
+      model: "gpt-5",
+      effort: "medium",
+      collaborationMode: {
+        mode: "plan",
+        settings: {
+          model: "gpt-5",
+          developerInstructions: null,
+          reasoningEffort: "medium"
+        }
+      }
     } as any),
     {
       threadId: "thread-1",
@@ -49,7 +58,16 @@ test("buildTurnStartParams includes collaboration mode when requested", () => {
       input: [{ type: "text", text: "plan the work" }],
       approvalPolicy: "never",
       sandboxPolicy: { type: "dangerFullAccess" },
-      collaborationMode: { mode: "plan" }
+      model: "gpt-5",
+      effort: "medium",
+      collaborationMode: {
+        mode: "plan",
+        settings: {
+          model: "gpt-5",
+          developer_instructions: null,
+          reasoning_effort: "medium"
+        }
+      }
     }
   );
 });

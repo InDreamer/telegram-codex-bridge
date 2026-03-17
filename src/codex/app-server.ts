@@ -58,6 +58,11 @@ interface TurnStartParams {
   approvalPolicy: "never";
   collaborationMode?: {
     mode: "plan";
+    settings: {
+      model: string;
+      developer_instructions?: string | null;
+      reasoning_effort?: ReasoningEffort | null;
+    };
   };
   sandboxPolicy: {
     type: "dangerFullAccess";
@@ -348,6 +353,11 @@ export function buildTurnStartParams(options: {
   effort?: ReasoningEffort;
   collaborationMode?: {
     mode: "plan";
+    settings: {
+      model: string;
+      developerInstructions?: string | null;
+      reasoningEffort?: ReasoningEffort | null;
+    };
   };
 }): TurnStartParams {
   const input = options.input ?? (options.text ? [{ type: "text", text: options.text }] : []);
@@ -355,7 +365,27 @@ export function buildTurnStartParams(options: {
     threadId: options.threadId,
     cwd: options.cwd,
     approvalPolicy: "never",
-    ...(options.collaborationMode ? { collaborationMode: options.collaborationMode } : {}),
+    ...(options.collaborationMode
+      ? {
+          collaborationMode: {
+            mode: options.collaborationMode.mode,
+            settings: {
+              model: options.collaborationMode.settings.model,
+              ...(options.collaborationMode.settings.developerInstructions !== undefined
+                ? {
+                    developer_instructions:
+                      options.collaborationMode.settings.developerInstructions
+                  }
+                : {}),
+              ...(options.collaborationMode.settings.reasoningEffort !== undefined
+                ? {
+                    reasoning_effort: options.collaborationMode.settings.reasoningEffort
+                  }
+                : {})
+            }
+          }
+        }
+      : {}),
     sandboxPolicy: { type: "dangerFullAccess" },
     input,
     ...(options.model ? { model: options.model } : {}),
@@ -626,6 +656,11 @@ export class CodexAppServerClient {
     effort?: ReasoningEffort;
     collaborationMode?: {
       mode: "plan";
+      settings: {
+        model: string;
+        developerInstructions?: string | null;
+        reasoningEffort?: ReasoningEffort | null;
+      };
     };
   }): Promise<TurnStartResult> {
     return await this.request<TurnStartResult>("turn/start", buildTurnStartParams(options));

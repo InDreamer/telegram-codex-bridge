@@ -1645,6 +1645,75 @@ test("status card accumulates fragmented command output before rendering command
   }
 });
 
+test("turn event processed logs truncate oversized activity snapshots", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string }> = [];
+  const edited: Array<{ messageId: number; text: string }> = [];
+  const { logger, info } = createCapturingLogger();
+  let nextMessageId = 660;
+
+  try {
+    const session = authorizeChatWithSession(store, "chat-1");
+    (service as any).logger = logger;
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ messageId, text });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) => {
+        edited.push({ messageId, text });
+        return createFakeTelegramMessage(messageId, text);
+      }
+    };
+
+    installRunningAppServer(service, "thread-log-truncation", "turn-log-truncation");
+
+    await withMockedNow("2026-03-10T10:00:00.000Z", async () => {
+      await (service as any).startRealTurn("chat-1", session, "Inspect bridge logs");
+    });
+    await withMockedNow("2026-03-10T10:00:03.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/started", {
+        threadId: "thread-log-truncation",
+        turnId: "turn-log-truncation"
+      });
+    });
+
+    const longCommand = `rg ${"bridge.log ".repeat(40)}`.trim();
+    await withMockedNow("2026-03-10T10:00:06.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/started", {
+        threadId: "thread-log-truncation",
+        turnId: "turn-log-truncation",
+        item: { id: "cmd-1", type: "commandExecution", title: longCommand }
+      });
+    });
+
+    await withMockedNow("2026-03-10T10:00:09.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/commandExecution/outputDelta", {
+        threadId: "thread-log-truncation",
+        turnId: "turn-log-truncation",
+        itemId: "cmd-1",
+        delta: `$ ${longCommand}\n${"x".repeat(600)}`
+      });
+    });
+
+    const turnEventLogs = info.filter((entry) => entry.message === "turn event processed");
+    const latestTurnEvent = turnEventLogs.at(-1);
+    assert.ok(latestTurnEvent?.meta);
+
+    const after = (latestTurnEvent.meta as { after: Record<string, unknown> }).after;
+    assert.equal(typeof after.activeItemLabel, "string");
+    assert.equal(typeof after.lastHighValueTitle, "string");
+    assert.equal(typeof after.latestProgress, "string");
+    assert.ok((after.activeItemLabel as string).length <= 163);
+    assert.ok((after.lastHighValueTitle as string).length <= 163);
+    assert.ok((after.latestProgress as string).length <= 163);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("status card updates only when completed commentary arrives", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ messageId: number; text: string }> = [];
@@ -3646,7 +3715,7 @@ test("plan command toggles the next-turn mode without affecting a running turn",
   }
 });
 
-test("startRealTurn sends collaborationMode when the active session uses plan mode", async () => {
+test("startRealTurn resolves a default model for collaborationMode when the active session uses plan mode", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const startTurnCalls: unknown[] = [];
 
@@ -3657,6 +3726,24 @@ test("startRealTurn sends collaborationMode when the active session uses plan mo
     (service as any).appServer = {
       isRunning: true,
       startThread: async () => ({ thread: { id: "thread-plan-mode" } }),
+      listModels: async () => ({
+        data: [
+          {
+            id: "gpt-5",
+            model: "gpt-5",
+            displayName: "GPT-5",
+            isDefault: true,
+            hidden: false,
+            description: "default",
+            defaultReasoningEffort: "medium",
+            supportedReasoningEfforts: [
+              { reasoningEffort: "minimal", description: "minimal" },
+              { reasoningEffort: "medium", description: "medium" }
+            ]
+          }
+        ],
+        nextCursor: null
+      }),
       startTurn: async (payload: unknown) => {
         startTurnCalls.push(payload);
         return { turn: { id: "turn-plan-mode", status: "inProgress" } };
@@ -3674,8 +3761,62 @@ test("startRealTurn sends collaborationMode when the active session uses plan mo
       threadId: "thread-plan-mode",
       cwd: "/tmp/project-one",
       text: "Plan the rollout",
-      collaborationMode: { mode: "plan" }
+      collaborationMode: {
+        mode: "plan",
+        settings: {
+          model: "gpt-5",
+          developerInstructions: null,
+          reasoningEffort: null
+        }
+      }
     }]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("startRealTurn recreates a missing remote thread before starting the turn", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const resumeThreadCalls: string[] = [];
+  const startThreadCalls: unknown[] = [];
+  const startTurnCalls: unknown[] = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.updateSessionThreadId(session.sessionId, "thread-missing");
+
+    (service as any).appServer = {
+      isRunning: true,
+      resumeThread: async (threadId: string) => {
+        resumeThreadCalls.push(threadId);
+        throw new Error(`no rollout found for thread id ${threadId}`);
+      },
+      startThread: async (payload: unknown) => {
+        startThreadCalls.push(payload);
+        return { thread: { id: "thread-recreated" } };
+      },
+      startTurn: async (payload: unknown) => {
+        startTurnCalls.push(payload);
+        return { turn: { id: "turn-recreated", status: "inProgress" } };
+      }
+    };
+
+    await (service as any).startRealTurn(
+      "1",
+      store.getSessionById(session.sessionId) ?? session,
+      "Retry after missing thread"
+    );
+
+    assert.deepEqual(resumeThreadCalls, ["thread-missing"]);
+    assert.deepEqual(startThreadCalls, [{
+      cwd: "/tmp/project-one"
+    }]);
+    assert.deepEqual(startTurnCalls, [{
+      threadId: "thread-recreated",
+      cwd: "/tmp/project-one",
+      text: "Retry after missing thread"
+    }]);
+    assert.equal(store.getSessionById(session.sessionId)?.threadId, "thread-recreated");
   } finally {
     await cleanup();
   }

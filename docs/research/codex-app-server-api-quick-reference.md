@@ -240,6 +240,7 @@ Handshake order:
   - `turn`
 - Gotchas:
   - `input` is an array of `UserInput`
+  - when using experimental `collaborationMode`, the current schema also requires `collaborationMode.settings.model`
   - current `UserInput` union includes at least:
   - `text`
   - `image`

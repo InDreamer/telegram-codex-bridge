@@ -309,6 +309,70 @@ test("probeReadiness fails hard when voice input is enabled without any usable t
   }
 });
 
+test("probeReadiness enables experimentalApi even when voice input is disabled", async () => {
+  const { paths, store, cleanup } = await createReadinessContext();
+  const experimentalFlags: boolean[] = [];
+
+  try {
+    const result = await probeReadiness({
+      config: {
+        ...testConfig,
+        voiceInputEnabled: false
+      },
+      store,
+      paths,
+      logger: testLogger,
+      persist: false,
+      deps: {
+        nodeVersion: process.version,
+        detectServiceManager: async () => ({
+          manager: "none",
+          health: "warning",
+          issues: []
+        }),
+        commandExists: async () => true,
+        runCommand: async (_command: string, args: string[]) => {
+          if (args[0] === "--version") {
+            return { exitCode: 0, stdout: "codex-cli 0.114.0", stderr: "" };
+          }
+          if (args[0] === "login") {
+            return { exitCode: 0, stdout: "Logged in", stderr: "" };
+          }
+          throw new Error(`unexpected command: ${args.join(" ")}`);
+        },
+        validateTelegramToken: async () => ({
+          ok: true,
+          botId: "1",
+          username: "bridge_bot"
+        }),
+        createAppServer: (options: {
+          codexBin: string;
+          appServerLogPath: string;
+          logger: Logger;
+          experimentalApi: boolean;
+        }) => {
+          experimentalFlags.push(options.experimentalApi);
+          return {
+            pid: 123,
+            initializeAndProbe: async () => {},
+            stop: async () => {}
+          };
+        },
+        evaluateCapabilities: async () => ({
+          ok: true,
+          source: "cache",
+          issues: []
+        })
+      }
+    } as any);
+
+    assert.equal(result.snapshot.state, "awaiting_authorization");
+    assert.deepEqual(experimentalFlags, [true]);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("probeReadiness stops paginating model pages once realtime voice support is confirmed", async () => {
   const { paths, store, cleanup } = await createReadinessContext();
 

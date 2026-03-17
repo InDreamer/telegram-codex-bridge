@@ -4058,14 +4058,13 @@ export class BridgeService {
     try {
       await this.ensureAppServerAvailable();
       const threadId = await this.ensureSessionThread(session);
-      const turn = await this.appServer?.startTurn({
-        threadId,
-        cwd: session.projectPath,
-        input,
-        ...(session.planMode ? { collaborationMode: { mode: "plan" as const } } : {}),
-        ...(session.selectedModel ? { model: session.selectedModel } : {}),
-        ...(session.selectedReasoningEffort ? { effort: session.selectedReasoningEffort } : {})
-      });
+      const turn = await this.appServer?.startTurn(
+        await this.buildTurnStartRequest(session, {
+          threadId,
+          cwd: session.projectPath,
+          input
+        })
+      );
       if (!turn) {
         throw new Error("turn start returned no result");
       }
@@ -4159,14 +4158,13 @@ export class BridgeService {
     try {
       await this.ensureAppServerAvailable();
       const threadId = await this.ensureSessionThread(session);
-      const turn = await this.appServer?.startTurn({
-        threadId,
-        cwd: session.projectPath,
-        text,
-        ...(session.planMode ? { collaborationMode: { mode: "plan" as const } } : {}),
-        ...(session.selectedModel ? { model: session.selectedModel } : {}),
-        ...(session.selectedReasoningEffort ? { effort: session.selectedReasoningEffort } : {})
-      });
+      const turn = await this.appServer?.startTurn(
+        await this.buildTurnStartRequest(session, {
+          threadId,
+          cwd: session.projectPath,
+          text
+        })
+      );
 
       if (!turn) {
         throw new Error("turn start returned no result");
@@ -4192,6 +4190,58 @@ export class BridgeService {
       });
       await this.safeSendMessage(chatId, "Codex 服务暂时不可用，请稍后重试。");
     }
+  }
+
+  private async buildTurnStartRequest(
+    session: SessionRow,
+    request: {
+      threadId: string;
+      cwd: string;
+      text?: string;
+      input?: UserInput[];
+    }
+  ): Promise<Parameters<CodexAppServerClient["startTurn"]>[0]> {
+    const baseRequest: Parameters<CodexAppServerClient["startTurn"]>[0] = {
+      threadId: request.threadId,
+      cwd: request.cwd,
+      ...(request.text !== undefined ? { text: request.text } : {}),
+      ...(request.input !== undefined ? { input: request.input } : {})
+    };
+
+    if (session.planMode) {
+      const model = await this.resolvePlanModeModel(session);
+      return {
+        ...baseRequest,
+        collaborationMode: {
+          mode: "plan",
+          settings: {
+            model,
+            developerInstructions: null,
+            reasoningEffort: session.selectedReasoningEffort ?? null
+          }
+        }
+      };
+    }
+
+    return {
+      ...baseRequest,
+      ...(session.selectedModel ? { model: session.selectedModel } : {}),
+      ...(session.selectedReasoningEffort ? { effort: session.selectedReasoningEffort } : {})
+    };
+  }
+
+  private async resolvePlanModeModel(session: SessionRow): Promise<string> {
+    if (session.selectedModel) {
+      return session.selectedModel;
+    }
+
+    const models = await this.fetchAllModels();
+    const model = models.find((entry) => entry.isDefault) ?? models[0];
+    if (!model) {
+      throw new Error("model list returned no models");
+    }
+
+    return model.id;
   }
 
   private async beginActiveTurn(
@@ -4264,8 +4314,25 @@ export class BridgeService {
       return started.thread.id;
     }
 
-    await this.appServer.resumeThread(session.threadId);
-    return session.threadId;
+    try {
+      await this.appServer.resumeThread(session.threadId);
+      return session.threadId;
+    } catch (error) {
+      if (!isMissingRemoteThreadError(error)) {
+        throw error;
+      }
+
+      await this.logger.warn("session thread missing remotely; recreating", {
+        sessionId: session.sessionId,
+        threadId: session.threadId
+      });
+      const started = await this.appServer.startThread({
+        cwd: session.projectPath,
+        ...(session.selectedModel ? { model: session.selectedModel } : {})
+      });
+      this.store.updateSessionThreadId(session.sessionId, started.thread.id);
+      return started.thread.id;
+    }
   }
 
   private attachAppServerListeners(): void {
@@ -5107,7 +5174,7 @@ export class BridgeService {
         this.bootstrapLogger,
         5000,
         {
-          experimentalApi: this.config.voiceInputEnabled
+          experimentalApi: true
         }
       );
       await client.initializeAndProbe();
@@ -5158,7 +5225,7 @@ export class BridgeService {
       this.bootstrapLogger,
       5000,
       {
-        experimentalApi: this.config.voiceInputEnabled
+        experimentalApi: true
       }
     );
     await client.initializeAndProbe();
@@ -6346,15 +6413,15 @@ function summarizeActivityStatus(status: ActivityStatus): Record<string, unknown
     threadRuntimeState: status.threadRuntimeState,
     activeItemType: status.activeItemType,
     activeItemId: status.activeItemId,
-    activeItemLabel: status.activeItemLabel,
+    activeItemLabel: summarizeTextPreview(status.activeItemLabel, 160) || null,
     lastActivityAt: status.lastActivityAt,
     currentItemStartedAt: status.currentItemStartedAt,
     currentItemDurationSec: status.currentItemDurationSec,
     lastHighValueEventType: status.lastHighValueEventType,
-    lastHighValueTitle: status.lastHighValueTitle,
-    lastHighValueDetail: status.lastHighValueDetail,
-    latestProgress: status.latestProgress,
-    recentStatusUpdates: status.recentStatusUpdates,
+    lastHighValueTitle: summarizeTextPreview(status.lastHighValueTitle, 160) || null,
+    lastHighValueDetail: summarizeTextPreview(status.lastHighValueDetail, 160) || null,
+    latestProgress: summarizeTextPreview(status.latestProgress, 160) || null,
+    recentStatusUpdates: summarizeActivityStatusList(status.recentStatusUpdates),
     blockedReason: status.threadBlockedReason,
     finalMessageAvailable: status.finalMessageAvailable,
     inspectAvailable: status.inspectAvailable,
@@ -6363,7 +6430,11 @@ function summarizeActivityStatus(status: ActivityStatus): Record<string, unknown
   };
 }
 
-function summarizeTextPreview(text: string, limit = 160): string {
+function summarizeActivityStatusList(values: string[]): string[] {
+  return values.map((value) => summarizeTextPreview(value, 160));
+}
+
+function summarizeTextPreview(text: string | null | undefined, limit = 160): string {
   return normalizeAndTruncate(text, limit, "...") ?? "";
 }
 
@@ -7322,6 +7393,14 @@ function formatPendingInteractionTerminalReason(reason: string | null | undefine
     default:
       return reason ? "这个交互无法继续。" : null;
   }
+}
+
+function isMissingRemoteThreadError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return /no rollout found for thread id/i.test(error.message);
 }
 
 function isPendingInteractionActionable(row: PendingInteractionRow): boolean {

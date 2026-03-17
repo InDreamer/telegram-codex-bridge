@@ -238,6 +238,56 @@ test("accumulates fragmented command output before summarizing command progress"
   assert.equal(inspect.recentCommandSummaries.at(-1), "pnpm test -> 26/26 tests passed");
 });
 
+test("long-running command output keeps progress stable without retaining the full output body", () => {
+  const tracker = new ActivityTracker({
+    threadId: "thread-buffer-cap",
+    turnId: "turn-buffer-cap"
+  });
+
+  tracker.apply(
+    classifyNotification("item/started", {
+      threadId: "thread-buffer-cap",
+      turnId: "turn-buffer-cap",
+      item: {
+        id: "cmd-buffer-cap",
+        type: "commandExecution",
+        title: "rg bridge.log"
+      }
+    }),
+    "2026-03-10T10:06:00.000Z"
+  );
+
+  tracker.apply(
+    classifyNotification("item/commandExecution/outputDelta", {
+      threadId: "thread-buffer-cap",
+      turnId: "turn-buffer-cap",
+      itemId: "cmd-buffer-cap",
+      delta: `$ rg bridge.log\n${"x".repeat(40000)}`
+    }),
+    "2026-03-10T10:06:00.100Z"
+  );
+
+  const bufferedAfterFirstChunk = (tracker as any).commandOutputBuffers.get("thread-buffer-cap:cmd-buffer-cap");
+  assert.equal(bufferedAfterFirstChunk.firstNonEmptyLine, "$ rg bridge.log");
+  assert.equal(typeof bufferedAfterFirstChunk.lastNonEmptyLine, "string");
+  assert.equal(typeof bufferedAfterFirstChunk.trailingFragment, "string");
+  assert.ok(bufferedAfterFirstChunk.lastNonEmptyLine.length <= 1024);
+  assert.ok(bufferedAfterFirstChunk.trailingFragment.length <= 1024);
+
+  tracker.apply(
+    classifyNotification("item/commandExecution/outputDelta", {
+      threadId: "thread-buffer-cap",
+      turnId: "turn-buffer-cap",
+      itemId: "cmd-buffer-cap",
+      delta: "\nfinal line"
+    }),
+    "2026-03-10T10:06:00.200Z"
+  );
+
+  const status = tracker.getStatus("2026-03-10T10:06:01.000Z");
+  assert.equal(status.latestProgress, "rg bridge.log -> final line");
+});
+
 test("tracks token usage, diff, hook summaries, and runtime notices without leaking raw noise", () => {
   const tracker = new ActivityTracker({
     threadId: "thread-runtime",

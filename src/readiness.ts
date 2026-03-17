@@ -560,7 +560,7 @@ export async function probeReadiness(options: {
       codexBin: config.codexBin,
       appServerLogPath: paths.appServerLogPath,
       logger,
-      experimentalApi: config.voiceInputEnabled
+      experimentalApi: true
     });
     await appServer.initializeAndProbe();
     details.appServerAvailable = true;

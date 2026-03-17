@@ -21,6 +21,7 @@ const DEFAULT_TIMELINE_LIMIT = 100;
 const SUMMARY_LIMIT = 5;
 const STATUS_UPDATE_LIMIT = 3;
 const SUBAGENT_LABEL_DISPLAY_LIMIT = 48;
+const COMMAND_OUTPUT_LINE_SNAPSHOT_LIMIT = 1024;
 
 interface ActivityTrackerOptions {
   threadId: string;
@@ -62,6 +63,12 @@ interface TrackedSubagent {
   lastActivityAt: string | null;
 }
 
+interface CommandOutputAccumulator {
+  firstNonEmptyLine: string | null;
+  lastNonEmptyLine: string | null;
+  trailingFragment: string;
+}
+
 interface SubagentIdentityUpdate {
   agentNickname?: string | null;
   agentRole?: string | null;
@@ -93,7 +100,7 @@ export class ActivityTracker {
   private readonly pendingSubagentIdentities = new Map<string, SubagentIdentityUpdate>();
   private readonly subagentIdentityEvents: SubagentIdentityEvent[] = [];
   private readonly completedCommentary: string[] = [];
-  private readonly commandOutputBuffers = new Map<string, string>();
+  private readonly commandOutputBuffers = new Map<string, CommandOutputAccumulator>();
   private readonly state: ActivityTrackerState;
   private readonly streamBlocks: StreamBlock[] = [];
   private turnStartedAt: string | null = null;
@@ -259,7 +266,10 @@ export class ActivityTracker {
         this.state.inspectAvailable = true;
         this.state.lastActivityAt = receivedAt;
         if (activeItemType === "commandExecution" && notification.itemId) {
-          this.commandOutputBuffers.set(buildCommandBufferKey(this.options.threadId, notification.itemId), "");
+          this.commandOutputBuffers.set(
+            buildCommandBufferKey(this.options.threadId, notification.itemId),
+            createCommandOutputAccumulator()
+          );
         }
 
         if (!this.state.threadBlockedReason && !isTerminalStatus(this.state.turnStatus)) {
@@ -739,7 +749,10 @@ export class ActivityTracker {
         subagent.activeItemLabel = notification.label ?? buildItemLabel(activeItemType, notification.itemType);
         subagent.lastActivityAt = receivedAt;
         if (activeItemType === "commandExecution" && notification.itemId) {
-          this.commandOutputBuffers.set(buildCommandBufferKey(threadId, notification.itemId), "");
+          this.commandOutputBuffers.set(
+            buildCommandBufferKey(threadId, notification.itemId),
+            createCommandOutputAccumulator()
+          );
         }
         return;
       }
@@ -1120,10 +1133,70 @@ export class ActivityTracker {
   }
 
   private appendCommandOutput(itemId: string, text: string): string {
-    const combined = `${this.commandOutputBuffers.get(itemId) ?? ""}${text}`;
-    this.commandOutputBuffers.set(itemId, combined);
-    return combined;
+    const next = appendCommandOutputChunk(
+      this.commandOutputBuffers.get(itemId) ?? createCommandOutputAccumulator(),
+      text
+    );
+    this.commandOutputBuffers.set(itemId, next);
+    return summarizeCommandOutputAccumulator(next);
   }
+}
+
+function createCommandOutputAccumulator(): CommandOutputAccumulator {
+  return {
+    firstNonEmptyLine: null,
+    lastNonEmptyLine: null,
+    trailingFragment: ""
+  };
+}
+
+function appendCommandOutputChunk(
+  accumulator: CommandOutputAccumulator,
+  text: string
+): CommandOutputAccumulator {
+  const combined = `${accumulator.trailingFragment}${text}`;
+  const endsWithNewline = /\r?\n$/u.test(combined);
+  const parts = combined.split(/\r?\n/u);
+  const rawTrailingFragment = endsWithNewline ? "" : (parts.pop() ?? "");
+  const trailingFragment = truncateText(rawTrailingFragment, COMMAND_OUTPUT_LINE_SNAPSHOT_LIMIT, "");
+  const next: CommandOutputAccumulator = {
+    firstNonEmptyLine: accumulator.firstNonEmptyLine,
+    lastNonEmptyLine: accumulator.lastNonEmptyLine,
+    trailingFragment
+  };
+
+  for (const part of parts) {
+    const normalized = normalizeNullableText(truncateText(part, COMMAND_OUTPUT_LINE_SNAPSHOT_LIMIT, ""));
+    if (!normalized) {
+      continue;
+    }
+    if (!next.firstNonEmptyLine) {
+      next.firstNonEmptyLine = normalized;
+    }
+    next.lastNonEmptyLine = normalized;
+  }
+
+  const trailingNormalized = normalizeNullableText(trailingFragment);
+  if (trailingNormalized) {
+    if (!next.firstNonEmptyLine) {
+      next.firstNonEmptyLine = trailingNormalized;
+    }
+    next.lastNonEmptyLine = trailingNormalized;
+  }
+
+  return next;
+}
+
+function summarizeCommandOutputAccumulator(accumulator: CommandOutputAccumulator): string {
+  if (!accumulator.firstNonEmptyLine) {
+    return "";
+  }
+
+  if (!accumulator.lastNonEmptyLine || accumulator.lastNonEmptyLine === accumulator.firstNonEmptyLine) {
+    return accumulator.firstNonEmptyLine;
+  }
+
+  return `${accumulator.firstNonEmptyLine}\n${accumulator.lastNonEmptyLine}`;
 }
 
 function summarizeUnifiedDiff(diff: string | null): string | null {
