@@ -14,10 +14,11 @@ import type {
   TokenUsageSnapshot,
   TurnStatus
 } from "./types.js";
-import { normalizeWhitespace, truncateText, normalizeNullableText } from "../util/text.js";
+import { normalizeWhitespace, truncateText, normalizeAndTruncate, normalizeNullableText } from "../util/text.js";
 import { isBlockedProgress, BLOCKED_PROGRESS_APPROVAL, BLOCKED_PROGRESS_USER_INPUT } from "../util/blocked-progress.js";
 
 const DEFAULT_TIMELINE_LIMIT = 100;
+const STREAM_BLOCK_LIMIT = 200;
 const SUMMARY_LIMIT = 5;
 const STATUS_UPDATE_LIMIT = 3;
 const SUBAGENT_LABEL_DISPLAY_LIMIT = 48;
@@ -152,13 +153,11 @@ export class ActivityTracker {
 
       case "thread_token_usage_updated":
         this.tokenUsage = notification.tokenUsage;
-        this.state.inspectAvailable = true;
-        this.state.lastActivityAt = receivedAt;
+        this.markActivity(receivedAt);
         return;
 
       case "thread_compacted":
-        this.state.inspectAvailable = true;
-        this.state.lastActivityAt = receivedAt;
+        this.markActivity(receivedAt);
         this.pushUniqueSummary(this.recentNoticeSummaries, "上下文已压缩");
         this.pushTransition(receivedAt, "thread", "thread compacted");
         return;
@@ -210,8 +209,7 @@ export class ActivityTracker {
         const summary = summarizeUnifiedDiff(notification.diff);
         if (summary) {
           this.latestDiffSummary = summary;
-          this.state.inspectAvailable = true;
-          this.state.lastActivityAt = receivedAt;
+          this.markActivity(receivedAt);
         }
         return;
       }
@@ -264,8 +262,7 @@ export class ActivityTracker {
         this.state.activeItemLabel = notification.label ?? buildItemLabel(activeItemType, notification.itemType);
         this.state.currentItemStartedAt = receivedAt;
         this.state.latestProgress = null;
-        this.state.inspectAvailable = true;
-        this.state.lastActivityAt = receivedAt;
+        this.markActivity(receivedAt);
         if (activeItemType === "commandExecution" && notification.itemId) {
           this.commandOutputBuffers.set(
             buildCommandBufferKey(this.options.threadId, notification.itemId),
@@ -301,8 +298,7 @@ export class ActivityTracker {
           this.state.latestProgress = completedItemType === "agentMessage" ? null : `${completedLabel} completed`;
         }
 
-        this.state.inspectAvailable = true;
-        this.state.lastActivityAt = receivedAt;
+        this.markActivity(receivedAt);
         if (!this.state.threadBlockedReason && !isTerminalStatus(this.state.turnStatus)) {
           this.state.turnStatus = "running";
         }
@@ -316,10 +312,7 @@ export class ActivityTracker {
           }
         }
         if (completedItemType === "planning" && notification.itemText) {
-          const lines = notification.itemText
-            .split(/\r?\n/u)
-            .map((line) => cleanSummary(line))
-            .filter((line) => line.length > 0);
+          const lines = extractPlanDeltaEntries(notification.itemText);
           if (lines.length > 0) {
             this.replaceSummaryList(this.proposedPlanSnapshot, lines);
           }
@@ -336,8 +329,7 @@ export class ActivityTracker {
       case "progress":
         if (notification.message) {
           this.state.latestProgress = notification.message;
-          this.state.inspectAvailable = true;
-          this.state.lastActivityAt = receivedAt;
+          this.markActivity(receivedAt);
           if (!this.state.threadBlockedReason && !isTerminalStatus(this.state.turnStatus)) {
             this.state.turnStatus = "running";
           }
@@ -364,8 +356,7 @@ export class ActivityTracker {
         const summary = summarizeHookRun(notification.run, notification.kind === "hook_completed");
         if (summary) {
           this.pushUniqueSummary(this.recentHookSummaries, summary);
-          this.state.inspectAvailable = true;
-          this.state.lastActivityAt = receivedAt;
+          this.markActivity(receivedAt);
           this.pushTransition(receivedAt, "progress", summary);
         }
         for (const entry of notification.run.entries) {
@@ -381,8 +372,7 @@ export class ActivityTracker {
         const summary = summarizeTerminalInteraction(notification.stdin);
         this.terminalInteractionSummary = summary;
         this.state.latestProgress = summary;
-        this.state.inspectAvailable = true;
-        this.state.lastActivityAt = receivedAt;
+        this.markActivity(receivedAt);
         this.pushUniqueSummary(this.recentNoticeSummaries, summary);
         this.pushTransition(receivedAt, "progress", summary);
         this.pushStatusUpdate(summary);
@@ -392,29 +382,18 @@ export class ActivityTracker {
       case "server_request_resolved":
         if (notification.requestId) {
           const summary = `交互已完成：${notification.requestId}`;
-          this.state.inspectAvailable = true;
-          this.state.lastActivityAt = receivedAt;
+          this.markActivity(receivedAt);
           this.pushUniqueSummary(this.recentNoticeSummaries, summary);
           this.pushTransition(receivedAt, "progress", summary);
         }
         return;
 
-      case "config_warning": {
-        const summary = summarizeNotice(notification.summary, notification.detail, "配置警告");
-        if (summary) {
-          this.state.inspectAvailable = true;
-          this.state.lastActivityAt = receivedAt;
-          this.pushUniqueSummary(this.recentNoticeSummaries, summary);
-          this.pushTransition(receivedAt, "progress", summary);
-        }
-        return;
-      }
-
+      case "config_warning":
       case "deprecation_notice": {
-        const summary = summarizeNotice(notification.summary, notification.detail, "弃用提示");
+        const prefix = notification.kind === "config_warning" ? "配置警告" : "弃用提示";
+        const summary = summarizeNotice(notification.summary, notification.detail, prefix);
         if (summary) {
-          this.state.inspectAvailable = true;
-          this.state.lastActivityAt = receivedAt;
+          this.markActivity(receivedAt);
           this.pushUniqueSummary(this.recentNoticeSummaries, summary);
           this.pushTransition(receivedAt, "progress", summary);
         }
@@ -424,8 +403,7 @@ export class ActivityTracker {
       case "model_rerouted": {
         const summary = summarizeModelReroute(notification.fromModel, notification.toModel, notification.reason);
         if (summary) {
-          this.state.inspectAvailable = true;
-          this.state.lastActivityAt = receivedAt;
+          this.markActivity(receivedAt);
           this.pushUniqueSummary(this.recentNoticeSummaries, summary);
           this.pushTransition(receivedAt, "progress", summary);
           this.pushStatusUpdate(summary);
@@ -434,8 +412,7 @@ export class ActivityTracker {
       }
 
       case "skills_changed":
-        this.state.inspectAvailable = true;
-        this.state.lastActivityAt = receivedAt;
+        this.markActivity(receivedAt);
         this.pushUniqueSummary(this.recentNoticeSummaries, "技能列表已刷新");
         this.pushTransition(receivedAt, "progress", "skills changed");
         return;
@@ -471,8 +448,7 @@ export class ActivityTracker {
 
       case "plan_delta":
         if (notification.message) {
-          this.state.inspectAvailable = true;
-          this.state.lastActivityAt = receivedAt;
+          this.markActivity(receivedAt);
           this.planDeltaBuffer += notification.message;
           const entries = extractPlanDeltaEntries(this.planDeltaBuffer);
           if (entries.length === 0) {
@@ -493,8 +469,7 @@ export class ActivityTracker {
             this.state.activeItemType === "commandExecution" ? this.state.activeItemLabel : null
           );
           const progressSummary = summary.detail ? `${commandLabel} -> ${summary.detail}` : commandLabel;
-          this.state.inspectAvailable = true;
-          this.state.lastActivityAt = receivedAt;
+          this.markActivity(receivedAt);
           this.state.latestProgress = progressSummary;
           this.pushTransition(receivedAt, "progress", progressSummary);
           this.pushUniqueSummary(
@@ -514,8 +489,7 @@ export class ActivityTracker {
       case "file_change_output":
         if (notification.text) {
           const summary = cleanSummary(notification.text);
-          this.state.inspectAvailable = true;
-          this.state.lastActivityAt = receivedAt;
+          this.markActivity(receivedAt);
           this.state.latestProgress = summary;
           this.pushTransition(receivedAt, "progress", summary);
           this.pushUniqueSummary(this.recentFileChangeSummaries, summary);
@@ -639,6 +613,9 @@ export class ActivityTracker {
 
   private pushStreamBlock(block: StreamBlock): void {
     this.streamBlocks.push(block);
+    if (this.streamBlocks.length > STREAM_BLOCK_LIMIT) {
+      this.streamBlocks.splice(0, this.streamBlocks.length - STREAM_BLOCK_LIMIT);
+    }
     if (block.kind !== "tool_summary") {
       this.lastStreamToolSummary = null;
     }
@@ -1100,6 +1077,11 @@ export class ActivityTracker {
     }
   }
 
+  private markActivity(receivedAt: string): void {
+    this.state.inspectAvailable = true;
+    this.state.lastActivityAt = receivedAt;
+  }
+
   private pushUniqueSummary(target: string[], summary: string): void {
     if (target.at(-1) === summary) {
       return;
@@ -1389,7 +1371,7 @@ function isTerminalStatus(status: TurnStatus): boolean {
 }
 
 function cleanSummary(value: string): string {
-  return truncateText(normalizeWhitespace(value), 240);
+  return normalizeAndTruncate(value, 240) ?? "";
 }
 
 function summarizeCommandOutput(text: string): { command: string; detail: string | null } {
