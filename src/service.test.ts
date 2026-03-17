@@ -1482,6 +1482,50 @@ test("startRealTurn sends an initial runtime status card immediately", async () 
   }
 });
 
+test("runtime status card renders optional fields on separate lines without a summary row", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ chatId: string; messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+
+  try {
+    const session = authorizeChatWithSession(store, "chat-1");
+    store.renameSession(session.sessionId, "Session Alpha");
+    store.setSessionSelectedModel(session.sessionId, "gpt-5");
+    store.setSessionPlanMode(session.sessionId, true);
+    store.setRuntimeCardPreferences(["model_reasoning", "plan_mode"] as any);
+
+    (service as any).api = {
+      sendMessage: async (chatId: string, text: string, _options?: any) => {
+        const messageId = 880;
+        sent.push({ chatId, messageId, text, parseMode: _options?.parseMode, replyMarkup: _options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) => {
+        return createFakeTelegramMessage(messageId, text);
+      }
+    };
+
+    installRunningAppServer(service, "thread-runtime-fields", "turn-runtime-fields");
+
+    await withMockedNow("2026-03-10T10:00:00.000Z", async () => {
+      await (service as any).startRealTurn(
+        "chat-1",
+        store.getSessionById(session.sessionId) ?? session,
+        "Do the work"
+      );
+    });
+
+    assert.equal(sent.length, 1);
+    assert.match(sent[0]?.text ?? "", /<b>Session:<\/b> Session Alpha/u);
+    assert.doesNotMatch(sent[0]?.text ?? "", /<b>Project:<\/b>/u);
+    assert.doesNotMatch(sent[0]?.text ?? "", /<b>概览:<\/b>/u);
+    assert.match(sent[0]?.text ?? "", /模型: gpt-5 \+ 默认/u);
+    assert.match(sent[0]?.text ?? "", /Plan mode: on/u);
+    assert.doesNotMatch(sent[0]?.text ?? "", /\|/u);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("status card refreshes when tool progress changes without commentary", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ messageId: number; text: string }> = [];
@@ -1751,7 +1795,6 @@ test("status card keeps commentary progress visible when structured thread statu
 
     const latest = edited.at(-1)?.text ?? "";
     assert.match(latest, /<b>State:<\/b> Blocked/u);
-    assert.match(latest, /<b>Blocked on:<\/b> approval/u);
     assert.match(latest, /<b>Progress:<\/b>\n先确认 Codex 当前运行阶段，再决定下一步。/u);
   } finally {
     await cleanup();
@@ -6682,6 +6725,7 @@ test("formatRuntimeStatusLineField uses cli token and context field semantics fo
   try {
     const session = authorizeNumericChatWithSession(store, "1");
     store.updateSessionThreadId(session.sessionId, "thread-cli-status");
+    store.setSessionPlanMode(session.sessionId, true);
 
     const persistedSession = store.getSessionById(session.sessionId);
     assert.ok(persistedSession);
@@ -6747,6 +6791,10 @@ test("formatRuntimeStatusLineField uses cli token and context field semantics fo
     assert.equal(
       (service as any).formatRuntimeStatusLineField("context-used", persistedSession, inspect, null, null),
       "context-used: 45% used"
+    );
+    assert.equal(
+      (service as any).formatRuntimeStatusLineField("plan_mode" as any, persistedSession, inspect, null, null),
+      "Plan mode: on"
     );
 
     const inspectWithoutTokenData = {

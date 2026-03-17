@@ -48,6 +48,8 @@ It should:
 - listen to the mixed runtime notification stream
 - reduce that stream into compact user-facing runtime surfaces
 - keep one status card for the running turn
+- keep only `Session`, `State`, and `Progress` as fixed runtime-card rows
+- render any operator-selected optional runtime fields as one row per field instead of a single pipe-delimited summary line
 - expose current plan state through a collapsed button on the status card rather than a separate plan card
 - project command activity into the status card rather than creating per-command messages
 - surface command activity on the status card only through the `Progress` section when a visible progress unit exists

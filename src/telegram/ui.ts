@@ -291,6 +291,7 @@ const RUNTIME_STATUS_FIELD_CODES: ReadonlyMap<RuntimeStatusField, string> = new 
   ["session_name", "sn"],
   ["project_name", "pn"],
   ["project_path", "pp"],
+  ["plan_mode", "pm"],
   ["model_reasoning", "mr"],
   ["thread_id", "th"],
   ["turn_id", "tu"],
@@ -1005,6 +1006,7 @@ export function buildRuntimeStatusCard(
   options: RuntimeCardContext & {
     state: string;
     statusLine?: string | null;
+    optionalFieldLines?: string[];
     progressText?: string | null;
     blockedReason?: string | null;
     planEntries?: string[];
@@ -1016,19 +1018,15 @@ export function buildRuntimeStatusCard(
   const lines: string[] = ["<b>Runtime Status</b>"];
   pushHtmlRuntimeCardContext(lines, options);
 
-  if (options.statusLine) {
-    lines.push(`<b>概览:</b> ${escapeHtml(options.statusLine)}`);
-  }
-
   lines.push(`<b>State:</b> ${escapeHtml(options.state)}`);
-
-  if (options.blockedReason) {
-    lines.push(`<b>Blocked on:</b> ${escapeHtml(options.blockedReason)}`);
-  }
 
   if (options.progressText) {
     lines.push("<b>Progress:</b>");
     lines.push(renderInlineMarkdown(truncateText(options.progressText, 240)));
+  }
+
+  for (const line of options.optionalFieldLines ?? []) {
+    lines.push(escapeHtml(line));
   }
 
   if (options.planExpanded && options.planEntries && options.planEntries.length > 0) {
@@ -1137,6 +1135,8 @@ export function buildRuntimeStatusFieldLabel(field: RuntimeStatusField): string 
       return "项目名";
     case "project_path":
       return "项目路径（旧）";
+    case "plan_mode":
+      return "Plan mode";
     case "model_reasoning":
       return "模型 + 强度（旧）";
     case "thread_id":
@@ -1243,7 +1243,7 @@ export function buildRuntimePreferencesMessage(options: {
 
   return {
     text: [
-      formatHtmlHeading("Runtime 状态行"),
+      formatHtmlHeading("Runtime 卡片字段"),
       "按按钮选择要显示的字段。",
       "选择顺序就是显示顺序；新选中的字段会追加到末尾。",
       formatHtmlField("Codex CLI：", buildRuntimeStatusFieldGroupSummary(SELECTABLE_CODEX_CLI_RUNTIME_STATUS_FIELDS)),
@@ -1388,6 +1388,9 @@ export function buildRuntimeErrorCard(
 ): string {
   const lines: string[] = [formatHtmlHeading("Error")];
   pushHtmlRuntimeCardContext(lines, options);
+  if (options.projectName && options.projectName !== options.sessionName) {
+    lines.push(formatHtmlField("Project:", options.projectName));
+  }
   lines.push(formatHtmlField("Title:", truncateText(options.title, 200)));
 
   if (options.detail) {
@@ -1876,10 +1879,6 @@ function formatRelativeTime(isoTime: string): string {
 function pushHtmlRuntimeCardContext(lines: string[], context: RuntimeCardContext): void {
   if (context.sessionName) {
     lines.push(formatHtmlField("Session:", context.sessionName));
-  }
-
-  if (context.projectName && context.projectName !== context.sessionName) {
-    lines.push(formatHtmlField("Project:", context.projectName));
   }
 }
 

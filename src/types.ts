@@ -43,6 +43,7 @@ export type RuntimeStatusField =
   | "session_name"
   | "project_name"
   | "project_path"
+  | "plan_mode"
   | "model_reasoning"
   | "thread_id"
   | "turn_id"
@@ -75,6 +76,7 @@ export const BRIDGE_EXTENSION_RUNTIME_STATUS_FIELDS: readonly RuntimeStatusField
   "session_name",
   "project_name",
   "project_path",
+  "plan_mode",
   "model_reasoning",
   "thread_id",
   "turn_id",

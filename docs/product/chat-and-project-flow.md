@@ -212,6 +212,20 @@ Responses:
 - success: `已收藏项目：{project_name}`
 - already pinned: `这个项目已经收藏。`
 
+### `/plan`
+
+Behavior:
+- toggles the active session between default mode and plan mode
+- persists the selected mode on the bridge session
+- does not change the current running turn in place; the new mode applies on the next `turn/start`
+
+Responses:
+- switched on while idle: `已为当前会话开启 Plan mode。下次任务开始时生效。`
+- switched off while idle: `已为当前会话关闭 Plan mode。下次任务开始时生效。`
+- switched on while running: `已为当前会话开启 Plan mode。当前任务不受影响，下次任务开始时生效。`
+- switched off while running: `已为当前会话关闭 Plan mode。当前任务不受影响，下次任务开始时生效。`
+- no active session: `当前没有活动会话。`
+
 ### `/model` and `/model <model_id>`
 
 Shows:
@@ -363,6 +377,7 @@ Shows:
 - current project path
 - session status
 - current `模型 + 思考强度`
+- current `plan mode:on|off`
 - bridge `session_id`
 - Codex `thread_id` when available, otherwise an explicit not-created-yet note
 - latest `turn_id` when available
@@ -417,13 +432,17 @@ Shows:
 
 ### `/runtime`
 
-Shows and edits the runtime status-line field selection.
+Shows and edits the optional runtime-card field selection.
 
 Rules:
+- runtime status cards always keep fixed `Session`, `State`, and `Progress` rows
+- `/runtime` controls only the additional optional rows under those fixed fields
+- selected optional fields render one field per line instead of a single pipe-delimited summary line
 - the picker separates `Codex CLI` fields from `Bridge Extensions`
 - `Codex CLI` fields use Codex CLI semantics when rendered in Telegram
 - bridge extensions remain available for bridge-specific operator needs
 - only CLI fields that the bridge can currently render truthfully are exposed in the picker
+- `Plan mode` is available as a bridge extension field
 - legacy bridge fields such as `project_path`, `model_reasoning`, and `thread_id` may still remain available as bridge extensions for compatibility, but they are not the preferred v4 CLI-aligned choices
 
 ## Callback Contract
@@ -477,6 +496,8 @@ Edit versus new message:
 While a turn is running:
 - keep one bridge-owned status card in the chat
 - current runtime-card titles are `Runtime Status` and `Error`
+- keep only `Session`, `State`, and `Progress` as fixed runtime-card rows
+- render any `/runtime`-selected optional fields as separate rows below those fixed fields
 - when plan state becomes available, expose it through a collapsed button on the status card
 - the collapsed button shows the current plan step summary and expands inline on demand
 - project `commandExecution` items into the status card instead of sending separate command cards

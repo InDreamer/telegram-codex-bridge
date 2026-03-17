@@ -429,10 +429,10 @@ test("buildRenameTargetPicker includes project alias clear action when needed", 
   assert.equal(rendered.replyMarkup.inline_keyboard[2]?.[0]?.text, "清除项目别名");
 });
 
-test("buildRuntimeStatusCard renders bold prefixes and markdown progress on a new line", () => {
+test("buildRuntimeStatusCard keeps only fixed runtime fields and renders progress on a new line", () => {
   const text = buildRuntimeStatusCard({
     sessionName: "ansi-escape",
-    projectName: "ansi-escape",
+    projectName: "codex-tui",
     state: "Completed",
     progressText: "确认 `ansi-escape` 是 **codex-tui** 的 ANSI 到 `ratatui` 适配边界层。"
   });
@@ -448,6 +448,8 @@ test("buildRuntimeStatusCard renders bold prefixes and markdown progress on a ne
       "Use /inspect for full details"
     ].join("\n")
   );
+
+  assert.doesNotMatch(text, /<b>Project:<\/b>/u);
 });
 
 test("buildRuntimeStatusReplyMarkup prefers the in-progress step over earlier pending steps", () => {
@@ -493,15 +495,21 @@ test("buildRuntimeStatusCard renders expanded running agents inline", () => {
   assert.match(text, /2\. agent-x9k2p1 \(pending\)/u);
 });
 
-test("buildRuntimeStatusCard renders the optional status summary line", () => {
+test("buildRuntimeStatusCard renders optional runtime fields on separate lines", () => {
   const text = buildRuntimeStatusCard({
     sessionName: "Session Alpha",
     projectName: "Project One",
-    statusLine: "会话: Session Alpha | 模型: gpt-5 + 高",
-    state: "Running"
+    state: "Running",
+    optionalFieldLines: [
+      "模型: gpt-5 + 高",
+      "Plan mode: on"
+    ]
   });
 
-  assert.match(text, /<b>概览:<\/b> 会话: Session Alpha \| 模型: gpt-5 \+ 高/u);
+  assert.match(text, /模型: gpt-5 \+ 高/u);
+  assert.match(text, /Plan mode: on/u);
+  assert.doesNotMatch(text, /<b>概览:<\/b>/u);
+  assert.doesNotMatch(text, /\|/u);
 });
 
 test("buildRuntimePreferencesMessage renders v4 callbacks for toggle and save actions", () => {
@@ -539,6 +547,25 @@ test("buildRuntimePreferencesMessage includes v4 cli fields and keeps bridge ext
   assert.match(rendered.text, /当前步骤/u);
   assert.match(rendered.text, /最终答复已就绪/u);
   assert.doesNotMatch(buttonText, /项目路径/u);
+});
+
+test("buildRuntimePreferencesMessage includes the Plan mode bridge field", () => {
+  const rendered = buildRuntimePreferencesMessage({
+    token: "token123",
+    fields: ["plan_mode"] as any,
+    page: 3
+  });
+
+  assert.match(rendered.text, /Plan mode/u);
+  const planModeButton = rendered.replyMarkup.inline_keyboard
+    .flat()
+    .find((button) => button.text.includes("Plan mode"));
+  assert.ok(planModeButton?.callback_data);
+  assert.deepEqual(parseCallbackData(planModeButton.callback_data), {
+    kind: "runtime_toggle",
+    token: "token123",
+    field: "plan_mode"
+  });
 });
 
 test("buildRuntimeStatusReplyMarkup adds an agent button when running subagents exist", () => {

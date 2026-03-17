@@ -5050,9 +5050,8 @@ export class BridgeService {
     const context = this.getRuntimeCardContext(sessionId);
     const text = buildRuntimeStatusCard({
       ...context,
-      statusLine: this.buildRuntimeStatusLine(sessionId, inspect),
+      optionalFieldLines: this.buildRuntimeStatusLine(sessionId, inspect),
       state: formatVisibleRuntimeState(inspect),
-      blockedReason: formatRuntimeBlockedReason(inspect.threadBlockedReason),
       progressText: selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null),
       planEntries: inspect.planSnapshot,
       planExpanded: statusCard.planExpanded,
@@ -5942,24 +5941,22 @@ export class BridgeService {
     };
   }
 
-  private buildRuntimeStatusLine(sessionId: string, inspect: InspectSnapshot): string | null {
+  private buildRuntimeStatusLine(sessionId: string, inspect: InspectSnapshot): string[] {
     if (!this.store) {
-      return null;
+      return [];
     }
 
     const session = this.store.getSessionById(sessionId);
     if (!session) {
-      return null;
+      return [];
     }
 
     const selectedFields = this.store.getRuntimeCardPreferences().fields;
     const progressText = selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null);
     const blockedReason = formatRuntimeBlockedReason(inspect.threadBlockedReason);
-    const parts = selectedFields
+    return selectedFields
       .map((field) => this.formatRuntimeStatusLineField(field, session, inspect, progressText, blockedReason))
       .filter((value): value is string => Boolean(value));
-
-    return parts.length > 0 ? parts.join(" | ") : null;
   }
 
   private formatRuntimeStatusLineField(
@@ -6018,6 +6015,8 @@ export class BridgeService {
         return `项目: ${this.projectDisplayName(session)}`;
       case "project_path":
         return session.projectPath ? `路径: ${session.projectPath}` : null;
+      case "plan_mode":
+        return `Plan mode: ${session.planMode ? "on" : "off"}`;
       case "model_reasoning":
         return `模型: ${formatSessionModelReasoningConfig(session)}`;
       case "thread_id":
