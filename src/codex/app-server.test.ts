@@ -72,6 +72,39 @@ test("buildTurnStartParams includes collaboration mode when requested", () => {
   );
 });
 
+test("buildTurnStartParams supports explicit default collaboration mode", () => {
+  assert.deepEqual(
+    buildTurnStartParams({
+      threadId: "thread-1",
+      cwd: "/tmp/project",
+      text: "implement the work",
+      collaborationMode: {
+        mode: "default",
+        settings: {
+          model: "gpt-5",
+          developerInstructions: null,
+          reasoningEffort: null
+        }
+      }
+    }),
+    {
+      threadId: "thread-1",
+      cwd: "/tmp/project",
+      input: [{ type: "text", text: "implement the work" }],
+      approvalPolicy: "never",
+      sandboxPolicy: { type: "dangerFullAccess" },
+      collaborationMode: {
+        mode: "default",
+        settings: {
+          model: "gpt-5",
+          developer_instructions: null,
+          reasoning_effort: null
+        }
+      }
+    }
+  );
+});
+
 test("listThreads sends archived filters through the JSON-RPC client", async () => {
   const client = new CodexAppServerClient("codex", "/tmp/app-server.log", testLogger);
   let captured: { method: string; params: unknown } | null = null;

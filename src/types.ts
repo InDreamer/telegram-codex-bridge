@@ -246,6 +246,7 @@ export interface SessionRow {
   selectedModel: string | null;
   selectedReasoningEffort: ReasoningEffort | null;
   planMode: boolean;
+  needsDefaultCollaborationModeReset: boolean;
   displayName: string;
   projectName: string;
   projectAlias: string | null;

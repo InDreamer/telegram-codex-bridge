@@ -1191,14 +1191,21 @@ test("session plan mode defaults off, updates, and survives reopen", async () =>
     });
 
     assert.equal((store.getSessionById(session.sessionId) as any)?.planMode, false);
+    assert.equal((store.getSessionById(session.sessionId) as any)?.needsDefaultCollaborationModeReset, false);
 
     (store as any).setSessionPlanMode(session.sessionId, true);
     assert.equal((store.getSessionById(session.sessionId) as any)?.planMode, true);
+    assert.equal((store.getSessionById(session.sessionId) as any)?.needsDefaultCollaborationModeReset, false);
+
+    (store as any).setSessionPlanMode(session.sessionId, false);
+    assert.equal((store.getSessionById(session.sessionId) as any)?.planMode, false);
+    assert.equal((store.getSessionById(session.sessionId) as any)?.needsDefaultCollaborationModeReset, true);
 
     store.close();
     const reopened = await BridgeStateStore.open(paths, testLogger);
     try {
-      assert.equal((reopened.getSessionById(session.sessionId) as any)?.planMode, true);
+      assert.equal((reopened.getSessionById(session.sessionId) as any)?.planMode, false);
+      assert.equal((reopened.getSessionById(session.sessionId) as any)?.needsDefaultCollaborationModeReset, true);
     } finally {
       reopened.close();
     }

@@ -821,11 +821,6 @@ export class BridgeService {
         await this.handlePlanResultActionCallback(callbackQuery.id, chatId, parsed.sessionId, "implement");
         return;
       }
-
-      case "plan_continue": {
-        await this.handlePlanResultActionCallback(callbackQuery.id, chatId, parsed.sessionId, "continue");
-        return;
-      }
     }
   }
 
@@ -1320,7 +1315,7 @@ export class BridgeService {
     callbackQueryId: string,
     chatId: string,
     sessionId: string,
-    action: "implement" | "continue"
+    action: "implement"
   ): Promise<void> {
     if (!this.store) {
       await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
@@ -1330,12 +1325,6 @@ export class BridgeService {
     const session = this.store.getSessionById(sessionId);
     if (!session || session.telegramChatId !== chatId) {
       await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
-      return;
-    }
-
-    if (action === "continue") {
-      this.store.setSessionPlanMode(sessionId, true);
-      await this.safeAnswerCallbackQuery(callbackQueryId);
       return;
     }
 
@@ -4263,6 +4252,9 @@ export class BridgeService {
       if (!turn) {
         throw new Error("turn start returned no result");
       }
+      if (session.needsDefaultCollaborationModeReset) {
+        this.store.clearSessionDefaultCollaborationModeReset(session.sessionId);
+      }
 
       await this.beginActiveTurn(chatId, session, threadId, turn.turn.id, turn.turn.status);
     } catch (error) {
@@ -4364,6 +4356,9 @@ export class BridgeService {
       if (!turn) {
         throw new Error("turn start returned no result");
       }
+      if (session.needsDefaultCollaborationModeReset) {
+        this.store.clearSessionDefaultCollaborationModeReset(session.sessionId);
+      }
       if (options?.sourceKind === "voice") {
         this.store.saveTurnInputSource({
           threadId,
@@ -4403,14 +4398,13 @@ export class BridgeService {
       ...(request.input !== undefined ? { input: request.input } : {})
     };
 
-    if (session.planMode) {
-      const model = await this.resolvePlanModeModel(session);
+    if (session.planMode || session.needsDefaultCollaborationModeReset) {
       return {
         ...baseRequest,
         collaborationMode: {
-          mode: "plan",
+          mode: session.planMode ? "plan" : "default",
           settings: {
-            model,
+            model: await this.resolveCollaborationModeModel(session),
             developerInstructions: null,
             reasoningEffort: session.selectedReasoningEffort ?? null
           }
@@ -4425,7 +4419,7 @@ export class BridgeService {
     };
   }
 
-  private async resolvePlanModeModel(session: SessionRow): Promise<string> {
+  private async resolveCollaborationModeModel(session: SessionRow): Promise<string> {
     if (session.selectedModel) {
       return session.selectedModel;
     }

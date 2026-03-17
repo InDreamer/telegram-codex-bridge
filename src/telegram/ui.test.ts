@@ -69,6 +69,7 @@ function createSession(overrides: Partial<SessionRow>): SessionRow {
     selectedModel: "selectedModel" in overrides ? overrides.selectedModel ?? null : null,
     selectedReasoningEffort: "selectedReasoningEffort" in overrides ? overrides.selectedReasoningEffort ?? null : null,
     planMode: overrides.planMode ?? false,
+    needsDefaultCollaborationModeReset: overrides.needsDefaultCollaborationModeReset ?? false,
     displayName: overrides.displayName ?? "Session Alpha",
     projectName: overrides.projectName ?? "Project One",
     projectAlias: "projectAlias" in overrides ? overrides.projectAlias ?? null : null,

@@ -2135,7 +2135,7 @@ test("completed plan-mode turns send a plan result message with implementation a
     assert.ok(planMessage);
     assert.match(planMessage?.text ?? "", /Telegram 命令体验优化（轻量一周版）/u);
     assert.equal(planMessage?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "实施这个计划");
-    assert.equal(planMessage?.replyMarkup?.inline_keyboard?.[0]?.[1]?.text, "继续规划");
+    assert.equal(planMessage?.replyMarkup?.inline_keyboard?.[0]?.length, 1);
   } finally {
     await cleanup();
   }
@@ -2210,6 +2210,7 @@ test("plan result implement action switches off plan mode and starts implementat
     const planMessage = [...sent].reverse().find((entry) => !entry.text.startsWith("<b>Runtime Status</b>"));
     assert.ok(planMessage);
     assert.equal(planMessage?.options?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "实施这个计划");
+    assert.equal(planMessage?.options?.replyMarkup?.inline_keyboard?.[0]?.length, 1);
 
     await (service as any).handleCallback({
       id: "callback-plan-apply",
@@ -2222,8 +2223,17 @@ test("plan result implement action switches off plan mode and starts implementat
     });
 
     assert.equal(store.getSessionById(session.sessionId)?.planMode, false);
+    assert.equal(store.getSessionById(session.sessionId)?.needsDefaultCollaborationModeReset, false);
     assert.equal(startTurnCalls.length, 2);
     assert.equal((startTurnCalls.at(-1) as { text?: string })?.text, "Implement the plan.");
+    assert.deepEqual((startTurnCalls.at(-1) as { collaborationMode?: unknown })?.collaborationMode, {
+      mode: "default",
+      settings: {
+        model: "gpt-5",
+        developerInstructions: null,
+        reasoningEffort: null
+      }
+    });
     assert.equal(callbackAnswers.at(-1), undefined);
   } finally {
     await cleanup();
@@ -3770,10 +3780,12 @@ test("plan command toggles the active session mode while idle", async () => {
 
     await (service as any).routeCommand("1", "plan", "");
     assert.equal(store.getSessionById(session.sessionId)?.planMode, true);
+    assert.equal(store.getSessionById(session.sessionId)?.needsDefaultCollaborationModeReset, false);
     assert.equal(sent.at(-1)?.text, "已为当前会话开启 Plan mode。下次任务开始时生效。");
 
     await (service as any).routeCommand("1", "plan", "");
     assert.equal(store.getSessionById(session.sessionId)?.planMode, false);
+    assert.equal(store.getSessionById(session.sessionId)?.needsDefaultCollaborationModeReset, true);
     assert.equal(sent.at(-1)?.text, "已为当前会话关闭 Plan mode。下次任务开始时生效。");
   } finally {
     await cleanup();
@@ -3797,6 +3809,7 @@ test("plan command toggles the next-turn mode without affecting a running turn",
 
     await (service as any).routeCommand("1", "plan", "");
     assert.equal(store.getSessionById(session.sessionId)?.planMode, true);
+    assert.equal(store.getSessionById(session.sessionId)?.needsDefaultCollaborationModeReset, false);
     assert.equal(sent.at(-1)?.text, "已为当前会话开启 Plan mode。当前任务不受影响，下次任务开始时生效。");
   } finally {
     await cleanup();

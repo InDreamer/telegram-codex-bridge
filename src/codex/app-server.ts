@@ -57,7 +57,7 @@ interface TurnStartParams {
   cwd: string;
   approvalPolicy: "never";
   collaborationMode?: {
-    mode: "plan";
+    mode: "default" | "plan";
     settings: {
       model: string;
       developer_instructions?: string | null;
@@ -352,7 +352,7 @@ export function buildTurnStartParams(options: {
   model?: string;
   effort?: ReasoningEffort;
   collaborationMode?: {
-    mode: "plan";
+    mode: "default" | "plan";
     settings: {
       model: string;
       developerInstructions?: string | null;
@@ -655,7 +655,7 @@ export class CodexAppServerClient {
     model?: string;
     effort?: ReasoningEffort;
     collaborationMode?: {
-      mode: "plan";
+      mode: "default" | "plan";
       settings: {
         model: string;
         developerInstructions?: string | null;

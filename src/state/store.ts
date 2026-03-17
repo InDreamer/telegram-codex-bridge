@@ -101,6 +101,7 @@ interface SessionRecord {
   selected_model: string | null;
   selected_reasoning_effort: ReasoningEffort | null;
   plan_mode?: number;
+  pending_default_collaboration_mode_reset?: number;
   display_name: string;
   project_name: string;
   project_alias?: string | null;
@@ -304,6 +305,7 @@ function mapSession(record: SessionRecord): SessionRow {
     selectedModel: record.selected_model,
     selectedReasoningEffort: record.selected_reasoning_effort,
     planMode: record.plan_mode === 1,
+    needsDefaultCollaborationModeReset: record.pending_default_collaboration_mode_reset === 1,
     displayName: record.display_name,
     projectName: record.project_name,
     projectAlias: record.project_alias ?? null,
@@ -361,6 +363,7 @@ function sessionSelectColumns(sessionAlias: string, recentAlias: string): string
     `${sessionAlias}.selected_model AS selected_model`,
     `${sessionAlias}.selected_reasoning_effort AS selected_reasoning_effort`,
     `${sessionAlias}.plan_mode AS plan_mode`,
+    `${sessionAlias}.pending_default_collaboration_mode_reset AS pending_default_collaboration_mode_reset`,
     `${sessionAlias}.display_name AS display_name`,
     `${sessionAlias}.project_name AS project_name`,
     `${recentAlias}.project_alias AS project_alias`,
@@ -490,6 +493,7 @@ function initialSchema(): string {
       selected_model TEXT NULL,
       selected_reasoning_effort TEXT NULL,
       plan_mode INTEGER NOT NULL DEFAULT 0,
+      pending_default_collaboration_mode_reset INTEGER NOT NULL DEFAULT 0,
       display_name TEXT NOT NULL,
       project_name TEXT NOT NULL,
       project_path TEXT NOT NULL,
@@ -829,6 +833,16 @@ function applyMigrations(db: DatabaseSync): void {
     }
 
     recordMigration(db, 10);
+  }
+
+  if (!applied.has(11)) {
+    if (!hasColumn(db, "session", "pending_default_collaboration_mode_reset")) {
+      db.exec(
+        "ALTER TABLE session ADD COLUMN pending_default_collaboration_mode_reset INTEGER NOT NULL DEFAULT 0"
+      );
+    }
+
+    recordMigration(db, 11);
   }
 }
 
@@ -1377,6 +1391,7 @@ export class BridgeStateStore {
       selectedModel: options.selectedModel ?? null,
       selectedReasoningEffort: options.selectedReasoningEffort ?? null,
       planMode: options.planMode ?? false,
+      needsDefaultCollaborationModeReset: false,
       displayName: options.displayName ?? options.projectName,
       projectName: options.projectName,
       projectAlias: null,
@@ -1404,6 +1419,7 @@ export class BridgeStateStore {
               selected_model,
               selected_reasoning_effort,
               plan_mode,
+              pending_default_collaboration_mode_reset,
               display_name,
               project_name,
               project_path,
@@ -1416,7 +1432,7 @@ export class BridgeStateStore {
               last_turn_id,
               last_turn_status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `
         )
         .run(
@@ -1426,6 +1442,7 @@ export class BridgeStateStore {
           session.selectedModel,
           session.selectedReasoningEffort,
           session.planMode ? 1 : 0,
+          session.needsDefaultCollaborationModeReset ? 1 : 0,
           session.displayName,
           session.projectName,
           session.projectPath,
@@ -1878,15 +1895,41 @@ export class BridgeStateStore {
   }
 
   setSessionPlanMode(sessionId: string, planMode: boolean): void {
+    const session = this.getSessionById(sessionId);
+    if (!session) {
+      return;
+    }
+
+    const needsDefaultReset = planMode
+      ? false
+      : session.planMode
+        ? true
+        : session.needsDefaultCollaborationModeReset;
+
     this.db
       .prepare(
         `
           UPDATE session
-          SET plan_mode = ?, last_used_at = ?
+          SET
+            plan_mode = ?,
+            pending_default_collaboration_mode_reset = ?,
+            last_used_at = ?
           WHERE session_id = ?
         `
       )
-      .run(planMode ? 1 : 0, nowIso(), sessionId);
+      .run(planMode ? 1 : 0, needsDefaultReset ? 1 : 0, nowIso(), sessionId);
+  }
+
+  clearSessionDefaultCollaborationModeReset(sessionId: string): void {
+    this.db
+      .prepare(
+        `
+          UPDATE session
+          SET pending_default_collaboration_mode_reset = 0
+          WHERE session_id = ?
+        `
+      )
+      .run(sessionId);
   }
 
   updateSessionStatus(

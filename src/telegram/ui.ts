@@ -71,7 +71,6 @@ export type ParsedCallbackData =
   | { kind: "inspect_collapse"; sessionId: string }
   | { kind: "inspect_page"; sessionId: string; page: number }
   | { kind: "plan_implement"; sessionId: string }
-  | { kind: "plan_continue"; sessionId: string }
   | { kind: "rollback_page"; sessionId: string; page: number }
   | { kind: "rollback_pick"; sessionId: string; page: number; targetIndex: number }
   | { kind: "rollback_confirm"; sessionId: string; targetIndex: number }
@@ -372,10 +371,6 @@ export function encodePlanImplementCallback(sessionId: string): string {
   return ensureTelegramCallbackDataLimit(`v4:pr:i:${sessionId}`);
 }
 
-export function encodePlanContinueCallback(sessionId: string): string {
-  return ensureTelegramCallbackDataLimit(`v4:pr:c:${sessionId}`);
-}
-
 export function parseCallbackData(data: string): ParsedCallbackData | null {
   const parts = data.split(":");
   if (parts[0] === "v2" && parts[1] === "model") {
@@ -509,10 +504,6 @@ export function parseCallbackData(data: string): ParsedCallbackData | null {
 
     if (parts[0] === "v4" && parts[1] === "pr" && parts[2] === "i" && parts[3]) {
       return { kind: "plan_implement", sessionId: parts[3] };
-    }
-
-    if (parts[0] === "v4" && parts[1] === "pr" && parts[2] === "c" && parts[3]) {
-      return { kind: "plan_continue", sessionId: parts[3] };
     }
 
     if (parts[0] === "v3" && parts[1] === "ix") {
@@ -2870,8 +2861,7 @@ export function buildFinalAnswerReplyMarkup(options: {
 
 export function buildPlanResultActionRows(sessionId: string): Array<Array<{ text: string; callback_data: string }>> {
   return [[
-    { text: "实施这个计划", callback_data: encodePlanImplementCallback(sessionId) },
-    { text: "继续规划", callback_data: encodePlanContinueCallback(sessionId) }
+    { text: "实施这个计划", callback_data: encodePlanImplementCallback(sessionId) }
   ]];
 }
 
