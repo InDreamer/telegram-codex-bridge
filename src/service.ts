@@ -121,6 +121,7 @@ const TELEGRAM_SEND_RETRY_DELAYS_MS = [750, 2_000] as const;
 const TELEGRAM_SEND_MAX_RETRY_AFTER_MS = 10_000;
 const TELEGRAM_IMAGE_CACHE_DIRNAME = "telegram-images";
 const TELEGRAM_IMAGE_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const TELEGRAM_CACHE_PRUNE_INTERVAL_MS = 5 * 60 * 1000;
 const TELEGRAM_VOICE_CACHE_DIRNAME = "telegram-voice";
 const OPENAI_AUDIO_TRANSCRIPT_URL = "https://api.openai.com/v1/audio/transcriptions";
 const VOICE_PCM_SAMPLE_RATE = 16_000;
@@ -312,6 +313,7 @@ export class BridgeService {
   private readonly pendingRichInputComposers = new Map<string, PendingRichInputComposer>();
   private readonly runtimePreferenceDrafts = new Map<string, RuntimePreferencesDraftState>();
   private readonly recentActivityBySessionId = new Map<string, RecentActivityEntry>();
+  private lastCachePruneAt = 0;
   private voiceTaskQueue: Promise<void> = Promise.resolve();
   private pendingVoiceTaskCount = 0;
   private activeTurn: ActiveTurnState | null = null;
@@ -1371,12 +1373,7 @@ export class BridgeService {
     }
 
     const { row, interaction } = loaded;
-    if (!isPendingInteractionActionable(row)) {
-      await this.renderStoredPendingInteraction(chatId, row, interaction);
-      await this.safeAnswerCallbackQuery(
-        callbackQueryId,
-        isPendingInteractionHandled(row) ? "这个操作已处理。" : "这个按钮已过期，请重新操作。"
-      );
+    if (await this.guardStaleInteraction(chatId, callbackQueryId, row, interaction)) {
       return;
     }
 
@@ -1418,12 +1415,7 @@ export class BridgeService {
     }
 
     const { row, interaction } = loaded;
-    if (!isPendingInteractionActionable(row)) {
-      await this.renderStoredPendingInteraction(chatId, row, interaction);
-      await this.safeAnswerCallbackQuery(
-        callbackQueryId,
-        isPendingInteractionHandled(row) ? "这个操作已处理。" : "这个按钮已过期，请重新操作。"
-      );
+    if (await this.guardStaleInteraction(chatId, callbackQueryId, row, interaction)) {
       return;
     }
 
@@ -1498,12 +1490,7 @@ export class BridgeService {
     }
 
     const { row, interaction } = loaded;
-    if (!isPendingInteractionActionable(row)) {
-      await this.renderStoredPendingInteraction(chatId, row, interaction);
-      await this.safeAnswerCallbackQuery(
-        callbackQueryId,
-        isPendingInteractionHandled(row) ? "这个操作已处理。" : "这个按钮已过期，请重新操作。"
-      );
+    if (await this.guardStaleInteraction(chatId, callbackQueryId, row, interaction)) {
       return;
     }
 
@@ -1556,12 +1543,7 @@ export class BridgeService {
     }
 
     const { row, interaction } = loaded;
-    if (!isPendingInteractionActionable(row)) {
-      await this.renderStoredPendingInteraction(chatId, row, interaction);
-      await this.safeAnswerCallbackQuery(
-        callbackQueryId,
-        isPendingInteractionHandled(row) ? "这个操作已处理。" : "这个按钮已过期，请重新操作。"
-      );
+    if (await this.guardStaleInteraction(chatId, callbackQueryId, row, interaction)) {
       return;
     }
 
@@ -1859,6 +1841,28 @@ export class BridgeService {
     }
 
     return { row, interaction };
+  }
+
+  /**
+   * Check if a pending interaction is still actionable; if not, re-render
+   * its stored state and toast the user.  Returns `true` when the caller
+   * should bail out.
+   */
+  private async guardStaleInteraction(
+    chatId: string,
+    callbackQueryId: string,
+    row: PendingInteractionRow,
+    interaction: NormalizedInteraction
+  ): Promise<boolean> {
+    if (isPendingInteractionActionable(row)) {
+      return false;
+    }
+    await this.renderStoredPendingInteraction(chatId, row, interaction);
+    await this.safeAnswerCallbackQuery(
+      callbackQueryId,
+      isPendingInteractionHandled(row) ? "这个操作已处理。" : "这个按钮已过期，请重新操作。"
+    );
+    return true;
   }
 
   private async renderStoredPendingInteraction(
@@ -3011,10 +3015,10 @@ export class BridgeService {
     for (const skill of entry.skills.slice(0, 20)) {
       const description = skill.interface?.shortDescription ?? skill.shortDescription ?? skill.description;
       const marker = skill.enabled ? "[启用] " : "[禁用] ";
-      lines.push(`${marker}${skill.name} | ${truncatePlainText(description, 80)}`);
+      lines.push(`${marker}${skill.name} | ${summarizeTextPreview(description, 80)}`);
     }
     if (entry.errors.length > 0) {
-      lines.push("", `扫描警告：${truncatePlainText(entry.errors[0]?.message ?? "unknown error", 120)}`);
+      lines.push("", `扫描警告：${summarizeTextPreview(entry.errors[0]?.message ?? "unknown error", 120)}`);
     }
     lines.push("", "使用 /skill <技能名> :: 任务说明 将 skill 作为结构化输入发送给 Codex。");
     await this.safeSendMessage(chatId, lines.join("\n"));
@@ -3089,7 +3093,7 @@ export class BridgeService {
         ].join("");
         const label = plugin.interface?.displayName ?? plugin.name;
         const description = plugin.interface?.shortDescription;
-        lines.push(`${flags} ${plugin.id} | ${label}${description ? ` | ${truncatePlainText(description, 60)}` : ""}`);
+        lines.push(`${flags} ${plugin.id} | ${label}${description ? ` | ${summarizeTextPreview(description, 60)}` : ""}`);
       }
     }
 
@@ -3187,7 +3191,7 @@ export class BridgeService {
         app.isAccessible ? "[可访问]" : "[不可访问]",
         app.isEnabled ? "[启用]" : "[未启用]"
       ].join("");
-      lines.push(`${flags} ${app.name}${app.description ? ` | ${truncatePlainText(app.description, 70)}` : ""}`);
+      lines.push(`${flags} ${app.name}${app.description ? ` | ${summarizeTextPreview(app.description, 70)}` : ""}`);
       if (app.pluginDisplayNames.length > 0) {
         lines.push(`来源插件：${app.pluginDisplayNames.join("、")}`);
       }
@@ -4881,7 +4885,7 @@ export class BridgeService {
       });
     });
 
-    const targetPath = join(cacheDir, `${messageId}-${randomUUID()}${getTelegramImageExtension(filePath)}`);
+    const targetPath = join(cacheDir, `${messageId}-${randomUUID()}${getTelegramFileExtension(filePath, ".jpg")}`);
     return await this.api.downloadFile(fileId, targetPath, file);
   }
 
@@ -4903,7 +4907,7 @@ export class BridgeService {
       });
     });
 
-    const targetPath = join(cacheDir, `${messageId}-${randomUUID()}${getTelegramVoiceExtension(filePath)}`);
+    const targetPath = join(cacheDir, `${messageId}-${randomUUID()}${getTelegramFileExtension(filePath, ".ogg")}`);
     return await this.api.downloadFile(fileId, targetPath, file);
   }
 
@@ -4920,7 +4924,13 @@ export class BridgeService {
   }
 
   private async pruneTelegramImageCache(cacheDir: string): Promise<void> {
-    const cutoffMs = Date.now() - TELEGRAM_IMAGE_CACHE_MAX_AGE_MS;
+    const now = Date.now();
+    if (now - this.lastCachePruneAt < TELEGRAM_CACHE_PRUNE_INTERVAL_MS) {
+      return;
+    }
+    this.lastCachePruneAt = now;
+
+    const cutoffMs = now - TELEGRAM_IMAGE_CACHE_MAX_AGE_MS;
     const entries = await readdir(cacheDir, { withFileTypes: true });
 
     await Promise.all(entries.map(async (entry) => {
@@ -6854,10 +6864,6 @@ function summarizeTextPreview(text: string | null | undefined, limit = 160): str
   return normalizeAndTruncate(text, limit, "...") ?? "";
 }
 
-function truncatePlainText(text: string, limit: number): string {
-  return normalizeAndTruncate(text, limit, "...") ?? "";
-}
-
 function splitStructuredInputCommand(args: string): { value: string; prompt: string | null } {
   const separatorIndex = args.indexOf("::");
   if (separatorIndex === -1) {
@@ -7017,14 +7023,9 @@ async function isReadableImagePath(imagePath: string): Promise<boolean> {
   }
 }
 
-function getTelegramImageExtension(filePath: string): string {
+function getTelegramFileExtension(filePath: string, fallback: string): string {
   const extension = extname(filePath).toLowerCase();
-  return /^\.[a-z0-9]{1,10}$/iu.test(extension) ? extension : ".jpg";
-}
-
-function getTelegramVoiceExtension(filePath: string): string {
-  const extension = extname(filePath).toLowerCase();
-  return /^\.[a-z0-9]{1,10}$/iu.test(extension) ? extension : ".ogg";
+  return /^\.[a-z0-9]{1,10}$/iu.test(extension) ? extension : fallback;
 }
 
 function isGlobalRuntimeNotice(
@@ -8513,9 +8514,7 @@ function buildInspectPlainTextFallback(html: string): string {
     .replace(/&gt;/gu, ">")
     .replace(/&amp;/gu, "&");
 
-  return plainText.length <= INSPECT_PLAIN_TEXT_FALLBACK_LIMIT
-    ? plainText
-    : `${plainText.slice(0, INSPECT_PLAIN_TEXT_FALLBACK_LIMIT)}…`;
+  return truncateText(plainText, INSPECT_PLAIN_TEXT_FALLBACK_LIMIT, "…");
 }
 
 function parsePluginInstallTarget(value: string): { marketplaceName: string; pluginName: string } | null {
