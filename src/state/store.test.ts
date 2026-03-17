@@ -1364,9 +1364,9 @@ test("runtime card preferences persist across reopen and default when missing", 
 
   try {
     assert.deepEqual(store.getRuntimeCardPreferences().fields, [
-      "session_name",
-      "project_name",
-      "model_reasoning"
+      "model-with-reasoning",
+      "context-remaining",
+      "current-dir"
     ]);
 
     store.setRuntimeCardPreferences(["thread_id", "turn_id"]);
@@ -1393,6 +1393,53 @@ test("runtime card preferences preserve an explicit empty selection", async () =
     const reopened = await BridgeStateStore.open(paths, testLogger);
     try {
       assert.deepEqual(reopened.getRuntimeCardPreferences().fields, []);
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+test("runtime card preferences lazily migrate legacy runtime field ids to v4 cli ids and keep bridge extensions", async () => {
+  const { paths, store, cleanup } = await openStore();
+
+  try {
+    store.close();
+
+    const db = new DatabaseSync(paths.dbPath);
+    db.prepare(
+      `
+        INSERT OR REPLACE INTO runtime_card_preferences (
+          key,
+          fields_json,
+          updated_at
+        )
+        VALUES ('global', ?, ?)
+      `
+    ).run(
+      JSON.stringify([
+        "project_path",
+        "model_reasoning",
+        "thread_id",
+        "model-name",
+        "current_step",
+        "final_answer_ready"
+      ]),
+      "2026-03-16T09:00:00.000Z"
+    );
+    db.close();
+
+    const reopened = await BridgeStateStore.open(paths, testLogger);
+    try {
+      assert.deepEqual(reopened.getRuntimeCardPreferences().fields, [
+        "current-dir",
+        "model-with-reasoning",
+        "session-id",
+        "model-name",
+        "current_step",
+        "final_answer_ready"
+      ]);
     } finally {
       reopened.close();
     }

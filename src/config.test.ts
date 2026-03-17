@@ -85,6 +85,48 @@ test("loadConfig parses boolean-like VOICE_INPUT_ENABLED values from bridge.env"
   }
 });
 
+test("loadConfig prefers bridge.env over ambient process env for persisted bridge settings", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctb-config-test-"));
+  const paths = createTestPaths(root);
+  const originalProjectScanRoots = process.env.PROJECT_SCAN_ROOTS;
+  const originalVoiceInputEnabled = process.env.VOICE_INPUT_ENABLED;
+
+  try {
+    process.env.PROJECT_SCAN_ROOTS = "";
+    process.env.VOICE_INPUT_ENABLED = "0";
+
+    await mkdir(paths.configRoot, { recursive: true });
+    await writeFile(
+      paths.envPath,
+      [
+        "TELEGRAM_BOT_TOKEN=test-token",
+        `PROJECT_SCAN_ROOTS=~/projects${delimiter}${join(root, "work")}`,
+        "VOICE_INPUT_ENABLED=on"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const config = await loadConfig(paths);
+
+    assert.deepEqual(config.projectScanRoots, [join(root, "projects"), join(root, "work")]);
+    assert.equal(config.voiceInputEnabled, true);
+  } finally {
+    if (originalProjectScanRoots === undefined) {
+      delete process.env.PROJECT_SCAN_ROOTS;
+    } else {
+      process.env.PROJECT_SCAN_ROOTS = originalProjectScanRoots;
+    }
+
+    if (originalVoiceInputEnabled === undefined) {
+      delete process.env.VOICE_INPUT_ENABLED;
+    } else {
+      process.env.VOICE_INPUT_ENABLED = originalVoiceInputEnabled;
+    }
+
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("writeConfig persists PROJECT_SCAN_ROOTS and withInstallOverrides can replace them", async () => {
   const root = await mkdtemp(join(tmpdir(), "ctb-config-test-"));
   const paths = createTestPaths(root);

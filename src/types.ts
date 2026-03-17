@@ -23,6 +23,21 @@ export type RecentProjectSource = "mru" | "pin" | "scan" | "last_success";
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export type RuntimeStatusField =
+  | "model-name"
+  | "model-with-reasoning"
+  | "current-dir"
+  | "project-root"
+  | "git-branch"
+  | "context-remaining"
+  | "context-used"
+  | "five-hour-limit"
+  | "weekly-limit"
+  | "codex-version"
+  | "context-window-size"
+  | "used-tokens"
+  | "total-input-tokens"
+  | "total-output-tokens"
+  | "session-id"
   | "session_name"
   | "project_name"
   | "project_path"
@@ -36,7 +51,25 @@ export type RuntimeStatusField =
   | "context_window"
   | "final_answer_ready";
 
-export const ALL_RUNTIME_STATUS_FIELDS: readonly RuntimeStatusField[] = [
+export const CODEX_CLI_RUNTIME_STATUS_FIELDS: readonly RuntimeStatusField[] = [
+  "model-name",
+  "model-with-reasoning",
+  "current-dir",
+  "project-root",
+  "git-branch",
+  "context-remaining",
+  "context-used",
+  "five-hour-limit",
+  "weekly-limit",
+  "codex-version",
+  "context-window-size",
+  "used-tokens",
+  "total-input-tokens",
+  "total-output-tokens",
+  "session-id"
+] as const;
+
+export const BRIDGE_EXTENSION_RUNTIME_STATUS_FIELDS: readonly RuntimeStatusField[] = [
   "session_name",
   "project_name",
   "project_path",
@@ -51,10 +84,15 @@ export const ALL_RUNTIME_STATUS_FIELDS: readonly RuntimeStatusField[] = [
   "final_answer_ready"
 ] as const;
 
+export const ALL_RUNTIME_STATUS_FIELDS: readonly RuntimeStatusField[] = [
+  ...CODEX_CLI_RUNTIME_STATUS_FIELDS,
+  ...BRIDGE_EXTENSION_RUNTIME_STATUS_FIELDS
+] as const;
+
 export const DEFAULT_RUNTIME_STATUS_FIELDS: RuntimeStatusField[] = [
-  "session_name",
-  "project_name",
-  "model_reasoning"
+  "model-with-reasoning",
+  "context-remaining",
+  "current-dir"
 ];
 
 export type TurnInputSourceKind = "voice";

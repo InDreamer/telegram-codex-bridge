@@ -512,12 +512,30 @@ test("buildRuntimePreferencesMessage renders v4 callbacks for toggle and save ac
   assert.deepEqual(parseCallbackData(rendered.replyMarkup.inline_keyboard[0]?.[0]?.callback_data ?? ""), {
     kind: "runtime_toggle",
     token: "token123",
-    field: "session_name"
+    field: "model-name"
   });
   assert.deepEqual(parseCallbackData(rendered.replyMarkup.inline_keyboard.at(-2)?.[0]?.callback_data ?? ""), {
     kind: "runtime_save",
     token: "token123"
   });
+});
+
+test("buildRuntimePreferencesMessage includes v4 cli fields and keeps bridge extension selections", () => {
+  const rendered = buildRuntimePreferencesMessage({
+    token: "token123",
+    fields: ["model-with-reasoning", "current-dir", "current_step", "final_answer_ready"] as any,
+    page: 0
+  });
+  const buttonText = rendered.replyMarkup.inline_keyboard.flat().map((button) => button.text).join("\n");
+
+  assert.match(rendered.text, /Codex CLI/u);
+  assert.match(rendered.text, /当前分组：<\/b> Codex CLI/u);
+  assert.doesNotMatch(rendered.text, /undefined/u);
+  assert.match(rendered.text, /模型/u);
+  assert.match(rendered.text, /当前目录/u);
+  assert.match(rendered.text, /当前步骤/u);
+  assert.match(rendered.text, /最终答复已就绪/u);
+  assert.doesNotMatch(buttonText, /项目路径/u);
 });
 
 test("buildRuntimeStatusReplyMarkup adds an agent button when running subagents exist", () => {

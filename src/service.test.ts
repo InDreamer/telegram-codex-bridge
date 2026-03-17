@@ -6581,7 +6581,113 @@ test("runtime command persists edited status-line fields through callbacks", asy
       data: saveCallback
     });
 
-    assert.deepEqual(store.getRuntimeCardPreferences().fields, ["project_name", "model_reasoning"]);
+    assert.deepEqual(store.getRuntimeCardPreferences().fields, [
+      "model-with-reasoning",
+      "context-remaining",
+      "current-dir",
+      "model-name"
+    ]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("formatRuntimeStatusLineField uses cli token and context field semantics for v4 ids", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.updateSessionThreadId(session.sessionId, "thread-cli-status");
+
+    const persistedSession = store.getSessionById(session.sessionId);
+    assert.ok(persistedSession);
+
+    const inspect = {
+      ...createActivityStatus(),
+      recentTransitions: [],
+      recentCommandSummaries: [],
+      recentFileChangeSummaries: [],
+      recentMcpSummaries: [],
+      recentWebSearches: [],
+      recentHookSummaries: [],
+      recentNoticeSummaries: [],
+      planSnapshot: [],
+      agentSnapshot: [],
+      completedCommentary: [],
+      tokenUsage: {
+        lastInputTokens: 32000,
+        lastCachedInputTokens: 0,
+        lastOutputTokens: 32000,
+        lastReasoningOutputTokens: 0,
+        lastTotalTokens: 64000,
+        totalInputTokens: 3200,
+        totalCachedInputTokens: 0,
+        totalOutputTokens: 1200,
+        totalReasoningOutputTokens: 0,
+        totalTokens: 4400,
+        modelContextWindow: 128000
+      },
+      latestDiffSummary: null,
+      terminalInteractionSummary: null,
+      pendingInteractions: []
+    };
+
+    assert.equal(
+      (service as any).formatRuntimeStatusLineField("used-tokens", persistedSession, inspect, null, null),
+      "used-tokens: 4400"
+    );
+    assert.equal(
+      (service as any).formatRuntimeStatusLineField("model-name", persistedSession, inspect, null, null),
+      "model-name: 默认模型"
+    );
+    assert.equal(
+      (service as any).formatRuntimeStatusLineField("model-with-reasoning", persistedSession, inspect, null, null),
+      "model-with-reasoning: 默认模型 + 默认"
+    );
+    assert.equal(
+      (service as any).formatRuntimeStatusLineField("total-input-tokens", persistedSession, inspect, null, null),
+      "total-input-tokens: 3200"
+    );
+    assert.equal(
+      (service as any).formatRuntimeStatusLineField("total-output-tokens", persistedSession, inspect, null, null),
+      "total-output-tokens: 1200"
+    );
+    assert.equal(
+      (service as any).formatRuntimeStatusLineField("context-window-size", persistedSession, inspect, null, null),
+      "context-window-size: 128000"
+    );
+    assert.equal(
+      (service as any).formatRuntimeStatusLineField("context-remaining", persistedSession, inspect, null, null),
+      "context-remaining: 55% left"
+    );
+    assert.equal(
+      (service as any).formatRuntimeStatusLineField("context-used", persistedSession, inspect, null, null),
+      "context-used: 45% used"
+    );
+
+    const inspectWithoutTokenData = {
+      ...inspect,
+      tokenUsage: {
+        ...inspect.tokenUsage,
+        totalTokens: 0,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        modelContextWindow: null
+      }
+    };
+
+    assert.equal(
+      (service as any).formatRuntimeStatusLineField("used-tokens", persistedSession, inspectWithoutTokenData, null, null),
+      null
+    );
+    assert.equal(
+      (service as any).formatRuntimeStatusLineField("context-remaining", persistedSession, inspectWithoutTokenData, null, null),
+      null
+    );
+    assert.equal(
+      (service as any).formatRuntimeStatusLineField("context-window-size", persistedSession, inspectWithoutTokenData, null, null),
+      null
+    );
   } finally {
     await cleanup();
   }

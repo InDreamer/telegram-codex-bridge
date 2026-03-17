@@ -92,8 +92,8 @@ export async function loadConfig(paths: BridgePaths): Promise<BridgeConfig> {
   }
 
   const merged = {
-    ...envFile,
-    ...process.env
+    ...process.env,
+    ...envFile
   };
 
   return {

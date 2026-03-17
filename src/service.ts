@@ -125,6 +125,7 @@ const VOICE_REALTIME_CHUNK_BYTES = 32_000;
 const VOICE_REALTIME_WAIT_TIMEOUT_MS = 30_000;
 const VOICE_REALTIME_POLL_INTERVAL_MS = 1_000;
 const VOICE_REALTIME_TRANSCRIPTION_PROMPT = "请逐字转写收到的语音，只返回转写文本，不要解释。";
+const CODEX_CLI_STATUS_LINE_BASELINE_TOKENS = 12_000;
 
 interface PickerState {
   picker: ProjectPickerResult;
@@ -5939,6 +5940,48 @@ export class BridgeService {
     blockedReason: string | null
   ): string | null {
     switch (field) {
+      case "model-name":
+        return `model-name: ${session.selectedModel ?? "默认模型"}`;
+      case "model-with-reasoning":
+        return `model-with-reasoning: ${formatSessionModelReasoningConfig(session)}`;
+      case "current-dir":
+        return session.projectPath ? `current-dir: ${session.projectPath}` : null;
+      case "project-root":
+        return session.projectPath ? `project-root: ${basename(session.projectPath)}` : null;
+      case "git-branch":
+        return null;
+      case "context-remaining": {
+        const remaining = this.formatContextRemainingPercent(inspect);
+        return remaining !== null ? `context-remaining: ${remaining}% left` : null;
+      }
+      case "context-used": {
+        const used = this.formatContextUsedPercent(inspect);
+        return used !== null ? `context-used: ${used}% used` : null;
+      }
+      case "five-hour-limit":
+        return null;
+      case "weekly-limit":
+        return null;
+      case "codex-version":
+        return null;
+      case "context-window-size":
+        return inspect.tokenUsage?.modelContextWindow !== null && inspect.tokenUsage?.modelContextWindow !== undefined
+          ? `context-window-size: ${inspect.tokenUsage.modelContextWindow}`
+          : null;
+      case "used-tokens":
+        return inspect.tokenUsage?.totalTokens !== null && inspect.tokenUsage?.totalTokens !== undefined && inspect.tokenUsage.totalTokens > 0
+          ? `used-tokens: ${inspect.tokenUsage.totalTokens}`
+          : null;
+      case "total-input-tokens":
+        return inspect.tokenUsage?.totalInputTokens !== null && inspect.tokenUsage?.totalInputTokens !== undefined
+          ? `total-input-tokens: ${inspect.tokenUsage.totalInputTokens}`
+          : null;
+      case "total-output-tokens":
+        return inspect.tokenUsage?.totalOutputTokens !== null && inspect.tokenUsage?.totalOutputTokens !== undefined
+          ? `total-output-tokens: ${inspect.tokenUsage.totalOutputTokens}`
+          : null;
+      case "session-id":
+        return session.threadId ? `session-id: ${session.threadId}` : null;
       case "session_name":
         return session.displayName ? `会话: ${session.displayName}` : null;
       case "project_name":
@@ -5970,6 +6013,28 @@ export class BridgeService {
       case "final_answer_ready":
         return `终答: ${inspect.finalMessageAvailable ? "是" : "否"}`;
     }
+  }
+
+  private formatContextRemainingPercent(inspect: InspectSnapshot): number | null {
+    const contextWindow = inspect.tokenUsage?.modelContextWindow;
+    const lastTotalTokens = inspect.tokenUsage?.lastTotalTokens;
+    if (contextWindow === null || contextWindow === undefined || lastTotalTokens === null || lastTotalTokens === undefined) {
+      return null;
+    }
+
+    if (contextWindow <= CODEX_CLI_STATUS_LINE_BASELINE_TOKENS) {
+      return 0;
+    }
+
+    const effectiveWindow = contextWindow - CODEX_CLI_STATUS_LINE_BASELINE_TOKENS;
+    const used = Math.max(lastTotalTokens - CODEX_CLI_STATUS_LINE_BASELINE_TOKENS, 0);
+    const remaining = Math.max(effectiveWindow - used, 0);
+    return Math.round((remaining / effectiveWindow) * 100);
+  }
+
+  private formatContextUsedPercent(inspect: InspectSnapshot): number | null {
+    const remaining = this.formatContextRemainingPercent(inspect);
+    return remaining === null ? null : Math.max(0, Math.min(100, 100 - remaining));
   }
 
   private async safeSendHtmlMessage(

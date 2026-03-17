@@ -7,7 +7,7 @@ import type {
   RuntimeStatusField,
   SessionRow
 } from "../types.js";
-import { ALL_RUNTIME_STATUS_FIELDS } from "../types.js";
+import { ALL_RUNTIME_STATUS_FIELDS, BRIDGE_EXTENSION_RUNTIME_STATUS_FIELDS, CODEX_CLI_RUNTIME_STATUS_FIELDS } from "../types.js";
 import type { ActivityStatus, CollabAgentStateSnapshot, InspectSnapshot, StreamBlock, StreamSnapshot } from "../activity/types.js";
 import type { TelegramInlineKeyboardMarkup } from "./api.js";
 import { truncateText } from "../util/text.js";
@@ -273,6 +273,21 @@ function ensureTelegramCallbackDataLimit(data: string): string {
 }
 
 const RUNTIME_STATUS_FIELD_CODES: ReadonlyMap<RuntimeStatusField, string> = new Map([
+  ["model-name", "mn"],
+  ["model-with-reasoning", "mw"],
+  ["current-dir", "cd"],
+  ["project-root", "rt"],
+  ["git-branch", "gb"],
+  ["context-remaining", "xr"],
+  ["context-used", "xu"],
+  ["five-hour-limit", "f5"],
+  ["weekly-limit", "wk"],
+  ["codex-version", "cv"],
+  ["context-window-size", "ws"],
+  ["used-tokens", "ut"],
+  ["total-input-tokens", "ti"],
+  ["total-output-tokens", "to"],
+  ["session-id", "si"],
   ["session_name", "sn"],
   ["project_name", "pn"],
   ["project_path", "pp"],
@@ -1085,16 +1100,46 @@ const INSPECT_PAGE_CHAR_LIMIT = 3200;
 
 export function buildRuntimeStatusFieldLabel(field: RuntimeStatusField): string {
   switch (field) {
+    case "model-name":
+      return "模型名";
+    case "model-with-reasoning":
+      return "模型 + 推理强度";
+    case "current-dir":
+      return "当前目录";
+    case "project-root":
+      return "项目根目录";
+    case "git-branch":
+      return "Git 分支";
+    case "context-remaining":
+      return "剩余上下文";
+    case "context-used":
+      return "已用上下文";
+    case "five-hour-limit":
+      return "5 小时额度";
+    case "weekly-limit":
+      return "周额度";
+    case "codex-version":
+      return "Codex 版本";
+    case "context-window-size":
+      return "上下文窗口大小";
+    case "used-tokens":
+      return "已用 Token";
+    case "total-input-tokens":
+      return "累计输入 Token";
+    case "total-output-tokens":
+      return "累计输出 Token";
+    case "session-id":
+      return "会话 ID";
     case "session_name":
       return "会话名";
     case "project_name":
       return "项目名";
     case "project_path":
-      return "项目路径";
+      return "项目路径（旧）";
     case "model_reasoning":
-      return "模型 + 强度";
+      return "模型 + 强度（旧）";
     case "thread_id":
-      return "线程 ID";
+      return "线程 ID（旧）";
     case "turn_id":
       return "Turn ID";
     case "blocked_reason":
@@ -1112,6 +1157,46 @@ export function buildRuntimeStatusFieldLabel(field: RuntimeStatusField): string 
   }
 }
 
+function buildRuntimeStatusFieldGroupSummary(fields: readonly RuntimeStatusField[]): string {
+  return fields.map((field) => buildRuntimeStatusFieldLabel(field)).join("、");
+}
+
+const SELECTABLE_CODEX_CLI_RUNTIME_STATUS_FIELDS: readonly RuntimeStatusField[] = [
+  "model-name",
+  "model-with-reasoning",
+  "current-dir",
+  "project-root",
+  "context-remaining",
+  "context-used",
+  "context-window-size",
+  "used-tokens",
+  "total-input-tokens",
+  "total-output-tokens",
+  "session-id"
+] as const;
+
+function buildRuntimePreferencePages(): Array<{
+  groupLabel: string;
+  groupPage: number;
+  groupPageCount: number;
+  fields: RuntimeStatusField[];
+}> {
+  const groups = [
+    { groupLabel: "Codex CLI", fields: [...SELECTABLE_CODEX_CLI_RUNTIME_STATUS_FIELDS] },
+    { groupLabel: "Bridge Extensions", fields: [...BRIDGE_EXTENSION_RUNTIME_STATUS_FIELDS] }
+  ];
+
+  return groups.flatMap(({ groupLabel, fields }) => {
+    const groupPageCount = Math.max(1, Math.ceil(fields.length / RUNTIME_FIELD_PAGE_SIZE));
+    return Array.from({ length: groupPageCount }, (_value, groupPage) => ({
+      groupLabel,
+      groupPage,
+      groupPageCount,
+      fields: fields.slice(groupPage * RUNTIME_FIELD_PAGE_SIZE, (groupPage + 1) * RUNTIME_FIELD_PAGE_SIZE)
+    }));
+  });
+}
+
 export function buildRuntimePreferencesMessage(options: {
   token: string;
   fields: RuntimeStatusField[];
@@ -1120,10 +1205,16 @@ export function buildRuntimePreferencesMessage(options: {
   text: string;
   replyMarkup: TelegramInlineKeyboardMarkup;
 } {
-  const allFields = ALL_RUNTIME_STATUS_FIELDS;
-  const totalPages = Math.max(1, Math.ceil(allFields.length / RUNTIME_FIELD_PAGE_SIZE));
+  const pages = buildRuntimePreferencePages();
+  const totalPages = Math.max(1, pages.length);
   const safePage = Math.min(Math.max(options.page, 0), totalPages - 1);
-  const pageFields = allFields.slice(safePage * RUNTIME_FIELD_PAGE_SIZE, (safePage + 1) * RUNTIME_FIELD_PAGE_SIZE);
+  const currentPage = pages[safePage] ?? {
+    groupLabel: "Codex CLI",
+    groupPage: 0,
+    groupPageCount: 1,
+    fields: [...CODEX_CLI_RUNTIME_STATUS_FIELDS].slice(0, RUNTIME_FIELD_PAGE_SIZE)
+  };
+  const pageFields = currentPage.fields;
   const selectedSet = new Set(options.fields);
 
   const selectedSummary = options.fields.length > 0
@@ -1154,9 +1245,13 @@ export function buildRuntimePreferencesMessage(options: {
       formatHtmlHeading("Runtime 状态行"),
       "按按钮选择要显示的字段。",
       "选择顺序就是显示顺序；新选中的字段会追加到末尾。",
+      formatHtmlField("Codex CLI：", buildRuntimeStatusFieldGroupSummary(SELECTABLE_CODEX_CLI_RUNTIME_STATUS_FIELDS)),
+      formatHtmlField("Bridge Extensions：", buildRuntimeStatusFieldGroupSummary(BRIDGE_EXTENSION_RUNTIME_STATUS_FIELDS)),
+      formatHtmlField("当前分组：", currentPage.groupLabel),
       formatHtmlField("已选字段：", `${options.fields.length} 个`),
       selectedSummary,
-      formatHtmlField("页码：", `${safePage + 1}/${totalPages}`)
+      formatHtmlField("分组页码：", `${currentPage.groupPage + 1}/${currentPage.groupPageCount}`),
+      formatHtmlField("总页码：", `${safePage + 1}/${totalPages}`)
     ].join("\n"),
     replyMarkup: {
       inline_keyboard: rows

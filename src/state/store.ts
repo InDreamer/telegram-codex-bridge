@@ -168,6 +168,13 @@ interface RuntimeCardPreferencesRecord {
   updated_at: string;
 }
 
+const LEGACY_RUNTIME_STATUS_FIELD_MIGRATIONS: ReadonlyMap<string, RuntimeStatusField> = new Map([
+  ["project_path", "current-dir"],
+  ["model_reasoning", "model-with-reasoning"],
+  ["thread_id", "session-id"]
+]);
+const RUNTIME_STATUS_FIELD_V4_MIGRATION_CUTOFF = "2026-03-17T00:00:00.000Z";
+
 interface PendingInteractionRecord {
   interaction_id: string;
   telegram_chat_id: string;
@@ -234,6 +241,38 @@ function parseRuntimeStatusFields(fieldsJson: string): RuntimeStatusField[] {
   } catch {
     return [...DEFAULT_RUNTIME_STATUS_FIELDS];
   }
+}
+
+function migrateRuntimeStatusFields(fieldsJson: string): RuntimeStatusField[] | null {
+  try {
+    const parsed = JSON.parse(fieldsJson) as unknown;
+    if (!Array.isArray(parsed)) {
+      return null;
+    }
+
+    const allowed = new Set<RuntimeStatusField>(ALL_RUNTIME_STATUS_FIELDS);
+    const migrated = parsed.flatMap((field): RuntimeStatusField[] => {
+      if (typeof field !== "string") {
+        return [];
+      }
+
+      const mapped = LEGACY_RUNTIME_STATUS_FIELD_MIGRATIONS.get(field) ?? field;
+      return allowed.has(mapped as RuntimeStatusField) ? [mapped as RuntimeStatusField] : [];
+    });
+
+    if (parsed.length === 0) {
+      return [];
+    }
+
+    const uniqueFields = [...new Set(migrated)];
+    return uniqueFields.length > 0 ? uniqueFields : [...DEFAULT_RUNTIME_STATUS_FIELDS];
+  } catch {
+    return null;
+  }
+}
+
+function shouldMigrateRuntimeStatusFields(updatedAt: string): boolean {
+  return updatedAt < RUNTIME_STATUS_FIELD_V4_MIGRATION_CUTOFF;
 }
 
 function mapAuthorizedUser(record: AuthorizedUserRecord): AuthorizedUserRow {
@@ -380,9 +419,13 @@ function mapPendingInteraction(record: PendingInteractionRecord): PendingInterac
 }
 
 function mapRuntimeCardPreferences(record: RuntimeCardPreferencesRecord): RuntimeCardPreferencesRow {
+  const fields = shouldMigrateRuntimeStatusFields(record.updated_at)
+    ? migrateRuntimeStatusFields(record.fields_json) ?? parseRuntimeStatusFields(record.fields_json)
+    : parseRuntimeStatusFields(record.fields_json);
+
   return {
     key: "global",
-    fields: parseRuntimeStatusFields(record.fields_json),
+    fields,
     updatedAt: record.updated_at
   };
 }
@@ -738,6 +781,42 @@ function applyMigrations(db: DatabaseSync): void {
     );
 
     recordMigration(db, 8);
+  }
+
+  if (!applied.has(9)) {
+    if (appliedTableExists(db, "runtime_card_preferences")) {
+      const rows = db
+        .prepare(
+          `
+            SELECT key, fields_json, updated_at
+            FROM runtime_card_preferences
+          `
+        )
+        .all() as unknown as RuntimeCardPreferencesRecord[];
+
+      const updatePreference = db.prepare(
+        `
+          UPDATE runtime_card_preferences
+          SET fields_json = ?
+          WHERE key = ?
+        `
+      );
+
+      for (const row of rows) {
+        if (!shouldMigrateRuntimeStatusFields(row.updated_at)) {
+          continue;
+        }
+
+        const migrated = migrateRuntimeStatusFields(row.fields_json);
+        if (!migrated) {
+          continue;
+        }
+
+        updatePreference.run(JSON.stringify(migrated), row.key);
+      }
+    }
+
+    recordMigration(db, 9);
   }
 }
 
