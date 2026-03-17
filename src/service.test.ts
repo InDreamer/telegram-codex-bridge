@@ -2141,6 +2141,133 @@ test("completed plan-mode turns send a plan result message with implementation a
   }
 });
 
+test("completed turns keep the turn's original plan mode after /plan is toggled off mid-run", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ chatId: string; text: string; parseMode?: string; replyMarkup?: any }> = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.setActiveSession("1", session.sessionId);
+    store.setSessionPlanMode(session.sessionId, true);
+    store.setSessionSelectedModel(session.sessionId, "gpt-5");
+
+    (service as any).api = {
+      sendMessage: async (chatId: string, text: string, options?: any) => {
+        sent.push({ chatId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(1150 + sent.length, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string) =>
+        createFakeTelegramMessage(messageId, text)
+    };
+
+    installRunningAppServer(service, "thread-plan-sticky", "turn-plan-sticky", async () => ({
+      thread: {
+        id: "thread-plan-sticky",
+        turns: [{
+          id: "turn-plan-sticky",
+          items: [
+            {
+              type: "plan",
+              text: "## Sticky Plan\n\n### Summary\n关闭 plan mode 不应影响当前 turn 的计划结果。"
+            }
+          ]
+        }]
+      }
+    }));
+
+    await (service as any).startRealTurn("1", {
+      ...store.getSessionById(session.sessionId)!,
+      planMode: true
+    }, "先给我一个 plan");
+    await (service as any).handleAppServerNotification("turn/started", {
+      threadId: "thread-plan-sticky",
+      turnId: "turn-plan-sticky"
+    });
+
+    await (service as any).routeCommand("1", "plan", "");
+    assert.equal(store.getSessionById(session.sessionId)?.planMode, false);
+    assert.equal(store.getSessionById(session.sessionId)?.needsDefaultCollaborationModeReset, true);
+
+    await (service as any).handleAppServerNotification("turn/completed", {
+      threadId: "thread-plan-sticky",
+      turn: { id: "turn-plan-sticky", status: "completed", items: [] }
+    });
+
+    const nonRuntimeMessages = sent.filter((entry) => !entry.text.startsWith("<b>Runtime Status</b>"));
+    const planMessage = nonRuntimeMessages.at(-1);
+    assert.ok(planMessage);
+    assert.match(planMessage?.text ?? "", /Sticky Plan/u);
+    assert.equal(planMessage?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "实施这个计划");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("completed turns keep default-mode final answers after /plan is toggled on mid-run", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ chatId: string; text: string; parseMode?: string; replyMarkup?: any }> = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.setActiveSession("1", session.sessionId);
+    store.setSessionSelectedModel(session.sessionId, "gpt-5");
+
+    (service as any).api = {
+      sendMessage: async (chatId: string, text: string, options?: any) => {
+        sent.push({ chatId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(1170 + sent.length, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string) =>
+        createFakeTelegramMessage(messageId, text)
+    };
+
+    installRunningAppServer(service, "thread-default-sticky", "turn-default-sticky", async () => ({
+      thread: {
+        id: "thread-default-sticky",
+        turns: [{
+          id: "turn-default-sticky",
+          items: [
+            {
+              type: "plan",
+              text: "## Should Not Render As Plan\n\n### Summary\n这个计划只是历史产物。"
+            }
+          ]
+        }]
+      }
+    }));
+
+    await (service as any).startRealTurn("1", store.getSessionById(session.sessionId)!, "正常回答我");
+    await (service as any).handleAppServerNotification("turn/started", {
+      threadId: "thread-default-sticky",
+      turnId: "turn-default-sticky"
+    });
+    await (service as any).handleAppServerNotification("codex/event/task_complete", {
+      threadId: "thread-default-sticky",
+      turnId: "turn-default-sticky",
+      msg: {
+        last_agent_message: "普通 final answer"
+      }
+    });
+
+    await (service as any).routeCommand("1", "plan", "");
+    assert.equal(store.getSessionById(session.sessionId)?.planMode, true);
+
+    await (service as any).handleAppServerNotification("turn/completed", {
+      threadId: "thread-default-sticky",
+      turn: { id: "turn-default-sticky", status: "completed", items: [] }
+    });
+
+    const nonRuntimeMessages = sent.filter((entry) => !entry.text.startsWith("<b>Runtime Status</b>"));
+    const finalMessage = nonRuntimeMessages.at(-1);
+    assert.ok(finalMessage);
+    assert.match(finalMessage?.text ?? "", /普通 final answer/u);
+    assert.equal(finalMessage?.replyMarkup, undefined);
+    assert.doesNotMatch(finalMessage?.text ?? "", /Should Not Render As Plan/u);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("plan result implement action switches off plan mode and starts implementation turn", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ chatId: string; text: string; options?: any }> = [];
@@ -6428,7 +6555,7 @@ test("review command starts review mode and creates a dedicated review session w
   }
 });
 
-test("fork command creates a new active session and carries over the selected model", async () => {
+test("fork command creates a new active session and carries over the selected model and pending default reset", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ text: string; parseMode?: string }> = [];
   const forkCalls: unknown[] = [];
@@ -6437,6 +6564,8 @@ test("fork command creates a new active session and carries over the selected mo
     const session = authorizeNumericChatWithSession(store, "1");
     store.updateSessionThreadId(session.sessionId, "thread-fork-source");
     store.setSessionSelectedModel(session.sessionId, "gpt-5");
+    store.setSessionPlanMode(session.sessionId, true);
+    store.setSessionPlanMode(session.sessionId, false);
 
     (service as any).api = {
       sendMessage: async (_chatId: string, text: string, options?: any) => {
@@ -6473,6 +6602,8 @@ test("fork command creates a new active session and carries over the selected mo
     assert.equal(forked?.displayName, "Fork Session");
     assert.equal(forked?.threadId, "thread-forked");
     assert.equal(forked?.selectedModel, "gpt-5");
+    assert.equal(forked?.planMode, false);
+    assert.equal(forked?.needsDefaultCollaborationModeReset, true);
     assert.equal(forked?.lastTurnId, "turn-forked-head");
     assert.equal(forked?.lastTurnStatus, "completed");
 

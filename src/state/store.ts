@@ -1378,6 +1378,7 @@ export class BridgeStateStore {
     selectedModel?: string | null;
     selectedReasoningEffort?: ReasoningEffort | null;
     planMode?: boolean;
+    needsDefaultCollaborationModeReset?: boolean;
     threadId?: string | null;
     lastTurnId?: string | null;
     lastTurnStatus?: string | null;
@@ -1391,7 +1392,7 @@ export class BridgeStateStore {
       selectedModel: options.selectedModel ?? null,
       selectedReasoningEffort: options.selectedReasoningEffort ?? null,
       planMode: options.planMode ?? false,
-      needsDefaultCollaborationModeReset: false,
+      needsDefaultCollaborationModeReset: options.needsDefaultCollaborationModeReset ?? false,
       displayName: options.displayName ?? options.projectName,
       projectName: options.projectName,
       projectAlias: null,

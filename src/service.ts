@@ -211,6 +211,7 @@ interface ActiveTurnState {
   chatId: string;
   threadId: string;
   turnId: string;
+  startedInPlanMode: boolean;
   finalMessage: string | null;
   tracker: ActivityTracker;
   debugJournal: DebugJournalWriter;
@@ -3308,7 +3309,8 @@ export class BridgeService {
         displayName: `Review: ${activeSession.displayName}`,
         selectedModel: activeSession.selectedModel,
         selectedReasoningEffort: activeSession.selectedReasoningEffort,
-        planMode: activeSession.planMode
+        planMode: activeSession.planMode,
+        needsDefaultCollaborationModeReset: activeSession.needsDefaultCollaborationModeReset
       });
       this.store.updateSessionThreadId(reviewSession.sessionId, result.reviewThreadId);
       reviewSession = this.store.getSessionById(reviewSession.sessionId) ?? reviewSession;
@@ -3352,6 +3354,7 @@ export class BridgeService {
       selectedModel: activeSession.selectedModel ?? forked.model,
       selectedReasoningEffort: activeSession.selectedReasoningEffort ?? forked.reasoningEffort ?? null,
       planMode: activeSession.planMode,
+      needsDefaultCollaborationModeReset: activeSession.needsDefaultCollaborationModeReset,
       threadId: forked.thread.id,
       lastTurnId: lastForkTurn?.id ?? activeSession.lastTurnId,
       lastTurnStatus: lastForkTurn?.status ?? activeSession.lastTurnStatus
@@ -4449,6 +4452,7 @@ export class BridgeService {
       chatId,
       threadId,
       turnId,
+      startedInPlanMode: session.planMode,
       finalMessage: null,
       tracker: new ActivityTracker({
         threadId,
@@ -4787,7 +4791,6 @@ export class BridgeService {
     }
 
     if (classified.status === "completed") {
-      const completedSession = this.store.getSessionById(activeTurn.sessionId);
       let finalMessage = activeTurn.finalMessage;
       let proposedPlan: string | null = null;
       if (this.appServer) {
@@ -4799,7 +4802,7 @@ export class BridgeService {
       }
       this.store.markSessionSuccessful(activeTurn.sessionId);
       this.disposeRuntimeCards(activeTurn);
-      if (completedSession?.planMode && proposedPlan) {
+      if (activeTurn.startedInPlanMode && proposedPlan) {
         await this.sendPlanResult(activeTurn, proposedPlan);
         return;
       }
