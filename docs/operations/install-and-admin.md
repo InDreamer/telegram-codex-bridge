@@ -34,6 +34,7 @@ Supported config keys in `bridge.env`:
 - when set, project discovery scans only those roots
 - when empty or unset, runtime falls back to scanning the user's `HOME` as one bounded root
 - runtime fallback does not rewrite config; persistence belongs to install or repair flow
+- if both `bridge.env` and the caller environment provide the same bridge setting, `bridge.env` is the persisted source of truth for bridge admin flows
 
 macOS note:
 - `bridge.env` stays the source of truth for bridge config after install

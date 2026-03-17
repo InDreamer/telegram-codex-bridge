@@ -415,6 +415,17 @@ Shows:
 - Codex availability
 - active session summary
 
+### `/runtime`
+
+Shows and edits the runtime status-line field selection.
+
+Rules:
+- the picker separates `Codex CLI` fields from `Bridge Extensions`
+- `Codex CLI` fields use Codex CLI semantics when rendered in Telegram
+- bridge extensions remain available for bridge-specific operator needs
+- only CLI fields that the bridge can currently render truthfully are exposed in the picker
+- legacy bridge fields such as `project_path`, `model_reasoning`, and `thread_id` may still remain available as bridge extensions for compatibility, but they are not the preferred v4 CLI-aligned choices
+
 ## Callback Contract
 
 Versioned callback formats:

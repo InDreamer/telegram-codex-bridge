@@ -167,6 +167,12 @@ Read only when the task is explicitly about planning or future direction:
 
 These are **not shipped behavior** unless the active task explicitly says otherwise.
 
+Archive warning:
+- prefer **not** to read `docs/archive/` at all
+- only consult archive material when current code, current docs, API/schema evidence, and the active user request appear broken or contradictory
+- archive material is also acceptable when the project clearly went through a substantive behavior or business transition and you need historical comparison
+- if archive evidence conflicts with current sources, current sources win unless the user explicitly asks for history
+
 ## Code anchors
 
 If docs are insufficient, verify against the **narrowest relevant source file**.
@@ -226,6 +232,7 @@ Use these patterns unless the task clearly needs more.
 1. check current product/architecture/operations docs
 2. check code
 3. only then consult roadmap/future/plans if needed
+4. consult `docs/archive/` only as a last resort under the archive warning above
 
 ## Stop conditions
 
@@ -248,7 +255,7 @@ Use these labels mentally:
 - `docs/roadmap/` = delivery intent
 - `docs/future/` = future product/evaluation input
 - `docs/plans/` = implementation planning / handoff history
-- `docs/archive/` = historical context only
+- `docs/archive/` = historical context only; avoid by default
 
 ## Anti-patterns
 
@@ -256,6 +263,7 @@ Avoid these mistakes:
 
 - reading every doc listed here "just in case"
 - treating roadmap/future/plans as shipped behavior
+- treating archive docs as normal reference material
 - claiming protocol support means bridge support
 - assuming current code is automatically correct intent
 - assuming current docs are automatically implemented

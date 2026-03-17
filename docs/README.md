@@ -75,6 +75,9 @@ They are useful for understanding why something was planned, not as automatic pr
 
 - `docs/plans/`
 
+Rule:
+- when an implementation handoff is complete and no longer the active working set, move it into `docs/archive/`
+
 Use this layer for:
 - implementation history
 - design sequencing
@@ -86,6 +89,12 @@ These docs exist for reconstruction and context only.
 They should not be treated as active behavior or active intent unless explicitly re-promoted.
 
 - `docs/archive/`
+
+Read this layer only when:
+- current docs, code, API evidence, and user-reported behavior appear broken or contradictory
+- the bridge has undergone a substantive behavior or business change and historical comparison is required
+
+Do not read `docs/archive/` by default.
 
 ## Recommended reading paths
 
