@@ -171,6 +171,16 @@ function getMessageTexts(
   ];
 }
 
+function getLatestInteractiveMessage<T extends { text: string; options?: { replyMarkup?: { inline_keyboard?: unknown[] } } }>(
+  sent: T[]
+): T | undefined {
+  return [...sent].reverse().find((entry) => Boolean(entry.options?.replyMarkup?.inline_keyboard?.length));
+}
+
+function getLatestNonStatusMessage<T extends { text: string }>(sent: T[]): T | undefined {
+  return [...sent].reverse().find((entry) => !entry.text.startsWith("<b>Runtime Status</b>"));
+}
+
 async function withMockedNow<T>(nowIso: string, callback: () => Promise<T>): Promise<T> {
   const RealDate = Date;
   const fixedTime = Date.parse(nowIso);
@@ -890,7 +900,7 @@ test("runtime cards keep command activity on the status message and final answer
     assert.ok(
       [...sent, ...edited].some((entry) =>
         entry.messageId === 100 &&
-        entry.replyMarkup?.inline_keyboard?.[0]?.[0]?.text === "当前计划：Wire inspect renderer"
+        entry.replyMarkup?.inline_keyboard?.[0]?.[0]?.text === "计划清单：Wire inspect renderer"
       )
     );
 
@@ -1162,6 +1172,7 @@ test("completed turns send the final answer with Telegram HTML formatting", asyn
       finalAnswer?.text.includes("<pre><code class=\"language-ts\">console.log(\"hi\")</code></pre>"),
       true
     );
+    assert.equal(sent.filter((entry) => entry.text.startsWith("<b>Runtime Status</b>")).length, 1);
   } finally {
     await cleanup();
   }
@@ -1518,8 +1529,8 @@ test("runtime status card renders optional fields on separate lines without a su
     assert.match(sent[0]?.text ?? "", /<b>Session:<\/b> Session Alpha/u);
     assert.doesNotMatch(sent[0]?.text ?? "", /<b>Project:<\/b>/u);
     assert.doesNotMatch(sent[0]?.text ?? "", /<b>概览:<\/b>/u);
-    assert.match(sent[0]?.text ?? "", /模型: gpt-5 \+ 默认/u);
-    assert.match(sent[0]?.text ?? "", /Plan mode: on/u);
+    assert.match(sent[0]?.text ?? "", /<b>Model Reasoning:<\/b> gpt-5 \+ 默认/u);
+    assert.match(sent[0]?.text ?? "", /<b>Plan Mode:<\/b> on/u);
     assert.doesNotMatch(sent[0]?.text ?? "", /\|/u);
   } finally {
     await cleanup();
@@ -1930,7 +1941,8 @@ test("status card expands the current plan inline and keeps only the latest plan
 
     const collapsed = edited.at(-1) ?? sent.at(-1);
     assert.equal(collapsed?.parseMode, "HTML");
-    assert.equal(collapsed?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "当前计划：Collect protocol evidence");
+    assert.equal(collapsed?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "计划清单：Collect protocol evidence");
+    assert.doesNotMatch(collapsed?.text ?? "", /<b>当前计划<\/b>/u);
     assert.doesNotMatch(collapsed?.text ?? "", /<b>Current Plan:<\/b>/u);
 
     await withMockedNow("2026-03-10T10:00:07.000Z", async () => {
@@ -1948,10 +1960,10 @@ test("status card expands the current plan inline and keeps only the latest plan
     });
 
     assert.equal(callbackAnswers.at(-1), undefined);
-    assert.match(edited.at(-1)?.text ?? "", /<b>Current Plan:<\/b>/u);
+    assert.match(edited.at(-1)?.text ?? "", /<b>计划清单:<\/b>/u);
     assert.match(edited.at(-1)?.text ?? "", /1\. Collect protocol evidence \(pending\)/u);
     assert.match(edited.at(-1)?.text ?? "", /2\. Wire inspect renderer \(pending\)/u);
-    assert.equal(edited.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "收起当前计划");
+    assert.equal(edited.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "收起计划清单");
 
     await withMockedNow("2026-03-10T10:00:09.000Z", async () => {
       await (service as any).handleAppServerNotification("turn/plan/updated", {
@@ -1983,14 +1995,14 @@ test("status card expands the current plan inline and keeps only the latest plan
     });
 
     assert.equal(callbackAnswers.at(-1), undefined);
-    assert.doesNotMatch(edited.at(-1)?.text ?? "", /<b>Current Plan:<\/b>/u);
-    assert.equal(edited.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "当前计划：Wire inspect renderer");
+    assert.doesNotMatch(edited.at(-1)?.text ?? "", /<b>计划清单:<\/b>/u);
+    assert.equal(edited.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "计划清单：Wire inspect renderer");
   } finally {
     await cleanup();
   }
 });
 
-test("status card reconstructs the current plan from delta-only plan updates", async () => {
+test("status card does not expose proposed-plan drafts through the checklist button", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
   const edited: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
@@ -2060,42 +2072,22 @@ test("status card reconstructs the current plan from delta-only plan updates", a
 
     const collapsed = edited.at(-1) ?? sent.at(-1);
     assert.equal(collapsed?.parseMode, "HTML");
-    assert.equal(
-      collapsed?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text,
-      "当前计划：Telegram 命令体验优化（轻量一周版）"
-    );
-
-    await withMockedNow("2026-03-10T10:10:08.000Z", async () => {
-      await (service as any).handleCallback({
-        id: "callback-plan-delta-expand",
-        from: { id: 1, is_bot: false, first_name: "Tester" },
-        message: {
-          message_id: 830,
-          chat: { id: 1, type: "private" },
-          date: 0,
-          text: "<b>Runtime Status</b>"
-        },
-        data: `v1:plan:expand:${session.sessionId}`
-      });
-    });
-
-    assert.equal(callbackAnswers.at(-1), undefined);
-    assert.match(edited.at(-1)?.text ?? "", /<b>Current Plan:<\/b>/u);
-    assert.match(edited.at(-1)?.text ?? "", /Telegram 命令体验优化（轻量一周版）/u);
-    assert.match(edited.at(-1)?.text ?? "", /Summary/u);
-    assert.match(edited.at(-1)?.text ?? "", /优化 .*\/help.* 的可读性和新手可达性/u);
+    assert.equal(collapsed?.replyMarkup?.inline_keyboard?.length ?? 0, 0);
+    assert.doesNotMatch(collapsed?.text ?? "", /Telegram 命令体验优化（轻量一周版）/u);
   } finally {
     await cleanup();
   }
 });
 
-test("completed plan-mode turns deliver the persisted plan when no final answer item exists", async () => {
+test("completed plan-mode turns send a plan result message with implementation actions", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ chatId: string; text: string; parseMode?: string; replyMarkup?: any }> = [];
 
   try {
     const session = authorizeNumericChatWithSession(store, "1");
     store.setActiveSession("1", session.sessionId);
+    store.setSessionPlanMode(session.sessionId, true);
+    store.setSessionSelectedModel(session.sessionId, "gpt-5");
 
     (service as any).api = {
       sendMessage: async (chatId: string, text: string, options?: any) => {
@@ -2122,7 +2114,10 @@ test("completed plan-mode turns deliver the persisted plan when no final answer 
       }
     }));
 
-    await (service as any).startRealTurn("1", session, "帮我随便 plan 点什么");
+    await (service as any).startRealTurn("1", {
+      ...store.getSessionById(session.sessionId)!,
+      planMode: true
+    }, "帮我随便 plan 点什么");
     await (service as any).handleAppServerNotification("turn/started", {
       threadId: "thread-plan-final",
       turnId: "turn-plan-final"
@@ -2136,10 +2131,100 @@ test("completed plan-mode turns deliver the persisted plan when no final answer 
       sent.some((entry) => entry.text.includes("本次操作已完成，但没有可返回的最终答复。")),
       false
     );
-    assert.equal(
-      sent.some((entry) => entry.text.includes("Telegram 命令体验优化（轻量一周版）")),
-      true
-    );
+    const planMessage = sent.at(-1);
+    assert.ok(planMessage);
+    assert.match(planMessage?.text ?? "", /Telegram 命令体验优化（轻量一周版）/u);
+    assert.equal(planMessage?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "实施这个计划");
+    assert.equal(planMessage?.replyMarkup?.inline_keyboard?.[0]?.[1]?.text, "继续规划");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("plan result implement action switches off plan mode and starts implementation turn", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ chatId: string; text: string; options?: any }> = [];
+  const callbackAnswers: Array<string | undefined> = [];
+  const startTurnCalls: Array<unknown> = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.setActiveSession("1", session.sessionId);
+    store.setSessionPlanMode(session.sessionId, true);
+    store.setSessionSelectedModel(session.sessionId, "gpt-5");
+
+    (service as any).api = {
+      sendMessage: async (chatId: string, text: string, options?: any) => {
+        sent.push({ chatId, text, options });
+        return createFakeTelegramMessage(1200 + sent.length, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) =>
+        createFakeTelegramMessage(messageId, text),
+      answerCallbackQuery: async (_callbackQueryId: string, text?: string) => {
+        callbackAnswers.push(text);
+      }
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      startThread: async () => ({ thread: { id: "thread-plan-apply" } }),
+      startTurn: async (request: unknown) => {
+        startTurnCalls.push(request);
+        return {
+          turn: {
+            id: startTurnCalls.length === 1 ? "turn-plan-apply" : `turn-${startTurnCalls.length}`,
+            status: "inProgress"
+          }
+        };
+      },
+      resumeThread: async () => ({
+        thread: {
+          id: "thread-plan-apply",
+          turns: [{
+            id: "turn-plan-apply",
+            items: [{
+              type: "plan",
+              text: "## Plan\n\nShip the Telegram repair."
+            }]
+          }]
+        }
+      })
+    };
+
+    store.updateSessionThreadId(session.sessionId, "thread-plan-apply");
+
+    await (service as any).startRealTurn("1", {
+      ...store.getSessionById(session.sessionId)!,
+      threadId: "thread-plan-apply",
+      planMode: true
+    }, "帮我 plan 一下");
+    await (service as any).handleAppServerNotification("turn/started", {
+      threadId: "thread-plan-apply",
+      turnId: "turn-plan-apply"
+    });
+    await (service as any).handleAppServerNotification("turn/completed", {
+      threadId: "thread-plan-apply",
+      turn: { id: "turn-plan-apply", status: "completed", items: [] }
+    });
+
+    const planMessage = [...sent].reverse().find((entry) => !entry.text.startsWith("<b>Runtime Status</b>"));
+    assert.ok(planMessage);
+    assert.equal(planMessage?.options?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "实施这个计划");
+
+    await (service as any).handleCallback({
+      id: "callback-plan-apply",
+      from: { id: 1, is_bot: false, first_name: "Tester" },
+      message: {
+        message_id: 1200 + sent.length,
+        chat: { id: 1, type: "private" }
+      },
+      data: planMessage?.options?.replyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data
+    });
+
+    assert.equal(store.getSessionById(session.sessionId)?.planMode, false);
+    assert.equal(startTurnCalls.length, 2);
+    assert.equal((startTurnCalls.at(-1) as { text?: string })?.text, "Implement the plan.");
+    assert.equal(callbackAnswers.at(-1), undefined);
   } finally {
     await cleanup();
   }
@@ -3093,13 +3178,16 @@ test("runtime errors create a separate error card without polluting the status c
       });
     });
 
-    assert.equal(sent.length, 2);
-    assert.equal(sent.filter((entry) => entry.text.startsWith("<b>Runtime Status</b>")).length, 1);
+    assert.equal(sent.length, 3);
+    assert.equal(sent.filter((entry) => entry.text.startsWith("<b>Runtime Status</b>")).length, 2);
     assert.equal(sent.filter((entry) => entry.text.startsWith("<b>Error</b>")).length, 1);
 
-    const statusTexts = getMessageTexts(sent, edited, 300);
-    assert.ok(statusTexts.some((text) => /<b>State:<\/b> Failed/u.test(text)));
-    assert.equal(statusTexts.some((text) => /tool crashed/u.test(text)), false);
+    const allStatusTexts = [
+      ...sent.filter((entry) => entry.text.startsWith("<b>Runtime Status</b>")).map((entry) => entry.text),
+      ...edited.map((entry) => entry.text)
+    ];
+    assert.ok(allStatusTexts.some((text) => /<b>State:<\/b> Failed/u.test(text)));
+    assert.equal(allStatusTexts.some((text) => /tool crashed/u.test(text)), false);
 
     const errorTexts = getMessageTexts(sent, edited, 301);
     assert.equal(sent.find((entry) => entry.messageId === 301)?.parseMode, "HTML");
@@ -4089,7 +4177,7 @@ test("inspect renders structured activity details while running and after comple
     assert.match(sent.at(-1)?.text ?? "", /<b>状态：<\/b> 进行中/u);
     assert.match(sent.at(-1)?.text ?? "", /<b>结果：<\/b> 26\/26 tests passed/u);
     assert.match(sent.at(-1)?.text ?? "", /Updated src\/service\.ts to enforce Telegram cooldown/u);
-    assert.match(sent.at(-1)?.text ?? "", /<b>当前计划<\/b>/u);
+    assert.match(sent.at(-1)?.text ?? "", /<b>计划清单<\/b>/u);
     assert.match(sent.at(-1)?.text ?? "", /Collect protocol evidence \(completed\)/u);
     assert.match(sent.at(-1)?.text ?? "", /<b>补充说明<\/b>/u);
     assert.match(sent.at(-1)?.text ?? "", /Checking event mapping against Telegram surface\./u);
@@ -4315,7 +4403,7 @@ test("runtime card flow writes dedicated per-surface trace logs with rendered co
     assert.match(statusLog, /"message":"state_transition"/u);
     assert.match(statusLog, /"message":"render_requested"/u);
     assert.match(statusLog, /Checking Telegram session flow rendering\./u);
-    assert.match(statusLog, /当前计划：Trace plan card/u);
+    assert.match(statusLog, /计划清单：Trace plan card/u);
     assert.match(statusLog, /Trace plan card \(inProgress\)/u);
     assert.match(statusLog, /"renderedText":"<b>Runtime Status/u);
 
@@ -4329,7 +4417,7 @@ test("runtime card flow writes dedicated per-surface trace logs with rendered co
 
 test("server requests are persisted and rendered as Telegram interaction cards", async () => {
   const { service, store, cleanup } = await createServiceContext();
-  const sent: Array<{ chatId: string; text: string; options?: any }> = [];
+  const sent: Array<{ chatId: string; messageId: number; text: string; options?: any }> = [];
 
   try {
     const session = authorizeChatWithSession(store, "chat-1");
@@ -4337,8 +4425,9 @@ test("server requests are persisted and rendered as Telegram interaction cards",
 
     (service as any).api = {
       sendMessage: async (chatId: string, text: string, options?: any) => {
-        sent.push({ chatId, text, options });
-        return createFakeTelegramMessage(900 + sent.length, text);
+        const messageId = 900 + sent.length;
+        sent.push({ chatId, messageId, text, options });
+        return createFakeTelegramMessage(messageId, text);
       },
       editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) =>
         createFakeTelegramMessage(messageId, text),
@@ -4373,7 +4462,13 @@ test("server requests are persisted and rendered as Telegram interaction cards",
     assert.equal(pending[0]?.requestMethod, "item/commandExecution/requestApproval");
     assert.ok(pending[0]?.telegramMessageId);
 
-    const interactionMessage = sent.at(-1);
+    assert.equal(sent.length, 3);
+    assert.match(sent[0]?.text ?? "", /^<b>Runtime Status<\/b>/u);
+    assert.match(sent[1]?.text ?? "", /Codex 需要命令批准/u);
+    assert.match(sent[2]?.text ?? "", /^<b>Runtime Status<\/b>/u);
+    assert.equal((service as any).activeTurn?.statusCard.messageId, sent[2]?.messageId);
+
+    const interactionMessage = sent[1];
     assert.match(interactionMessage?.text ?? "", /Codex 需要命令批准/u);
     assert.equal(
       interactionMessage?.options?.replyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data?.startsWith("v3:ix:d:"),
@@ -4445,7 +4540,7 @@ test("known subagent interactions are accepted and retain subagent thread ids", 
     assert.ok(pending);
     assert.equal(pending?.threadId, "thread-sub-1");
     assert.equal(pending?.turnId, "turn-sub-1");
-    assert.match(sent.at(-1)?.text ?? "", /Codex 需要命令批准/u);
+    assert.match(getLatestNonStatusMessage(sent)?.text ?? "", /Codex 需要命令批准/u);
   } finally {
     await cleanup();
   }
@@ -4502,7 +4597,7 @@ test("approval callbacks resolve pending interactions and respond to the app-ser
 
     const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
     assert.ok(pending);
-    const interactionMessage = sent.at(-1);
+    const interactionMessage = getLatestInteractiveMessage(sent);
 
     await (service as any).handleCallback({
       id: "callback-1",
@@ -4580,7 +4675,8 @@ test("approval cancel persists canceled state and appends interaction audit jour
 
     const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
     assert.ok(pending);
-    const cancelCallback = getCallbackData(sent.at(-1), 1, 0);
+    const interactionMessage = getLatestInteractiveMessage(sent);
+    const cancelCallback = getCallbackData(interactionMessage, 1, 0);
 
     await (service as any).handleCallback({
       id: "callback-cancel-1",
@@ -4665,7 +4761,8 @@ test("declined permissions requests render rejected summaries", async () => {
 
     const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
     assert.ok(pending);
-    const cancelCallback = getCallbackData(sent.at(-1), 1, 0);
+    const interactionMessage = getLatestInteractiveMessage(sent);
+    const cancelCallback = getCallbackData(interactionMessage, 1, 0);
 
     await (service as any).handleCallback({
       id: "callback-permissions-decline",
@@ -4678,7 +4775,7 @@ test("declined permissions requests render rejected summaries", async () => {
         message_id: pending?.telegramMessageId,
         chat: { id: 1, type: "private" }
       },
-      data: getCallbackData(sent.at(-1), 0, 2)
+      data: getCallbackData(interactionMessage, 0, 2)
     });
 
     assert.deepEqual(responses, [{
@@ -4750,7 +4847,7 @@ test("approval callbacks preserve structured decision payloads", async () => {
 
     const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
     assert.ok(pending);
-    const interactionMessage = sent.at(-1);
+    const interactionMessage = getLatestInteractiveMessage(sent);
     assert.match(getCallbackData(interactionMessage, 0, 1), /^v3:ix:d:/u);
 
     await (service as any).handleCallback({
@@ -4831,7 +4928,7 @@ test("legacy exec approvals resolve with legacy decision payloads", async () => 
     assert.equal(pending?.requestMethod, "execCommandApproval");
     assert.equal(pending?.turnId, "turn-legacy");
 
-    assert.match(sent.at(-1)?.text ?? "", /兼容命令审批/u);
+    assert.match(getLatestNonStatusMessage(sent)?.text ?? "", /兼容命令审批/u);
 
     await (service as any).handleCallback({
       id: "callback-legacy-1",
@@ -4844,7 +4941,7 @@ test("legacy exec approvals resolve with legacy decision payloads", async () => 
         message_id: pending?.telegramMessageId,
         chat: { id: 1, type: "private" }
       },
-      data: getCallbackData(sent.at(-1), 0, 1)
+      data: getCallbackData(getLatestInteractiveMessage(sent), 0, 1)
     });
 
     assert.deepEqual(responses, [{
@@ -4907,7 +5004,8 @@ test("legacy patch approval cancel maps to abort", async () => {
 
     const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
     assert.ok(pending);
-    const cancelCallback = getCallbackData(sent.at(-1), 1, 0);
+    const interactionMessage = getLatestInteractiveMessage(sent);
+    const cancelCallback = getCallbackData(interactionMessage, 1, 0);
 
     await (service as any).handleCallback({
       id: "callback-legacy-2",
@@ -4938,6 +5036,7 @@ test("questionnaire interactions advance through options and pending text answer
   const sent: Array<{ chatId: string; text: string; options?: any }> = [];
   const edited: Array<{ messageId: number; text: string; options?: any }> = [];
   const responses: Array<{ id: unknown; result: unknown }> = [];
+  const callbackAnswers: Array<string | undefined> = [];
 
   try {
     const session = authorizeNumericChatWithSession(store, "1");
@@ -4952,7 +5051,9 @@ test("questionnaire interactions advance through options and pending text answer
         edited.push({ messageId, text, options });
         return createFakeTelegramMessage(messageId, text);
       },
-      answerCallbackQuery: async () => {}
+      answerCallbackQuery: async (_callbackId: string, text?: string) => {
+        callbackAnswers.push(text);
+      }
     };
 
     (service as any).appServer = {
@@ -4997,7 +5098,7 @@ test("questionnaire interactions advance through options and pending text answer
 
     const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
     assert.ok(pending);
-    const interactionMessage = sent.at(-1);
+    const interactionMessage = getLatestInteractiveMessage(sent);
 
     await (service as any).handleCallback({
       id: "callback-q1",
@@ -5045,6 +5146,27 @@ test("questionnaire interactions advance through options and pending text answer
     }]);
     assert.equal(store.getPendingInteraction(pending?.interactionId ?? "", "1")?.state, "answered");
     assert.match(edited.at(-1)?.text ?? "", /已处理/u);
+    assert.equal(edited.at(-1)?.options?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "查看已提交回答");
+
+    await (service as any).handleCallback({
+      id: "callback-q3",
+      from: {
+        id: 1,
+        is_bot: false,
+        first_name: "Tester"
+      },
+      message: {
+        message_id: pending?.telegramMessageId,
+        chat: { id: 1, type: "private" }
+      },
+      data: getCallbackData(edited.at(-1), 0, 0)
+    });
+
+    assert.equal(callbackAnswers.at(-1), undefined);
+    assert.match(edited.at(-1)?.text ?? "", /Which environment\?/u);
+    assert.match(edited.at(-1)?.text ?? "", /staging/u);
+    assert.match(edited.at(-1)?.text ?? "", /已提交敏感回答，不显示内容/u);
+    assert.equal(edited.at(-1)?.options?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "收起已提交回答");
   } finally {
     await cleanup();
   }
@@ -5110,7 +5232,8 @@ test("questionnaire cancel persists canceled state and treats re-click as alread
 
     const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
     assert.ok(pending);
-    const cancelCallback = getCallbackData(sent.at(-1), 1, 0);
+    const interactionMessage = getLatestInteractiveMessage(sent);
+    const cancelCallback = getCallbackData(interactionMessage, 1, 0);
 
     await (service as any).handleCallback({
       id: "callback-q-cancel-1",
@@ -5213,7 +5336,7 @@ test("app-server exit fails unresolved interactions and clears pending text mode
 
     const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
     assert.ok(pending);
-    const interactionMessage = sent.at(-1);
+    const interactionMessage = getLatestInteractiveMessage(sent);
 
     await (service as any).handleCallback({
       id: "callback-exit-text",
@@ -5317,8 +5440,8 @@ test("MCP form interactions submit typed accept payloads", async () => {
 
     const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
     assert.ok(pending);
-    assert.match(sent.at(-1)?.text ?? "", /Choose target environment/u);
-    const firstCard = sent.at(-1);
+    const firstCard = getLatestInteractiveMessage(sent);
+    assert.match(firstCard?.text ?? "", /Choose target environment/u);
 
     await (service as any).handleCallback({
       id: "callback-form-env",
@@ -5458,7 +5581,8 @@ test("MCP form interactions cancel with action cancel", async () => {
 
     const pending = store.listPendingInteractionsByChat("1", ["pending"])[0];
     assert.ok(pending);
-    const cancelCallback = getCallbackData(sent.at(-1), 2, 0);
+    const interactionMessage = getLatestInteractiveMessage(sent);
+    const cancelCallback = getCallbackData(interactionMessage, 2, 0);
 
     await (service as any).handleCallback({
       id: "callback-form-cancel",
@@ -6960,6 +7084,7 @@ test("runtime command persists edited status-line fields through callbacks", asy
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ messageId: number; text: string; options?: any }> = [];
   const edited: Array<{ messageId: number; text: string; options?: any }> = [];
+  const callbackAnswers: Array<string | undefined> = [];
 
   try {
     authorizeNumericChatWithSession(store, "1");
@@ -6974,7 +7099,9 @@ test("runtime command persists edited status-line fields through callbacks", asy
         edited.push({ messageId, text, options });
         return createFakeTelegramMessage(messageId, text);
       },
-      answerCallbackQuery: async () => {}
+      answerCallbackQuery: async (_callbackQueryId: string, text?: string) => {
+        callbackAnswers.push(text);
+      }
     };
 
     await (service as any).routeCommand("1", "runtime", "");
@@ -7010,6 +7137,148 @@ test("runtime command persists edited status-line fields through callbacks", asy
     assert.deepEqual(store.getRuntimeCardPreferences().fields, [
       "model-name"
     ]);
+    assert.equal(callbackAnswers.at(-1), "已保存。");
+    assert.equal(edited.at(-1)?.options?.replyMarkup, undefined);
+    assert.equal(edited.at(-1)?.text, [
+      "<b>已应用 Runtime 卡片字段</b>",
+      "<b>当前字段：</b> 模型名"
+    ].join("\n"));
+  } finally {
+    await cleanup();
+  }
+});
+
+test("runtime reset only updates the draft until save is clicked", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; options?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; options?: any }> = [];
+  const callbackAnswers: Array<string | undefined> = [];
+
+  try {
+    authorizeNumericChatWithSession(store, "1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const message = createFakeTelegramMessage(2100 + sent.length, text);
+        sent.push({ messageId: message.message_id, text, options });
+        return message;
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, options });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      answerCallbackQuery: async (_callbackQueryId: string, text?: string) => {
+        callbackAnswers.push(text);
+      }
+    };
+
+    await (service as any).routeCommand("1", "runtime", "");
+    const toggleCallback = getCallbackData(sent[0], 0, 0);
+
+    await (service as any).handleCallback({
+      id: "runtime-toggle-before-reset",
+      from: { id: 1, is_bot: false, first_name: "Tester" },
+      message: {
+        message_id: sent[0]!.messageId,
+        chat: { id: 1, type: "private" },
+        date: 0,
+        text: sent[0]!.text
+      },
+      data: toggleCallback
+    });
+
+    const resetCallback = edited.at(-1)?.options?.replyMarkup?.inline_keyboard?.at(-1)?.[0]?.callback_data;
+    assert.equal(typeof resetCallback, "string");
+
+    await (service as any).handleCallback({
+      id: "runtime-reset",
+      from: { id: 1, is_bot: false, first_name: "Tester" },
+      message: {
+        message_id: sent[0]!.messageId,
+        chat: { id: 1, type: "private" },
+        date: 0,
+        text: edited.at(-1)?.text ?? sent[0]!.text
+      },
+      data: resetCallback
+    });
+
+    assert.deepEqual(store.getRuntimeCardPreferences().fields, []);
+    assert.equal(callbackAnswers.at(-1), "已恢复默认，记得保存。");
+    assert.match(edited.at(-1)?.text ?? "", /当前没有已选字段。/u);
+    assert.ok(edited.at(-1)?.options?.replyMarkup?.inline_keyboard?.length);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("runtime callbacks expire after save closes the picker", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; options?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; options?: any }> = [];
+  const callbackAnswers: Array<string | undefined> = [];
+
+  try {
+    authorizeNumericChatWithSession(store, "1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const message = createFakeTelegramMessage(2200 + sent.length, text);
+        sent.push({ messageId: message.message_id, text, options });
+        return message;
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, options });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      answerCallbackQuery: async (_callbackQueryId: string, text?: string) => {
+        callbackAnswers.push(text);
+      }
+    };
+
+    await (service as any).routeCommand("1", "runtime", "");
+    const originalToggleCallback = getCallbackData(sent[0], 0, 0);
+
+    await (service as any).handleCallback({
+      id: "runtime-toggle-before-expire",
+      from: { id: 1, is_bot: false, first_name: "Tester" },
+      message: {
+        message_id: sent[0]!.messageId,
+        chat: { id: 1, type: "private" },
+        date: 0,
+        text: sent[0]!.text
+      },
+      data: originalToggleCallback
+    });
+
+    const saveCallback = edited.at(-1)?.options?.replyMarkup?.inline_keyboard?.at(-2)?.[0]?.callback_data;
+    assert.equal(typeof saveCallback, "string");
+
+    await (service as any).handleCallback({
+      id: "runtime-save-before-expire",
+      from: { id: 1, is_bot: false, first_name: "Tester" },
+      message: {
+        message_id: sent[0]!.messageId,
+        chat: { id: 1, type: "private" },
+        date: 0,
+        text: edited.at(-1)?.text ?? sent[0]!.text
+      },
+      data: saveCallback
+    });
+
+    await (service as any).handleCallback({
+      id: "runtime-toggle-expired",
+      from: { id: 1, is_bot: false, first_name: "Tester" },
+      message: {
+        message_id: sent[0]!.messageId,
+        chat: { id: 1, type: "private" },
+        date: 0,
+        text: edited.at(-1)?.text ?? sent[0]!.text
+      },
+      data: originalToggleCallback
+    });
+
+    assert.equal(callbackAnswers.at(-1), "这个按钮已过期，请重新发送 /runtime。");
+    assert.deepEqual(store.getRuntimeCardPreferences().fields, ["model-name"]);
   } finally {
     await cleanup();
   }
@@ -7090,7 +7359,7 @@ test("formatRuntimeStatusLineField uses cli token and context field semantics fo
     );
     assert.equal(
       (service as any).formatRuntimeStatusLineField("plan_mode" as any, persistedSession, inspect, null, null),
-      "Plan mode: on"
+      "plan_mode: on"
     );
 
     const inspectWithoutTokenData = {

@@ -60,6 +60,9 @@ export type ParsedCallbackData =
   | { kind: "final_open"; answerId: string }
   | { kind: "final_close"; answerId: string }
   | { kind: "final_page"; answerId: string; page: number }
+  | { kind: "plan_result_open"; answerId: string }
+  | { kind: "plan_result_close"; answerId: string }
+  | { kind: "plan_result_page"; answerId: string; page: number }
   | { kind: "runtime_page"; token: string; page: number }
   | { kind: "runtime_toggle"; token: string; field: RuntimeStatusField }
   | { kind: "runtime_save"; token: string }
@@ -67,6 +70,8 @@ export type ParsedCallbackData =
   | { kind: "inspect_expand"; sessionId: string; page: number }
   | { kind: "inspect_collapse"; sessionId: string }
   | { kind: "inspect_page"; sessionId: string; page: number }
+  | { kind: "plan_implement"; sessionId: string }
+  | { kind: "plan_continue"; sessionId: string }
   | { kind: "rollback_page"; sessionId: string; page: number }
   | { kind: "rollback_pick"; sessionId: string; page: number; targetIndex: number }
   | { kind: "rollback_confirm"; sessionId: string; targetIndex: number }
@@ -80,7 +85,9 @@ export type ParsedCallbackData =
       optionIndex: number;
     }
   | { kind: "interaction_text"; interactionId: string; questionId: string | null; questionIndex: number | null }
-  | { kind: "interaction_cancel"; interactionId: string };
+  | { kind: "interaction_cancel"; interactionId: string }
+  | { kind: "interaction_answer_expand"; interactionId: string }
+  | { kind: "interaction_answer_collapse"; interactionId: string };
 
 const TELEGRAM_CALLBACK_DATA_LIMIT_BYTES = 64;
 
@@ -186,6 +193,18 @@ export function encodeFinalAnswerCloseCallback(answerId: string): string {
 
 export function encodeFinalAnswerPageCallback(answerId: string, page: number): string {
   return `v1:final:page:${answerId}:${page}`;
+}
+
+export function encodePlanResultOpenCallback(answerId: string): string {
+  return `v4:plan:open:${answerId}`;
+}
+
+export function encodePlanResultCloseCallback(answerId: string): string {
+  return `v4:plan:close:${answerId}`;
+}
+
+export function encodePlanResultPageCallback(answerId: string, page: number): string {
+  return `v4:plan:page:${answerId}:${page}`;
 }
 
 export function encodeRuntimePageCallback(token: string, page: number): string {
@@ -341,6 +360,22 @@ export function encodeInteractionCancelCallback(interactionId: string): string {
   return ensureTelegramCallbackDataLimit(`v3:ix:c:${encodeInteractionToken(interactionId)}`);
 }
 
+export function encodeInteractionAnswerExpandCallback(interactionId: string): string {
+  return ensureTelegramCallbackDataLimit(`v3:ix:a:${encodeInteractionToken(interactionId)}:open`);
+}
+
+export function encodeInteractionAnswerCollapseCallback(interactionId: string): string {
+  return ensureTelegramCallbackDataLimit(`v3:ix:a:${encodeInteractionToken(interactionId)}:close`);
+}
+
+export function encodePlanImplementCallback(sessionId: string): string {
+  return ensureTelegramCallbackDataLimit(`v4:pr:i:${sessionId}`);
+}
+
+export function encodePlanContinueCallback(sessionId: string): string {
+  return ensureTelegramCallbackDataLimit(`v4:pr:c:${sessionId}`);
+}
+
 export function parseCallbackData(data: string): ParsedCallbackData | null {
   const parts = data.split(":");
   if (parts[0] === "v2" && parts[1] === "model") {
@@ -457,6 +492,29 @@ export function parseCallbackData(data: string): ParsedCallbackData | null {
   }
 
   if (parts[0] !== "v1") {
+    if (parts[0] === "v4" && parts[1] === "plan" && parts[2] === "open" && parts[3]) {
+      return { kind: "plan_result_open", answerId: parts[3] };
+    }
+
+    if (parts[0] === "v4" && parts[1] === "plan" && parts[2] === "close" && parts[3]) {
+      return { kind: "plan_result_close", answerId: parts[3] };
+    }
+
+    if (parts[0] === "v4" && parts[1] === "plan" && parts[2] === "page" && parts[3] && parts[4]) {
+      const page = Number.parseInt(parts[4], 10);
+      if (Number.isFinite(page) && page >= 1) {
+        return { kind: "plan_result_page", answerId: parts[3], page };
+      }
+    }
+
+    if (parts[0] === "v4" && parts[1] === "pr" && parts[2] === "i" && parts[3]) {
+      return { kind: "plan_implement", sessionId: parts[3] };
+    }
+
+    if (parts[0] === "v4" && parts[1] === "pr" && parts[2] === "c" && parts[3]) {
+      return { kind: "plan_continue", sessionId: parts[3] };
+    }
+
     if (parts[0] === "v3" && parts[1] === "ix") {
       if (parts[2] === "d" && parts[3] && parts[4]) {
         const interactionId = decodeInteractionToken(parts[3]);
@@ -506,6 +564,24 @@ export function parseCallbackData(data: string): ParsedCallbackData | null {
             kind: "interaction_cancel",
             interactionId
           };
+        }
+      }
+
+      if (parts[2] === "a" && parts[3] && parts[4]) {
+        const interactionId = decodeInteractionToken(parts[3]);
+        if (interactionId) {
+          if (parts[4] === "open") {
+            return {
+              kind: "interaction_answer_expand",
+              interactionId
+            };
+          }
+          if (parts[4] === "close") {
+            return {
+              kind: "interaction_answer_collapse",
+              interactionId
+            };
+          }
         }
       }
 
@@ -1020,17 +1096,12 @@ export function buildRuntimeStatusCard(
 
   lines.push(`<b>State:</b> ${escapeHtml(options.state)}`);
 
-  if (options.progressText) {
-    lines.push("<b>Progress:</b>");
-    lines.push(renderInlineMarkdown(truncateText(options.progressText, 240)));
-  }
-
   for (const line of options.optionalFieldLines ?? []) {
-    lines.push(escapeHtml(line));
+    lines.push(formatRuntimeStatusOptionalField(line));
   }
 
   if (options.planExpanded && options.planEntries && options.planEntries.length > 0) {
-    lines.push("", "<b>Current Plan:</b>");
+    lines.push("", "<b>计划清单:</b>");
 
     for (const [index, entry] of options.planEntries.slice(0, 10).entries()) {
       lines.push(`${index + 1}. ${renderInlineMarkdown(truncateText(entry, 200))}`);
@@ -1053,6 +1124,11 @@ export function buildRuntimeStatusCard(
     }
   }
 
+  if (options.progressText) {
+    lines.push("<b>Progress:</b>");
+    lines.push(renderInlineMarkdown(truncateText(options.progressText, 240)));
+  }
+
   lines.push("Use /inspect for full details");
   return lines.join("\n");
 }
@@ -1068,7 +1144,7 @@ export function buildRuntimeStatusReplyMarkup(options: {
 
   if (options.planEntries.length > 0) {
     rows.push([{
-      text: options.planExpanded ? "收起当前计划" : buildCollapsedPlanButtonLabel(options.planEntries),
+      text: options.planExpanded ? "收起计划清单" : buildCollapsedPlanButtonLabel(options.planEntries),
       callback_data: options.planExpanded
         ? encodePlanCollapseCallback(options.sessionId)
         : encodePlanExpandCallback(options.sessionId)
@@ -1160,6 +1236,17 @@ export function buildRuntimeStatusFieldLabel(field: RuntimeStatusField): string 
 
 function buildRuntimeStatusFieldGroupSummary(fields: readonly RuntimeStatusField[]): string {
   return fields.map((field) => buildRuntimeStatusFieldLabel(field)).join("、");
+}
+
+export function buildRuntimePreferencesAppliedMessage(fields: RuntimeStatusField[]): string {
+  const summary = fields.length > 0
+    ? fields.map((field) => buildRuntimeStatusFieldLabel(field)).join("、")
+    : "无";
+
+  return [
+    "<b>已应用 Runtime 卡片字段</b>",
+    formatHtmlField("当前字段：", summary)
+  ].join("\n");
 }
 
 const SELECTABLE_CODEX_CLI_RUNTIME_STATUS_FIELDS: readonly RuntimeStatusField[] = [
@@ -1508,6 +1595,10 @@ export function buildInteractionResolvedCard(options: {
   title: string;
   state: "answered" | "canceled" | "failed";
   summary?: string | null;
+  details?: string[];
+  expandable?: boolean;
+  expanded?: boolean;
+  interactionId?: string;
 }): {
   text: string;
   replyMarkup?: TelegramInlineKeyboardMarkup;
@@ -1524,7 +1615,28 @@ export function buildInteractionResolvedCard(options: {
   if (options.summary) {
     lines.push(formatHtmlField("结果：", options.summary));
   }
-  return { text: lines.join("\n") };
+  if (options.expanded && options.details && options.details.length > 0) {
+    lines.push("", formatHtmlHeading("已提交回答"));
+    for (const detail of options.details) {
+      lines.push(escapeHtml(detail));
+    }
+  }
+
+  if (!options.expandable || !options.interactionId) {
+    return { text: lines.join("\n") };
+  }
+
+  return {
+    text: lines.join("\n"),
+    replyMarkup: {
+      inline_keyboard: [[{
+        text: options.expanded ? "收起已提交回答" : "查看已提交回答",
+        callback_data: options.expanded
+          ? encodeInteractionAnswerCollapseCallback(options.interactionId)
+          : encodeInteractionAnswerExpandCallback(options.interactionId)
+      }]]
+    }
+  };
 }
 
 export function buildInteractionExpiredCard(options: {
@@ -1693,8 +1805,14 @@ export function buildInspectText(
 
   const planLines = formatInspectSummarySection(snapshot.planSnapshot);
   if (planLines.length > 0) {
-    lines.push("", formatHtmlHeading("当前计划"));
+    lines.push("", formatHtmlHeading("计划清单"));
     lines.push(...planLines);
+  }
+
+  const proposedPlanLines = formatInspectSummarySection(snapshot.proposedPlanSnapshot);
+  if (proposedPlanLines.length > 0) {
+    lines.push("", formatHtmlHeading("方案草稿"));
+    lines.push(...proposedPlanLines);
   }
 
   const commentaryLines = formatInspectSummarySection(snapshot.completedCommentary);
@@ -1707,6 +1825,12 @@ export function buildInspectText(
   if (pendingInteractionLines.length > 0) {
     lines.push("", formatHtmlHeading("待处理交互"));
     lines.push(...pendingInteractionLines);
+  }
+
+  const answeredInteractionLines = formatInspectSummarySection(snapshot.answeredInteractions);
+  if (answeredInteractionLines.length > 0) {
+    lines.push("", formatHtmlHeading("最近已答交互"));
+    lines.push(...answeredInteractionLines);
   }
 
   return lines.join("\n");
@@ -1882,13 +2006,44 @@ function pushHtmlRuntimeCardContext(lines: string[], context: RuntimeCardContext
   }
 }
 
+function formatRuntimeStatusOptionalField(line: string): string {
+  const separatorIndex = line.indexOf(":");
+  if (separatorIndex === -1) {
+    return escapeHtml(line);
+  }
+
+  const rawLabel = line.slice(0, separatorIndex).trim();
+  const rawValue = line.slice(separatorIndex + 1).trimStart();
+  if (!rawLabel) {
+    return escapeHtml(line);
+  }
+
+  return formatHtmlField(`${formatRuntimeStatusOptionalLabel(rawLabel)}:`, rawValue);
+}
+
+function formatRuntimeStatusOptionalLabel(label: string): string {
+  const uppercaseTokens = new Set(["api", "cli", "html", "id", "json", "mcp", "url", "uuid"]);
+  return label
+    .split(/[-_\s]+/u)
+    .filter(Boolean)
+    .map((part) => {
+      const lower = part.toLowerCase();
+      if (uppercaseTokens.has(lower)) {
+        return lower.toUpperCase();
+      }
+
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    })
+    .join(" ");
+}
+
 function buildCollapsedPlanButtonLabel(entries: string[]): string {
   const currentEntry = selectCurrentPlanEntry(entries);
   if (!currentEntry) {
-    return "查看当前计划";
+    return "查看计划清单";
   }
 
-  return `当前计划：${truncateText(stripPlanEntryStatus(currentEntry), 40)}`;
+  return `计划清单：${truncateText(stripPlanEntryStatus(currentEntry), 40)}`;
 }
 
 function buildCollapsedAgentButtonLabel(entries: CollabAgentStateSnapshot[]): string {
@@ -2671,13 +2826,17 @@ export function buildFinalAnswerReplyMarkup(options: {
   totalPages: number;
   expanded: boolean;
   currentPage?: number;
+  extraRows?: Array<Array<{ text: string; callback_data: string }>>;
 }): TelegramInlineKeyboardMarkup {
   if (!options.expanded) {
     return {
-      inline_keyboard: [[{
-        text: "展开全文",
-        callback_data: encodeFinalAnswerOpenCallback(options.answerId)
-      }]]
+      inline_keyboard: [
+        ...(options.extraRows ?? []),
+        [{
+          text: "展开全文",
+          callback_data: encodeFinalAnswerOpenCallback(options.answerId)
+        }]
+      ]
     };
   }
 
@@ -2702,7 +2861,63 @@ export function buildFinalAnswerReplyMarkup(options: {
   });
 
   return {
-    inline_keyboard: [buttons]
+    inline_keyboard: [
+      ...(options.extraRows ?? []),
+      buttons
+    ]
+  };
+}
+
+export function buildPlanResultActionRows(sessionId: string): Array<Array<{ text: string; callback_data: string }>> {
+  return [[
+    { text: "实施这个计划", callback_data: encodePlanImplementCallback(sessionId) },
+    { text: "继续规划", callback_data: encodePlanContinueCallback(sessionId) }
+  ]];
+}
+
+export function buildPlanResultReplyMarkup(options: {
+  answerId: string;
+  sessionId: string;
+  totalPages: number;
+  expanded: boolean;
+  currentPage?: number;
+}): TelegramInlineKeyboardMarkup {
+  const actionRows = buildPlanResultActionRows(options.sessionId);
+  if (!options.expanded) {
+    return {
+      inline_keyboard: [
+        ...actionRows,
+        [{
+          text: "展开方案",
+          callback_data: encodePlanResultOpenCallback(options.answerId)
+        }]
+      ]
+    };
+  }
+
+  const buttons: Array<{ text: string; callback_data: string }> = [];
+  if (options.totalPages > 1 && options.currentPage && options.currentPage > 1) {
+    buttons.push({
+      text: "上一页",
+      callback_data: encodePlanResultPageCallback(options.answerId, options.currentPage - 1)
+    });
+  }
+  if (options.totalPages > 1 && options.currentPage && options.currentPage < options.totalPages) {
+    buttons.push({
+      text: "下一页",
+      callback_data: encodePlanResultPageCallback(options.answerId, options.currentPage + 1)
+    });
+  }
+  buttons.push({
+    text: "收起方案",
+    callback_data: encodePlanResultCloseCallback(options.answerId)
+  });
+
+  return {
+    inline_keyboard: [
+      ...actionRows,
+      buttons
+    ]
   };
 }
 

@@ -110,12 +110,14 @@ export interface InspectSnapshot extends ActivityStatus {
   recentHookSummaries: string[];
   recentNoticeSummaries: string[];
   planSnapshot: string[];
+  proposedPlanSnapshot: string[];
   agentSnapshot: CollabAgentStateSnapshot[];
   completedCommentary: string[];
   tokenUsage: TokenUsageSnapshot | null;
   latestDiffSummary: string | null;
   terminalInteractionSummary: string | null;
   pendingInteractions: PendingInteractionSummary[];
+  answeredInteractions: string[];
 }
 
 export type MessagePhase = "commentary" | "final_answer";

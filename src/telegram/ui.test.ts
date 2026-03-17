@@ -18,6 +18,7 @@ import {
   buildRollbackConfirmMessage,
   buildRollbackPickerMessage,
   buildRuntimeErrorCard,
+  buildRuntimePreferencesAppliedMessage,
   buildRuntimePreferencesMessage,
   buildSessionCreatedText,
   buildWhereText,
@@ -128,12 +129,14 @@ function createInspectSnapshot(overrides: Partial<InspectSnapshot> = {}): Inspec
     recentHookSummaries: overrides.recentHookSummaries ?? [],
     recentNoticeSummaries: overrides.recentNoticeSummaries ?? [],
     planSnapshot: overrides.planSnapshot ?? [],
+    proposedPlanSnapshot: (overrides as any).proposedPlanSnapshot ?? [],
     agentSnapshot: overrides.agentSnapshot ?? [],
     completedCommentary: overrides.completedCommentary ?? [],
     tokenUsage: overrides.tokenUsage ?? null,
     latestDiffSummary: overrides.latestDiffSummary ?? null,
     terminalInteractionSummary: overrides.terminalInteractionSummary ?? null,
-    pendingInteractions: overrides.pendingInteractions ?? []
+    pendingInteractions: overrides.pendingInteractions ?? [],
+    answeredInteractions: (overrides as any).answeredInteractions ?? []
   };
 }
 
@@ -464,7 +467,7 @@ test("buildRuntimeStatusReplyMarkup prefers the in-progress step over earlier pe
     agentsExpanded: false
   });
 
-  assert.equal(replyMarkup?.inline_keyboard[0]?.[0]?.text, "当前计划：Wire inspect renderer");
+  assert.equal(replyMarkup?.inline_keyboard[0]?.[0]?.text, "计划清单：Wire inspect renderer");
 });
 
 test("buildRuntimeStatusCard renders expanded running agents inline", () => {
@@ -501,15 +504,40 @@ test("buildRuntimeStatusCard renders optional runtime fields on separate lines",
     projectName: "Project One",
     state: "Running",
     optionalFieldLines: [
-      "模型: gpt-5 + 高",
-      "Plan mode: on"
+      "model-with-reasoning: gpt-5 + 高",
+      "plan_mode: on"
     ]
   });
 
-  assert.match(text, /模型: gpt-5 \+ 高/u);
-  assert.match(text, /Plan mode: on/u);
+  assert.match(text, /<b>Model With Reasoning:<\/b> gpt-5 \+ 高/u);
+  assert.match(text, /<b>Plan Mode:<\/b> on/u);
   assert.doesNotMatch(text, /<b>概览:<\/b>/u);
   assert.doesNotMatch(text, /\|/u);
+});
+
+test("buildRuntimeStatusCard renders progress after optional fields and expanded sections", () => {
+  const text = buildRuntimeStatusCard({
+    sessionName: "Session Alpha",
+    state: "Running",
+    optionalFieldLines: ["current-dir: /tmp/project-one"],
+    planEntries: ["Review runtime card ordering (inProgress)"],
+    planExpanded: true,
+    agentEntries: [{
+      threadId: "thread-agent-1",
+      label: "agent-ent42",
+      labelSource: "fallback",
+      status: "running",
+      progress: "Searching docs"
+    }],
+    agentsExpanded: true,
+    progressText: "Preparing the latest card layout."
+  });
+
+  assert.match(text, /<b>Current Dir:<\/b> \/tmp\/project-one/u);
+  assert.ok(text.indexOf("<b>计划清单:</b>") > text.indexOf("<b>Current Dir:</b>"));
+  assert.ok(text.indexOf("<b>Agents:</b>") > text.indexOf("<b>计划清单:</b>"));
+  assert.ok(text.indexOf("<b>Progress:</b>") > text.indexOf("<b>Agents:</b>"));
+  assert.ok(text.indexOf("Use /inspect for full details") > text.indexOf("<b>Progress:</b>"));
 });
 
 test("buildRuntimePreferencesMessage renders v4 callbacks for toggle and save actions", () => {
@@ -566,6 +594,32 @@ test("buildRuntimePreferencesMessage includes the Plan mode bridge field", () =>
     token: "token123",
     field: "plan_mode"
   });
+});
+
+test("buildRuntimePreferencesAppliedMessage renders selected field labels in order", () => {
+  const rendered = buildRuntimePreferencesAppliedMessage([
+    "model-name",
+    "plan_mode",
+    "thread_id"
+  ] as any);
+
+  assert.equal(
+    rendered,
+    [
+      "<b>已应用 Runtime 卡片字段</b>",
+      "<b>当前字段：</b> 模型名、Plan mode、线程 ID（旧）"
+    ].join("\n")
+  );
+});
+
+test("buildRuntimePreferencesAppliedMessage renders none when no fields are selected", () => {
+  assert.equal(
+    buildRuntimePreferencesAppliedMessage([]),
+    [
+      "<b>已应用 Runtime 卡片字段</b>",
+      "<b>当前字段：</b> 无"
+    ].join("\n")
+  );
 });
 
 test("buildRuntimeStatusReplyMarkup adds an agent button when running subagents exist", () => {
@@ -626,7 +680,7 @@ test("buildInspectText renders a concise Chinese inspect view without duplicate 
       recentMcpSummaries: ["Searching <docs>"],
       planSnapshot: ["Wire inspect renderer (inProgress)"],
       completedCommentary: ["Checked <final> answer"]
-    }),
+    } as any),
     {
       sessionName: "Project & One",
       projectName: "Project & One",
@@ -660,12 +714,69 @@ test("buildInspectText renders a concise Chinese inspect view without duplicate 
   assert.match(text, /- Updated src\/service\.ts &lt;done&gt;/u);
   assert.match(text, /<b>最近工具与搜索<\/b>/u);
   assert.match(text, /- Searching &lt;docs&gt;/u);
-  assert.match(text, /<b>当前计划<\/b>/u);
+  assert.match(text, /<b>计划清单<\/b>/u);
   assert.match(text, /- Wire inspect renderer \(inProgress\)/u);
   assert.match(text, /<b>补充说明<\/b>/u);
   assert.match(text, /- Checked &lt;final&gt; answer/u);
   assert.doesNotMatch(text, /Debug file/u);
   assert.doesNotMatch(text, /最近网页搜索/u);
+});
+
+test("buildInspectText separates checklist, proposed plan, and answered interactions", () => {
+  const text = buildInspectText(createInspectSnapshot({
+    planSnapshot: ["Collect protocol evidence (completed)"],
+    proposedPlanSnapshot: ["## Final proposal", "Ship the Telegram plan result message."],
+    answeredInteractions: [
+      "Codex 需要更多信息 / Env: staging / Notes: 已提交敏感回答，不显示内容"
+    ]
+  } as any));
+
+  assert.match(text, /<b>计划清单<\/b>/u);
+  assert.match(text, /Collect protocol evidence \(completed\)/u);
+  assert.match(text, /<b>方案草稿<\/b>/u);
+  assert.match(text, /Final proposal/u);
+  assert.match(text, /<b>最近已答交互<\/b>/u);
+  assert.match(text, /Env: staging/u);
+});
+
+test("buildInteractionResolvedCard can render expandable answered questionnaire details", () => {
+  const collapsed = buildInteractionResolvedCard({
+    title: "Codex 需要更多信息",
+    state: "answered",
+    summary: "已提交 2 个回答",
+    details: [
+      "1. Env",
+      "问题：Which environment?",
+      "回答：staging",
+      "2. Notes",
+      "问题：Anything else?",
+      "回答：已提交敏感回答，不显示内容"
+    ],
+    expandable: true,
+    expanded: false,
+    interactionId: "ix-1"
+  } as any);
+
+  assert.match(collapsed.text, /<b>结果：<\/b> 已提交 2 个回答/u);
+  assert.equal(collapsed.replyMarkup?.inline_keyboard[0]?.[0]?.text, "查看已提交回答");
+
+  const expanded = buildInteractionResolvedCard({
+    title: "Codex 需要更多信息",
+    state: "answered",
+    summary: "已提交 2 个回答",
+    details: [
+      "1. Env",
+      "问题：Which environment?",
+      "回答：staging"
+    ],
+    expandable: true,
+    expanded: true,
+    interactionId: "ix-1"
+  } as any);
+
+  assert.match(expanded.text, /Which environment\?/u);
+  assert.match(expanded.text, /staging/u);
+  assert.equal(expanded.replyMarkup?.inline_keyboard[0]?.[0]?.text, "收起已提交回答");
 });
 
 test("buildInspectViewMessage supports collapse and paged expansion", () => {

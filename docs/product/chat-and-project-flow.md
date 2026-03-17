@@ -444,6 +444,9 @@ Rules:
 - only CLI fields that the bridge can currently render truthfully are exposed in the picker
 - `Plan mode` is available as a bridge extension field
 - legacy bridge fields such as `project_path`, `model_reasoning`, and `thread_id` may still remain available as bridge extensions for compatibility, but they are not the preferred v4 CLI-aligned choices
+- `恢复默认` only resets the in-memory `/runtime` draft to `DEFAULT_RUNTIME_STATUS_FIELDS`; it does not persist or close the picker by itself
+- `保存并应用` persists the current draft, updates any active runtime status card, and replaces the picker message with a compact non-interactive summary
+- the saved summary lists the current effective field labels in display order; when no optional fields are selected it renders `无`
 
 ## Callback Contract
 

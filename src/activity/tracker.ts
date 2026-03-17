@@ -95,6 +95,7 @@ export class ActivityTracker {
   private readonly recentHookSummaries: string[] = [];
   private readonly recentNoticeSummaries: string[] = [];
   private readonly planSnapshot: string[] = [];
+  private readonly proposedPlanSnapshot: string[] = [];
   private planDeltaBuffer = "";
   private readonly subagents = new Map<string, TrackedSubagent>();
   private readonly pendingSubagentIdentities = new Map<string, SubagentIdentityUpdate>();
@@ -314,6 +315,15 @@ export class ActivityTracker {
             this.pushUniqueSummary(this.completedCommentary, commentaryText);
           }
         }
+        if (completedItemType === "planning" && notification.itemText) {
+          const lines = notification.itemText
+            .split(/\r?\n/u)
+            .map((line) => cleanSummary(line))
+            .filter((line) => line.length > 0);
+          if (lines.length > 0) {
+            this.replaceSummaryList(this.proposedPlanSnapshot, lines);
+          }
+        }
         if (notification.itemId) {
           this.commandOutputBuffers.delete(buildCommandBufferKey(this.options.threadId, notification.itemId));
         }
@@ -468,13 +478,7 @@ export class ActivityTracker {
           if (entries.length === 0) {
             return;
           }
-          this.replaceSummaryList(this.planSnapshot, entries);
-          const summary = summarizePlanEntries(entries);
-          this.state.latestProgress = summary;
-          if (summary) {
-            this.pushStatusUpdate(summary);
-          }
-          this.collapseOrPushPlanBlock(entries.join("\n"));
+          this.replaceSummaryList(this.proposedPlanSnapshot, entries);
         }
         return;
 
@@ -598,12 +602,14 @@ export class ActivityTracker {
       recentHookSummaries: [...this.recentHookSummaries],
       recentNoticeSummaries: [...this.recentNoticeSummaries],
       planSnapshot: [...this.planSnapshot],
+      proposedPlanSnapshot: [...this.proposedPlanSnapshot],
       agentSnapshot: this.getRunningAgentSnapshot(),
       completedCommentary: [...this.completedCommentary],
       tokenUsage: this.tokenUsage ? { ...this.tokenUsage } : null,
       latestDiffSummary: this.latestDiffSummary,
       terminalInteractionSummary: this.terminalInteractionSummary,
-      pendingInteractions: []
+      pendingInteractions: [],
+      answeredInteractions: []
     };
   }
 

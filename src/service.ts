@@ -33,6 +33,8 @@ import {
   buildManualPathPrompt,
   buildModelPickerMessage,
   buildNoNewProjectsMessage,
+  buildPlanResultActionRows,
+  buildPlanResultReplyMarkup,
   buildProjectAliasClearedText,
   buildProjectAliasRenamedText,
   buildProjectPinnedText,
@@ -41,6 +43,7 @@ import {
   buildRollbackConfirmMessage,
   buildRollbackPickerMessage,
   buildRenameTargetPicker,
+  buildRuntimePreferencesAppliedMessage,
   buildSessionCreatedText,
   buildProjectSelectedText,
   buildRuntimePreferencesMessage,
@@ -657,6 +660,29 @@ export class BridgeService {
         return;
       }
 
+      case "plan_result_open": {
+        await this.renderPersistedPlanResult(callbackQuery.id, chatId, message.message_id, parsed.answerId, {
+          expanded: true,
+          page: 1
+        });
+        return;
+      }
+
+      case "plan_result_close": {
+        await this.renderPersistedPlanResult(callbackQuery.id, chatId, message.message_id, parsed.answerId, {
+          expanded: false
+        });
+        return;
+      }
+
+      case "plan_result_page": {
+        await this.renderPersistedPlanResult(callbackQuery.id, chatId, message.message_id, parsed.answerId, {
+          expanded: true,
+          page: parsed.page
+        });
+        return;
+      }
+
       case "runtime_page": {
         await this.handleRuntimePreferencesPageCallback(callbackQuery.id, chatId, message.message_id, parsed.token, parsed.page);
         return;
@@ -766,6 +792,38 @@ export class BridgeService {
           message.message_id,
           parsed.interactionId
         );
+        return;
+      }
+
+      case "interaction_answer_expand": {
+        await this.handleInteractionAnswerToggleCallback(
+          callbackQuery.id,
+          chatId,
+          message.message_id,
+          parsed.interactionId,
+          true
+        );
+        return;
+      }
+
+      case "interaction_answer_collapse": {
+        await this.handleInteractionAnswerToggleCallback(
+          callbackQuery.id,
+          chatId,
+          message.message_id,
+          parsed.interactionId,
+          false
+        );
+        return;
+      }
+
+      case "plan_implement": {
+        await this.handlePlanResultActionCallback(callbackQuery.id, chatId, parsed.sessionId, "implement");
+        return;
+      }
+
+      case "plan_continue": {
+        await this.handlePlanResultActionCallback(callbackQuery.id, chatId, parsed.sessionId, "continue");
         return;
       }
     }
@@ -1030,7 +1088,8 @@ export class BridgeService {
     const saved = this.store.setRuntimeCardPreferences(draft.fields);
     draft.fields = [...saved.fields];
     await this.safeAnswerCallbackQuery(callbackQueryId, "已保存。");
-    await this.renderRuntimePreferencesDraft(token, draft);
+    this.runtimePreferenceDrafts.delete(token);
+    await this.safeEditHtmlMessageText(chatId, messageId, buildRuntimePreferencesAppliedMessage(saved.fields));
     await this.refreshActiveRuntimeStatusCard(chatId, "runtime_preferences_saved");
   }
 
@@ -1178,6 +1237,65 @@ export class BridgeService {
     await this.finishPersistedFinalAnswerRender(callbackQueryId, answerId, messageId, result);
   }
 
+  private async renderPersistedPlanResult(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    answerId: string,
+    mode: {
+      expanded: boolean;
+      page?: number;
+    }
+  ): Promise<void> {
+    if (!this.store) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    const view = this.store.getFinalAnswerView(answerId, chatId);
+    if (!view) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    if (!mode.expanded) {
+      const result = await this.safeEditHtmlMessageText(
+        chatId,
+        messageId,
+        view.previewHtml,
+        buildPlanResultReplyMarkup({
+          answerId,
+          sessionId: view.sessionId,
+          totalPages: view.pages.length,
+          expanded: false
+        })
+      );
+      await this.finishPersistedFinalAnswerRender(callbackQueryId, answerId, messageId, result);
+      return;
+    }
+
+    const page = mode.page ?? 1;
+    const pageHtml = view.pages[page - 1];
+    if (!pageHtml) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    const result = await this.safeEditHtmlMessageText(
+      chatId,
+      messageId,
+      pageHtml,
+      buildPlanResultReplyMarkup({
+        answerId,
+        sessionId: view.sessionId,
+        totalPages: view.pages.length,
+        expanded: true,
+        currentPage: page
+      })
+    );
+    await this.finishPersistedFinalAnswerRender(callbackQueryId, answerId, messageId, result);
+  }
+
   private async finishPersistedFinalAnswerRender(
     callbackQueryId: string,
     answerId: string,
@@ -1196,6 +1314,46 @@ export class BridgeService {
         await this.safeAnswerCallbackQuery(callbackQueryId, "暂时无法更新这条消息，请稍后再试。");
         return;
     }
+  }
+
+  private async handlePlanResultActionCallback(
+    callbackQueryId: string,
+    chatId: string,
+    sessionId: string,
+    action: "implement" | "continue"
+  ): Promise<void> {
+    if (!this.store) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    const session = this.store.getSessionById(sessionId);
+    if (!session || session.telegramChatId !== chatId) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    if (action === "continue") {
+      this.store.setSessionPlanMode(sessionId, true);
+      await this.safeAnswerCallbackQuery(callbackQueryId);
+      return;
+    }
+
+    if (this.activeTurn) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "当前项目仍在执行，请等待完成或发送 /interrupt。");
+      return;
+    }
+
+    this.store.setSessionPlanMode(sessionId, false);
+    this.store.setActiveSession(chatId, sessionId);
+    const updatedSession = this.store.getSessionById(sessionId);
+    if (!updatedSession) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    await this.startRealTurn(chatId, updatedSession, "Implement the plan.");
+    await this.safeAnswerCallbackQuery(callbackQueryId);
   }
 
   private async handleInteractionDecisionCallback(
@@ -1411,6 +1569,43 @@ export class BridgeService {
 
     const success = await this.cancelInteraction(chatId, row, interaction, "user_canceled_interaction");
     await this.safeAnswerCallbackQuery(callbackQueryId, success ? undefined : "暂时无法处理这个交互，请稍后再试。");
+  }
+
+  private async handleInteractionAnswerToggleCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    interactionId: string,
+    expanded: boolean
+  ): Promise<void> {
+    const loaded = await this.loadPendingInteractionForCallback(chatId, messageId, interactionId, callbackQueryId);
+    if (!loaded) {
+      return;
+    }
+
+    const { row, interaction } = loaded;
+    if (row.state !== "answered") {
+      await this.renderStoredPendingInteraction(chatId, row, interaction);
+      await this.safeAnswerCallbackQuery(
+        callbackQueryId,
+        isPendingInteractionHandled(row) ? "这个操作已处理。" : "这个按钮已过期，请重新操作。"
+      );
+      return;
+    }
+
+    const rendered = buildPendingInteractionSurface(row, interaction, { answeredExpanded: expanded });
+    const result = await this.safeEditHtmlMessageText(chatId, messageId, rendered.text, rendered.replyMarkup);
+    switch (result.outcome) {
+      case "edited":
+        await this.safeAnswerCallbackQuery(callbackQueryId);
+        return;
+      case "rate_limited":
+        await this.safeAnswerCallbackQuery(callbackQueryId, "Telegram 正在限流，请稍后再试。");
+        return;
+      default:
+        await this.safeAnswerCallbackQuery(callbackQueryId, "暂时无法更新这条消息，请稍后再试。");
+        return;
+    }
   }
 
   private async cancelPendingTextInteraction(chatId: string, interactionId: string): Promise<void> {
@@ -4360,19 +4555,25 @@ export class BridgeService {
 
     const knownUnsupported = getKnownUnsupportedServerRequest(request);
     if (knownUnsupported) {
+      const activeTurn = this.activeTurn;
       await this.logger.warn("known unsupported app-server server request", {
         method: request.method,
         id: request.id,
         detail: knownUnsupported.logDetail
       });
-      if (this.activeTurn) {
-        await this.appendDebugJournal(this.activeTurn, "bridge/serverRequest/rejected", {
+      if (activeTurn) {
+        await this.appendDebugJournal(activeTurn, "bridge/serverRequest/rejected", {
           requestId: serializeJsonRpcRequestId(request.id),
           requestMethod: request.method,
           params: request.params,
           reason: knownUnsupported.errorMessage
         });
-        await this.safeSendMessage(this.activeTurn.chatId, knownUnsupported.userMessage);
+        const delivered = await this.safeSendMessage(activeTurn.chatId, knownUnsupported.userMessage);
+        if (delivered) {
+          await this.runRuntimeCardOperation(activeTurn, async () => {
+            await this.reanchorStatusCardToLatestMessage(activeTurn, "known_unsupported_server_request");
+          });
+        }
       }
       await this.appServer.respondToServerRequestError(request.id, -32601, knownUnsupported.errorMessage);
       return;
@@ -4447,6 +4648,9 @@ export class BridgeService {
     }
 
     this.store.setPendingInteractionMessageId(pending.interactionId, sent.message_id);
+    await this.runRuntimeCardOperation(activeTurn, async () => {
+      await this.reanchorStatusCardToLatestMessage(activeTurn, "pending_interaction_sent");
+    });
   }
 
   private async sendPendingInteractionCard(
@@ -4589,13 +4793,22 @@ export class BridgeService {
     }
 
     if (classified.status === "completed") {
+      const completedSession = this.store.getSessionById(activeTurn.sessionId);
       let finalMessage = activeTurn.finalMessage;
-      if (!finalMessage && this.appServer) {
-        finalMessage = await extractFinalAnswerFromHistory(this.appServer, activeTurn.threadId, activeTurn.turnId);
+      let proposedPlan: string | null = null;
+      if (this.appServer) {
+        const turnArtifacts = await extractTurnArtifactsFromHistory(this.appServer, activeTurn.threadId, activeTurn.turnId);
+        if (!finalMessage) {
+          finalMessage = turnArtifacts.finalMessage;
+        }
+        proposedPlan = turnArtifacts.proposedPlan;
       }
-
       this.store.markSessionSuccessful(activeTurn.sessionId);
       this.disposeRuntimeCards(activeTurn);
+      if (completedSession?.planMode && proposedPlan) {
+        await this.sendPlanResult(activeTurn, proposedPlan);
+        return;
+      }
       await this.sendFinalAnswer(activeTurn, finalMessage);
       return;
     }
@@ -4806,6 +5019,7 @@ export class BridgeService {
 
   private async getInspectRenderPayload(activeSession: SessionRow): Promise<InspectRenderPayload | null> {
     const pendingInteractions = this.buildPendingInteractionSummaries(activeSession);
+    const answeredInteractions = this.buildAnsweredInteractionSummaries(activeSession);
     const activity = this.activeTurn?.sessionId === activeSession.sessionId
       ? {
           tracker: this.activeTurn.tracker,
@@ -4817,7 +5031,8 @@ export class BridgeService {
     if (activity) {
       const snapshot = {
         ...activity.tracker.getInspectSnapshot(),
-        pendingInteractions
+        pendingInteractions,
+        answeredInteractions
       };
       if (snapshot.inspectAvailable) {
         return {
@@ -4849,14 +5064,15 @@ export class BridgeService {
         ...historicalPayload,
         snapshot: {
           ...historicalPayload.snapshot,
-          pendingInteractions
+          pendingInteractions,
+          answeredInteractions
         }
       };
     }
 
-    if (pendingInteractions.length > 0) {
+    if (pendingInteractions.length > 0 || answeredInteractions.length > 0) {
       return {
-        snapshot: buildPendingInteractionOnlyInspectSnapshot(pendingInteractions),
+        snapshot: buildPendingInteractionOnlyInspectSnapshot(pendingInteractions, answeredInteractions),
         commands: [],
         note: null
       };
@@ -4919,6 +5135,22 @@ export class BridgeService {
         state: interaction.state,
         awaitingText: interaction.state === "awaiting_text"
       }));
+  }
+
+  private buildAnsweredInteractionSummaries(activeSession: SessionRow): string[] {
+    if (!this.store) {
+      return [];
+    }
+
+    return this.store
+      .listPendingInteractionsByChat(activeSession.telegramChatId, ["answered"])
+      .filter((interaction) => interaction.sessionId === activeSession.sessionId)
+      .slice(0, 5)
+      .map((row) => {
+        const interaction = parseStoredInteraction(row.promptJson);
+        return interaction ? summarizeAnsweredInteractionForInspect(row, interaction) : null;
+      })
+      .filter((value): value is string => Boolean(value));
   }
 
   private getRuntimeCardTraceContext(activeTurn: ActiveTurnState): RuntimeCardTraceContext {
@@ -5419,6 +5651,46 @@ export class BridgeService {
     }
   }
 
+  private async sendPlanResult(activeTurn: ActiveTurnState, planMarkdown: string): Promise<void> {
+    const rendered = buildCollapsibleFinalAnswerView(planMarkdown);
+
+    if (this.store) {
+      const saved = this.store.saveFinalAnswerView({
+        telegramChatId: activeTurn.chatId,
+        sessionId: activeTurn.sessionId,
+        threadId: activeTurn.threadId,
+        turnId: activeTurn.turnId,
+        previewHtml: rendered.previewHtml,
+        pages: rendered.pages
+      });
+
+      const markup = rendered.truncated
+        ? buildPlanResultReplyMarkup({
+          answerId: saved.answerId,
+          sessionId: activeTurn.sessionId,
+          totalPages: saved.pages.length,
+          expanded: false
+        })
+        : {
+          inline_keyboard: buildPlanResultActionRows(activeTurn.sessionId)
+        };
+
+      const sent = await this.safeSendHtmlMessageResult(
+        activeTurn.chatId,
+        rendered.truncated ? saved.previewHtml : (rendered.pages[0] ?? ""),
+        markup
+      );
+      if (sent) {
+        this.store.setFinalAnswerMessageId(saved.answerId, sent.message_id);
+        return;
+      }
+
+      this.store.deleteFinalAnswerView(saved.answerId);
+    }
+
+    await this.safeSendHtmlMessageResult(activeTurn.chatId, rendered.pages[0] ?? "");
+  }
+
   private async appendDebugJournal(
     activeTurn: ActiveTurnState,
     method: string,
@@ -5904,6 +6176,9 @@ export class BridgeService {
           reason,
           preview: summarizeTextPreview(text)
         });
+        if (surface.surface !== "status") {
+          await this.reanchorStatusCardToLatestMessage(activeTurn, `${surface.surface}_card_sent`);
+        }
         return;
       }
 
@@ -5960,6 +6235,41 @@ export class BridgeService {
         card: summarizeRuntimeCardSurface(surface)
       });
       this.scheduleRuntimeCardRetry(activeTurn, surface, retryMs, reason ?? "edit_retry");
+    });
+  }
+
+  private async reanchorStatusCardToLatestMessage(
+    activeTurn: ActiveTurnState,
+    reason: string
+  ): Promise<void> {
+    const rendered = this.buildStatusCardRenderPayload(activeTurn.sessionId, activeTurn.tracker, activeTurn.statusCard);
+    const sent = await this.safeSendHtmlMessageResult(activeTurn.chatId, rendered.text, rendered.replyMarkup);
+    if (!sent) {
+      return;
+    }
+
+    const traceContext = this.getRuntimeCardTraceContext(activeTurn);
+    const replyMarkupKey = serializeReplyMarkup(rendered.replyMarkup);
+    activeTurn.statusCard.messageId = sent.message_id;
+    activeTurn.statusCard.lastRenderedText = rendered.text;
+    activeTurn.statusCard.lastRenderedReplyMarkupKey = replyMarkupKey;
+    activeTurn.statusCard.lastRenderedAtMs = Date.now();
+    activeTurn.statusCard.rateLimitUntilAtMs = null;
+    activeTurn.statusCard.pendingText = null;
+    activeTurn.statusCard.pendingReplyMarkup = null;
+    activeTurn.statusCard.pendingReason = null;
+    await this.logRuntimeCardEvent(traceContext, activeTurn.statusCard, "card_reanchored", {
+      reason,
+      renderedText: rendered.text,
+      replyMarkup: rendered.replyMarkup ?? null,
+      card: summarizeRuntimeCardSurface(activeTurn.statusCard)
+    });
+    await this.logger.info("runtime status card reanchored", {
+      sessionId: activeTurn.sessionId,
+      turnId: activeTurn.turnId,
+      messageId: activeTurn.statusCard.messageId,
+      reason,
+      preview: summarizeTextPreview(rendered.text)
     });
   }
 
@@ -6077,37 +6387,37 @@ export class BridgeService {
       case "session-id":
         return session.threadId ? `session-id: ${session.threadId}` : null;
       case "session_name":
-        return session.displayName ? `会话: ${session.displayName}` : null;
+        return session.displayName ? `session_name: ${session.displayName}` : null;
       case "project_name":
-        return `项目: ${this.projectDisplayName(session)}`;
+        return `project_name: ${this.projectDisplayName(session)}`;
       case "project_path":
-        return session.projectPath ? `路径: ${session.projectPath}` : null;
+        return session.projectPath ? `project_path: ${session.projectPath}` : null;
       case "plan_mode":
-        return `Plan mode: ${session.planMode ? "on" : "off"}`;
+        return `plan_mode: ${session.planMode ? "on" : "off"}`;
       case "model_reasoning":
-        return `模型: ${formatSessionModelReasoningConfig(session)}`;
+        return `model_reasoning: ${formatSessionModelReasoningConfig(session)}`;
       case "thread_id":
-        return session.threadId ? `线程: ${session.threadId}` : null;
+        return session.threadId ? `thread_id: ${session.threadId}` : null;
       case "turn_id":
-        return session.lastTurnId ? `Turn: ${session.lastTurnId}` : null;
+        return session.lastTurnId ? `turn_id: ${session.lastTurnId}` : null;
       case "blocked_reason":
-        return blockedReason ? `阻塞: ${blockedReason}` : null;
+        return blockedReason ? `blocked_reason: ${blockedReason}` : null;
       case "current_step":
-        return progressText ? `步骤: ${progressText}` : null;
+        return progressText ? `current_step: ${progressText}` : null;
       case "last_token_usage":
         return inspect.tokenUsage?.lastTotalTokens !== null && inspect.tokenUsage?.lastTotalTokens !== undefined
-          ? `本次Token: ${inspect.tokenUsage.lastTotalTokens}`
+          ? `last_token_usage: ${inspect.tokenUsage.lastTotalTokens}`
           : null;
       case "total_token_usage":
         return inspect.tokenUsage?.totalTokens !== null && inspect.tokenUsage?.totalTokens !== undefined
-          ? `累计Token: ${inspect.tokenUsage.totalTokens}`
+          ? `total_token_usage: ${inspect.tokenUsage.totalTokens}`
           : null;
       case "context_window":
         return inspect.tokenUsage?.modelContextWindow !== null && inspect.tokenUsage?.modelContextWindow !== undefined
-          ? `上下文: ${inspect.tokenUsage.modelContextWindow}`
+          ? `context_window: ${inspect.tokenUsage.modelContextWindow}`
           : null;
       case "final_answer_ready":
-        return `终答: ${inspect.finalMessageAvailable ? "是" : "否"}`;
+        return `final_answer_ready: ${inspect.finalMessageAvailable ? "yes" : "no"}`;
     }
   }
 
@@ -7000,6 +7310,7 @@ function buildInspectPayloadFromThreadHistory(
   const recentMcpSummaries: string[] = [];
   const recentWebSearches: string[] = [];
   const planSnapshot: string[] = [];
+  const proposedPlanSnapshot: string[] = [];
   const completedCommentary: string[] = [];
   let finalMessageAvailable = false;
   let latestConclusion: string | null = null;
@@ -7082,7 +7393,7 @@ function buildInspectPayloadFromThreadHistory(
         const text = getString(itemRecord, "text");
         if (text) {
           for (const line of text.split(/\r?\n/u).map((entry) => entry.trim()).filter((entry) => entry.length > 0)) {
-            pushHistorySummary(planSnapshot, line);
+            pushHistorySummary(proposedPlanSnapshot, line);
           }
         }
         break;
@@ -7135,12 +7446,14 @@ function buildInspectPayloadFromThreadHistory(
     recentHookSummaries: [],
     recentNoticeSummaries: [],
     planSnapshot,
+    proposedPlanSnapshot,
     agentSnapshot: [],
     completedCommentary,
     tokenUsage: null,
     latestDiffSummary: null,
     terminalInteractionSummary: null,
-    pendingInteractions: []
+    pendingInteractions: [],
+    answeredInteractions: []
   };
 
   const hasStructuredDetail = commands.length > 0
@@ -7148,6 +7461,7 @@ function buildInspectPayloadFromThreadHistory(
     || recentMcpSummaries.length > 0
     || recentWebSearches.length > 0
     || planSnapshot.length > 0
+    || proposedPlanSnapshot.length > 0
     || completedCommentary.length > 0
     || finalMessageAvailable;
 
@@ -7164,16 +7478,24 @@ function buildInspectPayloadFromThreadHistory(
 
 function buildPendingInteractionSurface(
   row: PendingInteractionRow,
-  interaction: NormalizedInteraction
+  interaction: NormalizedInteraction,
+  options?: {
+    answeredExpanded?: boolean;
+  }
 ): {
   text: string;
   replyMarkup?: TelegramInlineKeyboardMarkup;
 } {
   if (row.state === "answered") {
+    const details = buildAnsweredInteractionDetails(row, interaction);
     return buildInteractionResolvedCard({
       title: interaction.title,
       state: "answered",
-      summary: summarizeAnsweredInteraction(row, interaction)
+      summary: summarizeAnsweredInteraction(row, interaction),
+      details,
+      expandable: details.length > 0,
+      expanded: options?.answeredExpanded ?? false,
+      interactionId: row.interactionId
     });
   }
 
@@ -7263,6 +7585,82 @@ function buildPendingInteractionSurface(
       });
     }
   }
+}
+
+function buildAnsweredInteractionDetails(
+  row: PendingInteractionRow,
+  interaction: NormalizedInteraction
+): string[] {
+  if (interaction.kind !== "questionnaire") {
+    return [];
+  }
+
+  const details: string[] = [];
+  const payload = parseJsonRecord(row.responseJson);
+  const answers = parseJsonRecord(payload?.answers);
+  if (!answers) {
+    return [];
+  }
+
+  for (const [index, question] of interaction.questions.entries()) {
+    const answerRecord = parseJsonRecord(answers[question.id]);
+    const answerList = extractAnsweredInteractionValues(answerRecord);
+    if (!answerList) {
+      continue;
+    }
+
+    details.push(`${index + 1}. ${question.header}`);
+    details.push(`问题：${question.question}`);
+    details.push(`回答：${question.isSecret ? "已提交敏感回答，不显示内容" : answerList.join("，")}`);
+  }
+
+  return details;
+}
+
+function extractAnsweredInteractionValues(record: Record<string, unknown> | null): string[] | null {
+  if (!record) {
+    return null;
+  }
+
+  const answers = getStringArray(record, "answers");
+  if (answers.length > 0) {
+    return answers;
+  }
+
+  return null;
+}
+
+function summarizeAnsweredInteractionForInspect(
+  row: PendingInteractionRow,
+  interaction: NormalizedInteraction
+): string | null {
+  if (interaction.kind !== "questionnaire") {
+    return summarizeAnsweredInteraction(row, interaction);
+  }
+
+  const payload = parseJsonRecord(row.responseJson);
+  const answers = parseJsonRecord(payload?.answers);
+  if (!answers) {
+    return summarizeAnsweredInteraction(row, interaction);
+  }
+
+  const segments = interaction.questions
+    .map((question) => {
+      const answerRecord = parseJsonRecord(answers[question.id]);
+      const answerList = extractAnsweredInteractionValues(answerRecord);
+      if (!answerList) {
+        return null;
+      }
+      const answerText = question.isSecret ? "已提交敏感回答，不显示内容" : answerList.join("，");
+      return `${question.header}: ${answerText}`;
+    })
+    .filter((value): value is string => Boolean(value));
+
+  if (segments.length === 0) {
+    return summarizeAnsweredInteraction(row, interaction);
+  }
+
+  return `${interaction.title} / ${segments.join(" / ")}`;
 }
 
 function buildApprovalActions(interaction: NormalizedApprovalInteraction): Array<{ text: string; decisionKey: string }> {
@@ -7809,7 +8207,8 @@ function deserializeJsonRpcRequestId(text: string): JsonRpcRequestId {
 }
 
 function buildPendingInteractionOnlyInspectSnapshot(
-  pendingInteractions: PendingInteractionSummary[]
+  pendingInteractions: PendingInteractionSummary[],
+  answeredInteractions: string[]
 ): InspectSnapshot {
   return {
     turnStatus: "blocked",
@@ -7838,12 +8237,14 @@ function buildPendingInteractionOnlyInspectSnapshot(
     recentHookSummaries: [],
     recentNoticeSummaries: [],
     planSnapshot: [],
+    proposedPlanSnapshot: [],
     agentSnapshot: [],
     completedCommentary: [],
     tokenUsage: null,
     latestDiffSummary: null,
     terminalInteractionSummary: null,
-    pendingInteractions
+    pendingInteractions,
+    answeredInteractions
   };
 }
 
@@ -7856,23 +8257,34 @@ async function extractFinalAnswerFromHistory(
   threadId: string,
   turnId: string
 ): Promise<string | null> {
+  const artifacts = await extractTurnArtifactsFromHistory(appServer, threadId, turnId);
+  return artifacts.finalMessage ?? artifacts.proposedPlan;
+}
+
+async function extractTurnArtifactsFromHistory(
+  appServer: CodexAppServerClient,
+  threadId: string,
+  turnId: string
+): Promise<{ finalMessage: string | null; proposedPlan: string | null }> {
   const resumed = await appServer.resumeThread(threadId);
   const targetTurn = resumed.thread.turns.find((turn) => turn.id === turnId);
   if (!targetTurn) {
-    return null;
+    return {
+      finalMessage: null,
+      proposedPlan: null
+    };
   }
 
   const finalItem = targetTurn.items.find(
     (item) => item.type === "agentMessage" && item.phase === "final_answer" && typeof item.text === "string"
   );
-  if (finalItem?.text) {
-    return finalItem.text;
-  }
-
   const planItem = [...targetTurn.items].reverse().find(
     (item) => item.type === "plan" && typeof item.text === "string"
   );
-  return planItem?.text ?? null;
+  return {
+    finalMessage: finalItem?.text ?? null,
+    proposedPlan: planItem?.text ?? null
+  };
 }
 
 function summarizeHistoryCommandOutput(aggregatedOutput: string | null, fallbackCommand: string): {
