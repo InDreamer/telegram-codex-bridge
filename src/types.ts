@@ -22,6 +22,8 @@ export type RecentProjectSource = "mru" | "pin" | "scan" | "last_success";
 
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
+export type SessionPlanMode = "default" | "plan";
+
 export type RuntimeStatusField =
   | "model-name"
   | "model-with-reasoning"
@@ -89,11 +91,7 @@ export const ALL_RUNTIME_STATUS_FIELDS: readonly RuntimeStatusField[] = [
   ...BRIDGE_EXTENSION_RUNTIME_STATUS_FIELDS
 ] as const;
 
-export const DEFAULT_RUNTIME_STATUS_FIELDS: RuntimeStatusField[] = [
-  "model-with-reasoning",
-  "context-remaining",
-  "current-dir"
-];
+export const DEFAULT_RUNTIME_STATUS_FIELDS: RuntimeStatusField[] = [];
 
 export type TurnInputSourceKind = "voice";
 
@@ -245,6 +243,7 @@ export interface SessionRow {
   threadId: string | null;
   selectedModel: string | null;
   selectedReasoningEffort: ReasoningEffort | null;
+  planMode: boolean;
   displayName: string;
   projectName: string;
   projectAlias: string | null;

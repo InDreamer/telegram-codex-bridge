@@ -1180,6 +1180,43 @@ test("selected model and reasoning effort persist on sessions and survive reopen
   }
 });
 
+test("session plan mode defaults off, updates, and survives reopen", async () => {
+  const { paths, store, cleanup } = await openStore();
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-plan-mode",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    assert.equal((store.getSessionById(session.sessionId) as any)?.planMode, false);
+
+    (store as any).setSessionPlanMode(session.sessionId, true);
+    assert.equal((store.getSessionById(session.sessionId) as any)?.planMode, true);
+
+    store.close();
+    const reopened = await BridgeStateStore.open(paths, testLogger);
+    try {
+      assert.equal((reopened.getSessionById(session.sessionId) as any)?.planMode, true);
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+test("runtime card preferences default to no optional fields", async () => {
+  const { store, cleanup } = await openStore();
+
+  try {
+    assert.deepEqual(store.getRuntimeCardPreferences().fields, []);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("createSession persists seeded thread and last-turn metadata", async () => {
   const { paths, store, cleanup } = await openStore();
 
@@ -1363,11 +1400,7 @@ test("runtime card preferences persist across reopen and default when missing", 
   const { paths, store, cleanup } = await openStore();
 
   try {
-    assert.deepEqual(store.getRuntimeCardPreferences().fields, [
-      "model-with-reasoning",
-      "context-remaining",
-      "current-dir"
-    ]);
+    assert.deepEqual(store.getRuntimeCardPreferences().fields, []);
 
     store.setRuntimeCardPreferences(["thread_id", "turn_id"]);
     store.close();

@@ -100,6 +100,7 @@ interface SessionRecord {
   thread_id: string | null;
   selected_model: string | null;
   selected_reasoning_effort: ReasoningEffort | null;
+  plan_mode?: number;
   display_name: string;
   project_name: string;
   project_alias?: string | null;
@@ -302,6 +303,7 @@ function mapSession(record: SessionRecord): SessionRow {
     threadId: record.thread_id,
     selectedModel: record.selected_model,
     selectedReasoningEffort: record.selected_reasoning_effort,
+    planMode: record.plan_mode === 1,
     displayName: record.display_name,
     projectName: record.project_name,
     projectAlias: record.project_alias ?? null,
@@ -358,6 +360,7 @@ function sessionSelectColumns(sessionAlias: string, recentAlias: string): string
     `${sessionAlias}.thread_id AS thread_id`,
     `${sessionAlias}.selected_model AS selected_model`,
     `${sessionAlias}.selected_reasoning_effort AS selected_reasoning_effort`,
+    `${sessionAlias}.plan_mode AS plan_mode`,
     `${sessionAlias}.display_name AS display_name`,
     `${sessionAlias}.project_name AS project_name`,
     `${recentAlias}.project_alias AS project_alias`,
@@ -486,6 +489,7 @@ function initialSchema(): string {
       thread_id TEXT NULL,
       selected_model TEXT NULL,
       selected_reasoning_effort TEXT NULL,
+      plan_mode INTEGER NOT NULL DEFAULT 0,
       display_name TEXT NOT NULL,
       project_name TEXT NOT NULL,
       project_path TEXT NOT NULL,
@@ -602,7 +606,7 @@ function initialSchema(): string {
   `;
 }
 
-const CURRENT_SCHEMA_VERSION = 8;
+const CURRENT_SCHEMA_VERSION = 10;
 
 function listColumns(db: DatabaseSync, tableName: string): string[] {
   const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
@@ -817,6 +821,14 @@ function applyMigrations(db: DatabaseSync): void {
     }
 
     recordMigration(db, 9);
+  }
+
+  if (!applied.has(10)) {
+    if (!hasColumn(db, "session", "plan_mode")) {
+      db.exec("ALTER TABLE session ADD COLUMN plan_mode INTEGER NOT NULL DEFAULT 0");
+    }
+
+    recordMigration(db, 10);
   }
 }
 
@@ -1351,6 +1363,7 @@ export class BridgeStateStore {
     displayName?: string;
     selectedModel?: string | null;
     selectedReasoningEffort?: ReasoningEffort | null;
+    planMode?: boolean;
     threadId?: string | null;
     lastTurnId?: string | null;
     lastTurnStatus?: string | null;
@@ -1363,6 +1376,7 @@ export class BridgeStateStore {
       threadId: options.threadId ?? null,
       selectedModel: options.selectedModel ?? null,
       selectedReasoningEffort: options.selectedReasoningEffort ?? null,
+      planMode: options.planMode ?? false,
       displayName: options.displayName ?? options.projectName,
       projectName: options.projectName,
       projectAlias: null,
@@ -1389,6 +1403,7 @@ export class BridgeStateStore {
               thread_id,
               selected_model,
               selected_reasoning_effort,
+              plan_mode,
               display_name,
               project_name,
               project_path,
@@ -1401,7 +1416,7 @@ export class BridgeStateStore {
               last_turn_id,
               last_turn_status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `
         )
         .run(
@@ -1410,6 +1425,7 @@ export class BridgeStateStore {
           session.threadId,
           session.selectedModel,
           session.selectedReasoningEffort,
+          session.planMode ? 1 : 0,
           session.displayName,
           session.projectName,
           session.projectPath,
@@ -1859,6 +1875,18 @@ export class BridgeStateStore {
         `
       )
       .run(selectedReasoningEffort, nowIso(), sessionId);
+  }
+
+  setSessionPlanMode(sessionId: string, planMode: boolean): void {
+    this.db
+      .prepare(
+        `
+          UPDATE session
+          SET plan_mode = ?, last_used_at = ?
+          WHERE session_id = ?
+        `
+      )
+      .run(planMode ? 1 : 0, nowIso(), sessionId);
   }
 
   updateSessionStatus(

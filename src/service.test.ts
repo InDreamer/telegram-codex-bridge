@@ -6582,9 +6582,6 @@ test("runtime command persists edited status-line fields through callbacks", asy
     });
 
     assert.deepEqual(store.getRuntimeCardPreferences().fields, [
-      "model-with-reasoning",
-      "context-remaining",
-      "current-dir",
       "model-name"
     ]);
   } finally {
