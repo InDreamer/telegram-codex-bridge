@@ -1907,12 +1907,16 @@ function renderAgentRuntimeLine(entry: CollabAgentStateSnapshot, index: number):
 function selectCurrentPlanEntry(entries: string[]): string | null {
   return entries.find((entry) => /\(inProgress\)$/u.test(entry))
     ?? entries.find((entry) => /\((pending|todo)\)$/u.test(entry))
+    ?? entries[0]
     ?? entries.at(-1)
     ?? null;
 }
 
 function stripPlanEntryStatus(entry: string): string {
-  return entry.replace(/\s+\((inProgress|pending|todo|completed|failed|blocked)\)$/u, "").trim();
+  return entry
+    .replace(/\s+\((inProgress|pending|todo|completed|failed|blocked)\)$/u, "")
+    .replace(/^#+\s*/u, "")
+    .trim();
 }
 
 function formatAgentStatus(status: CollabAgentStateSnapshot["status"]): string {

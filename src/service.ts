@@ -7786,8 +7786,14 @@ async function extractFinalAnswerFromHistory(
   const finalItem = targetTurn.items.find(
     (item) => item.type === "agentMessage" && item.phase === "final_answer" && typeof item.text === "string"
   );
+  if (finalItem?.text) {
+    return finalItem.text;
+  }
 
-  return finalItem?.text ?? null;
+  const planItem = [...targetTurn.items].reverse().find(
+    (item) => item.type === "plan" && typeof item.text === "string"
+  );
+  return planItem?.text ?? null;
 }
 
 function summarizeHistoryCommandOutput(aggregatedOutput: string | null, fallbackCommand: string): {

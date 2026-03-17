@@ -1921,6 +1921,161 @@ test("status card expands the current plan inline and keeps only the latest plan
   }
 });
 
+test("status card reconstructs the current plan from delta-only plan updates", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const callbackAnswers: Array<string | undefined> = [];
+  let nextMessageId = 830;
+
+  try {
+    store.upsertPendingAuthorization({
+      telegramUserId: "1",
+      telegramChatId: "chat-1",
+      telegramUsername: "tester",
+      displayName: "Tester"
+    });
+    const candidate = store.listPendingAuthorizations()[0];
+    if (!candidate) {
+      throw new Error("expected pending authorization candidate");
+    }
+    store.confirmPendingAuthorization(candidate);
+    const session = createSession(store, "chat-1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        const messageId = nextMessageId++;
+        sent.push({ messageId, text, parseMode: _options?.parseMode, replyMarkup: _options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) => {
+        edited.push({ messageId, text, parseMode: _options?.parseMode, replyMarkup: _options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      answerCallbackQuery: async (_callbackQueryId: string, text?: string) => {
+        callbackAnswers.push(text);
+      }
+    };
+
+    installRunningAppServer(service, "thread-plan-delta", "turn-plan-delta");
+
+    await withMockedNow("2026-03-10T10:10:00.000Z", async () => {
+      await (service as any).startRealTurn("chat-1", session, "Do the work");
+    });
+    await withMockedNow("2026-03-10T10:10:03.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/started", {
+        threadId: "thread-plan-delta",
+        turnId: "turn-plan-delta"
+      });
+    });
+    await withMockedNow("2026-03-10T10:10:06.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/plan/delta", {
+        threadId: "thread-plan-delta",
+        turnId: "turn-plan-delta",
+        itemId: "turn-plan-delta-plan",
+        delta: "## Telegram 命令体验优化（轻量一周版）\n\n"
+      });
+      await (service as any).handleAppServerNotification("item/plan/delta", {
+        threadId: "thread-plan-delta",
+        turnId: "turn-plan-delta",
+        itemId: "turn-plan-delta-plan",
+        delta: "### Summary\n"
+      });
+      await (service as any).handleAppServerNotification("item/plan/delta", {
+        threadId: "thread-plan-delta",
+        turnId: "turn-plan-delta",
+        itemId: "turn-plan-delta-plan",
+        delta: "优化 `/help` 的可读性和新手可达性。"
+      });
+    });
+
+    const collapsed = edited.at(-1) ?? sent.at(-1);
+    assert.equal(collapsed?.parseMode, "HTML");
+    assert.equal(
+      collapsed?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text,
+      "当前计划：Telegram 命令体验优化（轻量一周版）"
+    );
+
+    await withMockedNow("2026-03-10T10:10:08.000Z", async () => {
+      await (service as any).handleCallback({
+        id: "callback-plan-delta-expand",
+        from: { id: 1, is_bot: false, first_name: "Tester" },
+        message: {
+          message_id: 830,
+          chat: { id: 1, type: "private" },
+          date: 0,
+          text: "<b>Runtime Status</b>"
+        },
+        data: `v1:plan:expand:${session.sessionId}`
+      });
+    });
+
+    assert.equal(callbackAnswers.at(-1), undefined);
+    assert.match(edited.at(-1)?.text ?? "", /<b>Current Plan:<\/b>/u);
+    assert.match(edited.at(-1)?.text ?? "", /Telegram 命令体验优化（轻量一周版）/u);
+    assert.match(edited.at(-1)?.text ?? "", /Summary/u);
+    assert.match(edited.at(-1)?.text ?? "", /优化 .*\/help.* 的可读性和新手可达性/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("completed plan-mode turns deliver the persisted plan when no final answer item exists", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ chatId: string; text: string; parseMode?: string; replyMarkup?: any }> = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.setActiveSession("1", session.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (chatId: string, text: string, options?: any) => {
+        sent.push({ chatId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(1100 + sent.length, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string) => {
+        return createFakeTelegramMessage(messageId, text);
+      }
+    };
+
+    installRunningAppServer(service, "thread-plan-final", "turn-plan-final", async () => ({
+      thread: {
+        id: "thread-plan-final",
+        turns: [{
+          id: "turn-plan-final",
+          items: [
+            {
+              type: "plan",
+              text: "## Telegram 命令体验优化（轻量一周版）\n\n### Summary\n优化 `/help` 的可读性和新手可达性。"
+            }
+          ]
+        }]
+      }
+    }));
+
+    await (service as any).startRealTurn("1", session, "帮我随便 plan 点什么");
+    await (service as any).handleAppServerNotification("turn/started", {
+      threadId: "thread-plan-final",
+      turnId: "turn-plan-final"
+    });
+    await (service as any).handleAppServerNotification("turn/completed", {
+      threadId: "thread-plan-final",
+      turn: { id: "turn-plan-final", status: "completed", items: [] }
+    });
+
+    assert.equal(
+      sent.some((entry) => entry.text.includes("本次操作已完成，但没有可返回的最终答复。")),
+      false
+    );
+    assert.equal(
+      sent.some((entry) => entry.text.includes("Telegram 命令体验优化（轻量一周版）")),
+      true
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
 test("status card shows running subagents behind an agent button and expands their progress inline", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];

@@ -88,6 +88,7 @@ export class ActivityTracker {
   private readonly recentHookSummaries: string[] = [];
   private readonly recentNoticeSummaries: string[] = [];
   private readonly planSnapshot: string[] = [];
+  private planDeltaBuffer = "";
   private readonly subagents = new Map<string, TrackedSubagent>();
   private readonly pendingSubagentIdentities = new Map<string, SubagentIdentityUpdate>();
   private readonly subagentIdentityEvents: SubagentIdentityEvent[] = [];
@@ -159,6 +160,7 @@ export class ActivityTracker {
         this.state.errorState = null;
         this.state.lastActivityAt = receivedAt;
         this.turnStartedAt = receivedAt;
+        this.planDeltaBuffer = "";
         this.pushTransition(receivedAt, "turn", "turn started");
         this.pushStatusUpdate("Turn started");
         this.pushStreamBlock({ kind: "status", text: "Running" });
@@ -435,6 +437,7 @@ export class ActivityTracker {
           const cleanedEntries = notification.entries
             .map((entry) => cleanSummary(entry))
             .filter((entry) => entry.length > 0);
+          this.planDeltaBuffer = cleanedEntries.join("\n");
           this.replaceSummaryList(this.planSnapshot, cleanedEntries);
           this.state.latestProgress = summarizePlanEntries(cleanedEntries);
           if (this.state.latestProgress) {
@@ -450,16 +453,18 @@ export class ActivityTracker {
         if (notification.message) {
           this.state.inspectAvailable = true;
           this.state.lastActivityAt = receivedAt;
-          const summary = cleanSummary(notification.message);
-          if (!summary) {
+          this.planDeltaBuffer += notification.message;
+          const entries = extractPlanDeltaEntries(this.planDeltaBuffer);
+          if (entries.length === 0) {
             return;
           }
-          if (this.planSnapshot.length === 0) {
-            this.replaceSummaryList(this.planSnapshot, [summary]);
-          }
+          this.replaceSummaryList(this.planSnapshot, entries);
+          const summary = summarizePlanEntries(entries);
           this.state.latestProgress = summary;
-          this.pushStatusUpdate(summary);
-          this.collapseOrPushPlanBlock(summary);
+          if (summary) {
+            this.pushStatusUpdate(summary);
+          }
+          this.collapseOrPushPlanBlock(entries.join("\n"));
         }
         return;
 
@@ -1351,6 +1356,13 @@ function summarizePlanEntries(entries: string[]): string | null {
   const activeEntry = entries.find((entry) => /\(inProgress\)$/u.test(entry))
     ?? entries.find((entry) => /\((pending|todo)\)$/u.test(entry));
   return cleanSummary(activeEntry ?? entries.at(-1) ?? entries[0] ?? "");
+}
+
+function extractPlanDeltaEntries(buffer: string): string[] {
+  return buffer
+    .split(/\r?\n/u)
+    .map((entry) => cleanSummary(entry))
+    .filter((entry) => entry.length > 0);
 }
 
 function normalizeSubagentIdentity(identity: SubagentIdentityUpdate): SubagentIdentityUpdate {
