@@ -57,6 +57,7 @@ import {
   buildUnarchiveSuccessText,
   buildUnsupportedCommandText,
   buildWhereText,
+  encodeLanguageSetCallback,
   formatSessionModelReasoningConfig,
   renderFinalAnswerHtmlChunks,
   parseCallbackData,
@@ -77,7 +78,8 @@ import {
   ProjectPickerResult,
   ReadinessSnapshot,
   ReasoningEffort,
-  SessionRow
+  SessionRow,
+  UiLanguage
 } from "./types.js";
 import { CodexAppServerClient } from "./codex/app-server.js";
 import {
@@ -179,6 +181,7 @@ interface StatusCardState extends RuntimeCardMessageState {
   commandOrder: RuntimeCommandState[];
   planExpanded: boolean;
   agentsExpanded: boolean;
+  needsReanchorOnActive: boolean;
 }
 
 interface ErrorCardState extends RuntimeCardMessageState {
@@ -707,6 +710,11 @@ export class BridgeService {
 
       case "runtime_reset": {
         await this.handleRuntimePreferencesResetCallback(callbackQuery.id, chatId, message.message_id, parsed.token);
+        return;
+      }
+
+      case "language_set": {
+        await this.handleLanguageSetCallback(callbackQuery.id, chatId, message.message_id, parsed.language);
         return;
       }
 
@@ -2051,12 +2059,14 @@ export class BridgeService {
       case "start":
       case "help":
       case "commands": {
-        await this.safeSendMessage(chatId, buildHelpText());
+        await this.safeSendMessage(chatId, buildHelpText(this.getUiLanguage()));
+        await this.reanchorRuntimeAfterBridgeReply(chatId, "help_sent");
         return;
       }
 
       case "status": {
         await this.sendStatus(chatId);
+        await this.reanchorRuntimeAfterBridgeReply(chatId, "status_sent");
         return;
       }
 
@@ -2117,6 +2127,7 @@ export class BridgeService {
         }
 
         await this.safeSendHtmlMessage(chatId, buildWhereText(this.store.getActiveSession(chatId)));
+        await this.reanchorRuntimeAfterBridgeReply(chatId, "where_sent");
         return;
       }
 
@@ -2127,11 +2138,19 @@ export class BridgeService {
 
       case "inspect": {
         await this.handleInspect(chatId);
+        await this.reanchorRuntimeAfterBridgeReply(chatId, "inspect_sent");
         return;
       }
 
       case "runtime": {
         await this.handleRuntime(chatId);
+        await this.reanchorRuntimeAfterBridgeReply(chatId, "runtime_sent");
+        return;
+      }
+
+      case "language": {
+        await this.handleLanguage(chatId);
+        await this.reanchorRuntimeAfterBridgeReply(chatId, "language_sent");
         return;
       }
 
@@ -4646,9 +4665,7 @@ export class BridgeService {
     }
 
     this.store.setPendingInteractionMessageId(pending.interactionId, sent.message_id);
-    await this.runRuntimeCardOperation(activeTurn, async () => {
-      await this.reanchorStatusCardToLatestMessage(activeTurn, "pending_interaction_sent");
-    });
+    activeTurn.statusCard.needsReanchorOnActive = true;
   }
 
   private async sendPendingInteractionCard(
@@ -5344,8 +5361,10 @@ export class BridgeService {
   } {
     const inspect = tracker.getInspectSnapshot();
     const context = this.getRuntimeCardContext(sessionId);
+    const language = this.getUiLanguage();
     const text = buildRuntimeStatusCard({
       ...context,
+      language,
       optionalFieldLines: this.buildRuntimeStatusLine(sessionId, inspect),
       state: formatVisibleRuntimeState(inspect),
       progressText: selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null),
@@ -5893,6 +5912,9 @@ export class BridgeService {
       agentsChanged ||
       statusProgressTextChanged ||
       options.force;
+    const shouldReanchorOnRecovery = activeTurn.statusCard.needsReanchorOnActive
+      && previousStatus?.turnStatus === "blocked"
+      && nextStatus.turnStatus === "running";
     if (statusChanged) {
       const rendered = this.buildStatusCardRenderPayload(activeTurn.sessionId, activeTurn.tracker, activeTurn.statusCard);
       await this.logRuntimeCardEvent(this.getRuntimeCardTraceContext(activeTurn), activeTurn.statusCard, "state_transition", {
@@ -5921,7 +5943,15 @@ export class BridgeService {
       );
     }
 
+    if (shouldReanchorOnRecovery) {
+      activeTurn.statusCard.needsReanchorOnActive = false;
+      await this.runRuntimeCardOperation(activeTurn, async () => {
+        await this.reanchorStatusCardToLatestMessage(activeTurn, "recovered_active");
+      });
+    }
+
     if (classified?.kind === "error") {
+      activeTurn.statusCard.needsReanchorOnActive = true;
       const errorCard = createRuntimeCardMessageState(
         "error",
         `error-${activeTurn.nextErrorCardId++}`,
@@ -6173,9 +6203,6 @@ export class BridgeService {
           reason,
           preview: summarizeTextPreview(text)
         });
-        if (surface.surface !== "status") {
-          await this.reanchorStatusCardToLatestMessage(activeTurn, `${surface.surface}_card_sent`);
-        }
         return;
       }
 
@@ -6239,6 +6266,7 @@ export class BridgeService {
     activeTurn: ActiveTurnState,
     reason: string
   ): Promise<void> {
+    const previousMessageId = activeTurn.statusCard.messageId;
     const rendered = this.buildStatusCardRenderPayload(activeTurn.sessionId, activeTurn.tracker, activeTurn.statusCard);
     const sent = await this.safeSendHtmlMessageResult(activeTurn.chatId, rendered.text, rendered.replyMarkup);
     if (!sent) {
@@ -6268,6 +6296,10 @@ export class BridgeService {
       reason,
       preview: summarizeTextPreview(rendered.text)
     });
+
+    if (previousMessageId > 0 && previousMessageId !== sent.message_id) {
+      await this.safeDeleteMessage(activeTurn.chatId, previousMessageId);
+    }
   }
 
   private async runRuntimeCardOperation(activeTurn: ActiveTurnState, operation: () => Promise<void>): Promise<void> {
@@ -6625,13 +6657,90 @@ export class BridgeService {
     }
   }
 
+  private getUiLanguage(): UiLanguage {
+    return this.store?.getUiLanguage() ?? "zh";
+  }
+
+  private buildLanguagePickerMessage(language: UiLanguage): {
+    text: string;
+    replyMarkup: TelegramInlineKeyboardMarkup;
+  } {
+    const chineseCurrent = language === "zh" ? " 当前" : "";
+    const englishCurrent = language === "en" ? " Current" : "";
+
+    return {
+      text: language === "en"
+        ? `<b>Bridge Language</b>\n<b>Current</b> · English`
+        : `<b>桥接语言</b>\n<b>当前</b> · 中文`,
+      replyMarkup: {
+        inline_keyboard: [
+          [{ text: `中文${chineseCurrent}`, callback_data: encodeLanguageSetCallback("zh") }],
+          [{ text: `English${englishCurrent}`, callback_data: encodeLanguageSetCallback("en") }]
+        ]
+      }
+    };
+  }
+
+  private async handleLanguage(chatId: string): Promise<void> {
+    const rendered = this.buildLanguagePickerMessage(this.getUiLanguage());
+    await this.safeSendHtmlMessage(chatId, rendered.text, rendered.replyMarkup);
+  }
+
+  private async handleLanguageSetCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    language: UiLanguage
+  ): Promise<void> {
+    if (!this.store) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, this.getUiLanguage() === "en" ? "State storage unavailable." : "状态存储当前不可用。");
+      return;
+    }
+
+    const nextLanguage = this.store.setUiLanguage(language);
+    await this.safeAnswerCallbackQuery(callbackQueryId, nextLanguage === "en" ? "Saved." : "已保存。");
+    await this.syncTelegramCommands();
+    const rendered = this.buildLanguagePickerMessage(nextLanguage);
+    await this.safeEditHtmlMessageText(chatId, messageId, rendered.text, rendered.replyMarkup);
+    await this.reanchorRuntimeAfterBridgeReply(chatId, "language_changed");
+  }
+
+  private async reanchorRuntimeAfterBridgeReply(chatId: string, reason: string): Promise<void> {
+    if (!this.activeTurn || this.activeTurn.chatId !== chatId) {
+      return;
+    }
+
+    if (this.activeTurn.tracker.getStatus().turnStatus !== "running") {
+      return;
+    }
+
+    await this.runRuntimeCardOperation(this.activeTurn, async () => {
+      await this.reanchorStatusCardToLatestMessage(this.activeTurn!, reason);
+    });
+  }
+
+  private async safeDeleteMessage(chatId: string, messageId: number): Promise<boolean> {
+    if (!this.api?.deleteMessage) {
+      return false;
+    }
+
+    try {
+      await this.api.deleteMessage(chatId, messageId);
+      await this.logger.info("telegram message deleted", { chatId, messageId });
+      return true;
+    } catch (error) {
+      await this.logger.warn("telegram message delete failed", { chatId, messageId, error: `${error}` });
+      return false;
+    }
+  }
+
   private async syncTelegramCommands(): Promise<void> {
     if (!this.api) {
       return;
     }
 
     try {
-      await syncTelegramCommands(this.api);
+      await syncTelegramCommands(this.api, this.getUiLanguage());
     } catch (error) {
       await this.logger.warn("telegram command menu sync failed", {
         error: `${error}`
@@ -7031,7 +7140,8 @@ function createStatusCardMessageState(): StatusCardState {
     commandItems: new Map(),
     commandOrder: [],
     planExpanded: false,
-    agentsExpanded: false
+    agentsExpanded: false,
+    needsReanchorOnActive: false
   };
 }
 

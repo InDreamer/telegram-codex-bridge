@@ -13,10 +13,11 @@ test("syncTelegramCommands syncs default and language-specific command scopes", 
       scope?: TelegramBotCommandScope,
       languageCode?: string
     ) => {
-      assert.deepEqual(_commands, TELEGRAM_COMMANDS);
       calls.push({ scope, languageCode });
+      assert.equal(_commands.some((entry) => entry.command === "language"), true);
+      assert.equal(_commands.find((entry) => entry.command === "help")?.description, "Show available commands");
     }
-  } as any);
+  } as any, "en");
 
   const expected: CommandSyncCall[] = [
     { scope: { type: "default" }, languageCode: undefined },
@@ -31,12 +32,22 @@ test("syncTelegramCommands syncs default and language-specific command scopes", 
 });
 
 test("buildHelpText stays aligned with the command registry", () => {
-  const helpText = buildHelpText();
+  const helpText = buildHelpText("zh");
 
   assert.ok(helpText.startsWith("可用指令\n/help 查看可用指令"));
   assert.ok(helpText.includes("/sessions 查看最近会话\n/sessions archived 查看已归档会话"));
   assert.ok(helpText.includes("/runtime 配置运行状态卡片顶部摘要行"));
+  assert.ok(helpText.includes("/language 切换桥接界面语言"));
   assert.ok(helpText.endsWith("/cancel 取消当前输入并返回"));
+});
+
+test("buildHelpText renders the English command surface when requested", () => {
+  const helpText = buildHelpText("en");
+
+  assert.ok(helpText.startsWith("Available commands\n/help Show available commands"));
+  assert.ok(helpText.includes("/sessions Show recent sessions\n/sessions archived Show archived sessions"));
+  assert.ok(helpText.includes("/language Change bridge UI language"));
+  assert.ok(helpText.endsWith("/cancel Cancel the current input and return"));
 });
 
 interface CommandSyncCall {

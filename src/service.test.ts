@@ -178,7 +178,11 @@ function getLatestInteractiveMessage<T extends { text: string; options?: { reply
 }
 
 function getLatestNonStatusMessage<T extends { text: string }>(sent: T[]): T | undefined {
-  return [...sent].reverse().find((entry) => !entry.text.startsWith("<b>Runtime Status</b>"));
+  return [...sent].reverse().find((entry) => !isRuntimeStatusText(entry.text));
+}
+
+function isRuntimeStatusText(text: string): boolean {
+  return text.startsWith("<b>Runtime Status</b>") || text.startsWith("<b>运行状态</b>");
 }
 
 async function withMockedNow<T>(nowIso: string, callback: () => Promise<T>): Promise<T> {
@@ -880,20 +884,20 @@ test("runtime cards keep command activity on the status message and final answer
     });
 
     assert.equal(
-      sent.filter((entry) => entry.text.startsWith("<b>Runtime Status</b>"))
+      sent.filter((entry) => isRuntimeStatusText(entry.text))
         .every((entry) => entry.parseMode === "HTML"),
       true
     );
     assert.equal(sent.some((entry) => entry.text === "All done." && entry.parseMode === "HTML"), true);
-    assert.equal(sent.filter((entry) => entry.text.startsWith("<b>Runtime Status</b>")).length, 1);
+    assert.equal(sent.filter((entry) => isRuntimeStatusText(entry.text)).length, 1);
     assert.equal(sent.filter((entry) => entry.text.startsWith("Plan")).length, 0);
     assert.equal(sent.filter((entry) => entry.text.startsWith("Command")).length, 0);
 
     const statusTexts = getMessageTexts(sent, edited, 100);
-    assert.ok(statusTexts.some((text) => /<b>State:<\/b> Starting/u.test(text)));
-    assert.ok(statusTexts.some((text) => /<b>State:<\/b> Running/u.test(text)));
-    assert.ok(statusTexts.some((text) => /<b>State:<\/b> Completed/u.test(text)));
-    assert.ok(statusTexts.some((text) => /<b>Progress:<\/b>\npnpm test -&gt; 26\/26 tests passed/u.test(text)));
+    assert.ok(statusTexts.some((text) => /<b>状态<\/b> · Starting/u.test(text)));
+    assert.ok(statusTexts.some((text) => /<b>状态<\/b> · Running/u.test(text)));
+    assert.ok(statusTexts.some((text) => /<b>状态<\/b> · Completed/u.test(text)));
+    assert.ok(statusTexts.some((text) => /<b>进度<\/b> · pnpm test -&gt; 26\/26 tests passed/u.test(text)));
     assert.equal(statusTexts.some((text) => /Command: /u.test(text)), false);
     assert.equal(statusTexts.some((text) => /Output: /u.test(text)), false);
     assert.equal(statusTexts.some((text) => /Collect protocol evidence/u.test(text)), false);
@@ -1094,13 +1098,13 @@ test("completed turns fall back to thread history when task_complete is missing"
 
     assert.equal(resumeCalls, 1);
     assert.equal(
-      sent.filter((entry) => entry.text.startsWith("<b>Runtime Status</b>"))
+      sent.filter((entry) => isRuntimeStatusText(entry.text))
         .every((entry) => entry.parseMode === "HTML"),
       true
     );
-    assert.equal(sent.filter((entry) => entry.text.startsWith("<b>Runtime Status</b>")).length, 1);
+    assert.equal(sent.filter((entry) => isRuntimeStatusText(entry.text)).length, 1);
     assert.ok(sent.some((entry) => entry.text === "Recovered from thread history." && entry.parseMode === "HTML"));
-    assert.ok(edited.some((entry) => /<b>State:<\/b> Completed/u.test(entry.text)));
+    assert.ok(edited.some((entry) => /<b>状态<\/b> · Completed/u.test(entry.text)));
     assert.equal(store.getSessionById(session.sessionId)?.status, "idle");
     assert.equal((service as any).activeTurn, null);
   } finally {
@@ -1172,7 +1176,7 @@ test("completed turns send the final answer with Telegram HTML formatting", asyn
       finalAnswer?.text.includes("<pre><code class=\"language-ts\">console.log(\"hi\")</code></pre>"),
       true
     );
-    assert.equal(sent.filter((entry) => entry.text.startsWith("<b>Runtime Status</b>")).length, 1);
+    assert.equal(sent.filter((entry) => isRuntimeStatusText(entry.text)).length, 1);
   } finally {
     await cleanup();
   }
@@ -1253,7 +1257,7 @@ test("long final answers send one collapsible preview and persist the rendered p
       });
     });
 
-    const finalMessages = sent.filter((entry) => entry.parseMode === "HTML" && !entry.text.startsWith("<b>Runtime Status</b>"));
+    const finalMessages = sent.filter((entry) => entry.parseMode === "HTML" && !isRuntimeStatusText(entry.text));
     assert.equal(finalMessages.length, 1);
     assert.match(finalMessages[0]?.text ?? "", /已折叠/u);
     assert.equal(finalMessages[0]?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "展开全文");
@@ -1441,7 +1445,7 @@ test("runtime card edit failures retry the same message instead of sending a rep
     assert.equal(sent.length, 1);
     assert.equal(edited.length, 1);
     assert.equal(activeTurn.statusCard.messageId, 200);
-    assert.match(activeTurn.statusCard.pendingText ?? "", /<b>State:<\/b> Running/u);
+    assert.match(activeTurn.statusCard.pendingText ?? "", /<b>状态<\/b> · Running/u);
 
     await withMockedNow("2026-03-10T10:00:09.000Z", async () => {
       await (service as any).flushRuntimeCardRender(activeTurn, activeTurn.statusCard);
@@ -1449,7 +1453,7 @@ test("runtime card edit failures retry the same message instead of sending a rep
 
     assert.equal(sent.length, 1);
     assert.equal(edited.length, 2);
-    assert.match(activeTurn.statusCard.lastRenderedText, /<b>State:<\/b> Running/u);
+    assert.match(activeTurn.statusCard.lastRenderedText, /<b>状态<\/b> · Running/u);
     (service as any).clearRuntimeCardTimer(activeTurn.statusCard);
   } finally {
     await cleanup();
@@ -1482,9 +1486,9 @@ test("startRealTurn sends an initial runtime status card immediately", async () 
     });
 
     assert.equal(sent.length, 1);
-    assert.match(sent[0]?.text ?? "", /^<b>Runtime Status<\/b>/u);
-    assert.match(sent[0]?.text ?? "", /<b>State:<\/b> Starting/u);
-    assert.match(sent[0]?.text ?? "", /Use \/inspect for full details/u);
+    assert.equal(isRuntimeStatusText(sent[0]?.text ?? ""), true);
+    assert.match(sent[0]?.text ?? "", /<b>状态<\/b> · Starting/u);
+    assert.match(sent[0]?.text ?? "", /使用 \/inspect 查看完整详情/u);
     assert.equal(sent[0]?.parseMode, "HTML");
     assert.equal(sent[0]?.replyMarkup, undefined);
     assert.equal((service as any).activeTurn.statusCard.messageId, 800);
@@ -1526,11 +1530,11 @@ test("runtime status card renders optional fields on separate lines without a su
     });
 
     assert.equal(sent.length, 1);
-    assert.match(sent[0]?.text ?? "", /<b>Session:<\/b> Session Alpha/u);
+    assert.match(sent[0]?.text ?? "", /<b>会话<\/b> · Session Alpha/u);
     assert.doesNotMatch(sent[0]?.text ?? "", /<b>Project:<\/b>/u);
     assert.doesNotMatch(sent[0]?.text ?? "", /<b>概览:<\/b>/u);
-    assert.match(sent[0]?.text ?? "", /<b>Model Reasoning:<\/b> gpt-5 \+ 默认/u);
-    assert.match(sent[0]?.text ?? "", /<b>Plan Mode:<\/b> on/u);
+    assert.match(sent[0]?.text ?? "", /<b>Model Reasoning<\/b> · gpt-5 \+ 默认/u);
+    assert.match(sent[0]?.text ?? "", /<b>Plan Mode<\/b> · on/u);
     assert.doesNotMatch(sent[0]?.text ?? "", /\|/u);
   } finally {
     await cleanup();
@@ -1585,7 +1589,7 @@ test("status card refreshes when tool progress changes without commentary", asyn
       });
     });
 
-    assert.match(edited.at(-1)?.text ?? "", /<b>Progress:<\/b>\nSearching docs/u);
+    assert.match(edited.at(-1)?.text ?? "", /<b>进度<\/b> · Searching docs/u);
   } finally {
     await cleanup();
   }
@@ -1648,7 +1652,7 @@ test("status card accumulates fragmented command output before rendering command
     });
 
     const statusTexts = getMessageTexts(sent, edited, 620);
-    assert.match(statusTexts.at(-1) ?? "", /<b>Progress:<\/b>\npnpm test -&gt; 26\/26 tests passed/u);
+    assert.match(statusTexts.at(-1) ?? "", /<b>进度<\/b> · pnpm test -&gt; 26\/26 tests passed/u);
     assert.doesNotMatch(statusTexts.at(-1) ?? "", /Command: \$ pnpm test/u);
     assert.doesNotMatch(statusTexts.at(-1) ?? "", /Output: 26\/26 tests passed/u);
   } finally {
@@ -1803,7 +1807,7 @@ test("status card updates only when completed commentary arrives", async () => {
     });
 
     assert.equal(edited.length, 2);
-    assert.match(edited.at(-1)?.text ?? "", /<b>Progress:<\/b>\n先看项目骨架，再抓入口、配置和主要模块。/u);
+    assert.match(edited.at(-1)?.text ?? "", /<b>进度<\/b> · 先看项目骨架，再抓入口、配置和主要模块。/u);
     const inspect = (service as any).activeTurn.tracker.getInspectSnapshot();
     assert.equal(inspect.completedCommentary.at(-1), "先看项目骨架，再抓入口、配置和主要模块。");
   } finally {
@@ -1874,8 +1878,8 @@ test("status card keeps commentary progress visible when structured thread statu
     });
 
     const latest = edited.at(-1)?.text ?? "";
-    assert.match(latest, /<b>State:<\/b> Blocked/u);
-    assert.match(latest, /<b>Progress:<\/b>\n先确认 Codex 当前运行阶段，再决定下一步。/u);
+    assert.match(latest, /<b>状态<\/b> · Blocked/u);
+    assert.match(latest, /<b>进度<\/b> · 先确认 Codex 当前运行阶段，再决定下一步。/u);
   } finally {
     await cleanup();
   }
@@ -2193,7 +2197,7 @@ test("completed turns keep the turn's original plan mode after /plan is toggled 
       turn: { id: "turn-plan-sticky", status: "completed", items: [] }
     });
 
-    const nonRuntimeMessages = sent.filter((entry) => !entry.text.startsWith("<b>Runtime Status</b>"));
+    const nonRuntimeMessages = sent.filter((entry) => !isRuntimeStatusText(entry.text));
     const planMessage = nonRuntimeMessages.at(-1);
     assert.ok(planMessage);
     assert.match(planMessage?.text ?? "", /Sticky Plan/u);
@@ -2257,7 +2261,7 @@ test("completed turns keep default-mode final answers after /plan is toggled on 
       turn: { id: "turn-default-sticky", status: "completed", items: [] }
     });
 
-    const nonRuntimeMessages = sent.filter((entry) => !entry.text.startsWith("<b>Runtime Status</b>"));
+    const nonRuntimeMessages = sent.filter((entry) => !isRuntimeStatusText(entry.text));
     const finalMessage = nonRuntimeMessages.at(-1);
     assert.ok(finalMessage);
     assert.match(finalMessage?.text ?? "", /普通 final answer/u);
@@ -2334,7 +2338,7 @@ test("plan result implement action switches off plan mode and starts implementat
       turn: { id: "turn-plan-apply", status: "completed", items: [] }
     });
 
-    const planMessage = [...sent].reverse().find((entry) => !entry.text.startsWith("<b>Runtime Status</b>"));
+    const planMessage = [...sent].reverse().find((entry) => !isRuntimeStatusText(entry.text));
     assert.ok(planMessage);
     assert.equal(planMessage?.options?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "实施这个计划");
     assert.equal(planMessage?.options?.replyMarkup?.inline_keyboard?.[0]?.length, 1);
@@ -3315,15 +3319,15 @@ test("runtime errors create a separate error card without polluting the status c
       });
     });
 
-    assert.equal(sent.length, 3);
-    assert.equal(sent.filter((entry) => entry.text.startsWith("<b>Runtime Status</b>")).length, 2);
+    assert.equal(sent.length, 2);
+    assert.equal(sent.filter((entry) => isRuntimeStatusText(entry.text)).length, 1);
     assert.equal(sent.filter((entry) => entry.text.startsWith("<b>Error</b>")).length, 1);
 
     const allStatusTexts = [
-      ...sent.filter((entry) => entry.text.startsWith("<b>Runtime Status</b>")).map((entry) => entry.text),
+      ...sent.filter((entry) => isRuntimeStatusText(entry.text)).map((entry) => entry.text),
       ...edited.map((entry) => entry.text)
     ];
-    assert.ok(allStatusTexts.some((text) => /<b>State:<\/b> Failed/u.test(text)));
+    assert.ok(allStatusTexts.some((text) => /<b>状态<\/b> · Failed/u.test(text)));
     assert.equal(allStatusTexts.some((text) => /tool crashed/u.test(text)), false);
 
     const errorTexts = getMessageTexts(sent, edited, 301);
@@ -3379,7 +3383,7 @@ test("runtime card rate limits keep the same message and retry later without rep
     assert.equal(sent.length, 1);
     assert.equal(edited.length, 1);
     assert.equal(activeTurn.statusCard.messageId, 700);
-    assert.match(activeTurn.statusCard.pendingText ?? "", /<b>State:<\/b> Running/u);
+    assert.match(activeTurn.statusCard.pendingText ?? "", /<b>状态<\/b> · Running/u);
 
     await withMockedNow("2026-03-10T10:00:10.000Z", async () => {
       await (service as any).handleAppServerNotification("item/started", {
@@ -3398,7 +3402,7 @@ test("runtime card rate limits keep the same message and retry later without rep
 
     assert.equal(sent.length, 1);
     assert.equal(edited.length, 2);
-    assert.match(activeTurn.statusCard.lastRenderedText, /<b>State:<\/b> Running/u);
+    assert.match(activeTurn.statusCard.lastRenderedText, /<b>状态<\/b> · Running/u);
     assert.doesNotMatch(activeTurn.statusCard.lastRenderedText, /Command: \$ pnpm test/u);
     (service as any).clearRuntimeCardTimer(activeTurn.statusCard);
   } finally {
@@ -4306,22 +4310,23 @@ test("inspect renders structured activity details while running and after comple
     });
 
     await (service as any).routeCommand("chat-1", "inspect", "");
-    assert.equal(sent.at(-1)?.parseMode, "HTML");
-    assert.match(sent.at(-1)?.text ?? "", /<b>当前任务详情<\/b>/u);
-    assert.match(sent.at(-1)?.text ?? "", /<b>会话：<\/b> Project One/u);
-    assert.doesNotMatch(sent.at(-1)?.text ?? "", /<b>项目：<\/b> Project One/u);
-    assert.match(sent.at(-1)?.text ?? "", /<b>状态：<\/b> 执行中/u);
-    assert.match(sent.at(-1)?.text ?? "", /Searching docs/u);
-    assert.match(sent.at(-1)?.text ?? "", /<b>最近命令<\/b>/u);
-    assert.match(sent.at(-1)?.text ?? "", /1\. <b>命令：<\/b> \$ pnpm test/u);
-    assert.match(sent.at(-1)?.text ?? "", /<b>状态：<\/b> 进行中/u);
-    assert.match(sent.at(-1)?.text ?? "", /<b>结果：<\/b> 26\/26 tests passed/u);
-    assert.match(sent.at(-1)?.text ?? "", /Updated src\/service\.ts to enforce Telegram cooldown/u);
-    assert.match(sent.at(-1)?.text ?? "", /<b>计划清单<\/b>/u);
-    assert.match(sent.at(-1)?.text ?? "", /Collect protocol evidence \(completed\)/u);
-    assert.match(sent.at(-1)?.text ?? "", /<b>补充说明<\/b>/u);
-    assert.match(sent.at(-1)?.text ?? "", /Checking event mapping against Telegram surface\./u);
-    assert.doesNotMatch(sent.at(-1)?.text ?? "", /private reasoning/u);
+    const runningInspect = getLatestNonStatusMessage(sent);
+    assert.equal(runningInspect?.parseMode, "HTML");
+    assert.match(runningInspect?.text ?? "", /<b>当前任务详情<\/b>/u);
+    assert.match(runningInspect?.text ?? "", /<b>会话：<\/b> Project One/u);
+    assert.doesNotMatch(runningInspect?.text ?? "", /<b>项目：<\/b> Project One/u);
+    assert.match(runningInspect?.text ?? "", /<b>状态：<\/b> 执行中/u);
+    assert.match(runningInspect?.text ?? "", /Searching docs/u);
+    assert.match(runningInspect?.text ?? "", /<b>最近命令<\/b>/u);
+    assert.match(runningInspect?.text ?? "", /1\. <b>命令：<\/b> \$ pnpm test/u);
+    assert.match(runningInspect?.text ?? "", /<b>状态：<\/b> 进行中/u);
+    assert.match(runningInspect?.text ?? "", /<b>结果：<\/b> 26\/26 tests passed/u);
+    assert.match(runningInspect?.text ?? "", /Updated src\/service\.ts to enforce Telegram cooldown/u);
+    assert.match(runningInspect?.text ?? "", /<b>计划清单<\/b>/u);
+    assert.match(runningInspect?.text ?? "", /Collect protocol evidence \(completed\)/u);
+    assert.match(runningInspect?.text ?? "", /<b>补充说明<\/b>/u);
+    assert.match(runningInspect?.text ?? "", /Checking event mapping against Telegram surface\./u);
+    assert.doesNotMatch(runningInspect?.text ?? "", /private reasoning/u);
 
     await (service as any).handleAppServerNotification("codex/event/task_complete", {
       threadId: "thread-4",
@@ -4334,12 +4339,13 @@ test("inspect renders structured activity details while running and after comple
     });
 
     await (service as any).routeCommand("chat-1", "inspect", "");
-    assert.equal(sent.at(-1)?.parseMode, "HTML");
-    assert.match(sent.at(-1)?.text ?? "", /<b>状态：<\/b> 已完成/u);
-    assert.match(sent.at(-1)?.text ?? "", /1\. <b>命令：<\/b> \$ pnpm test/u);
-    assert.match(sent.at(-1)?.text ?? "", /<b>状态：<\/b> 已完成/u);
-    assert.match(sent.at(-1)?.text ?? "", /<b>最近结论：<\/b> 最终答复已生成/u);
-    assert.match(sent.at(-1)?.text ?? "", /<b>最终答复：<\/b> 已就绪/u);
+    const completedInspect = getLatestNonStatusMessage(sent);
+    assert.equal(completedInspect?.parseMode, "HTML");
+    assert.match(completedInspect?.text ?? "", /<b>状态：<\/b> 已完成/u);
+    assert.match(completedInspect?.text ?? "", /1\. <b>命令：<\/b> \$ pnpm test/u);
+    assert.match(completedInspect?.text ?? "", /<b>状态：<\/b> 已完成/u);
+    assert.match(completedInspect?.text ?? "", /<b>最近结论：<\/b> 最终答复已生成/u);
+    assert.match(completedInspect?.text ?? "", /<b>最终答复：<\/b> 已就绪/u);
   } finally {
     await cleanup();
   }
@@ -4392,15 +4398,16 @@ test("debug journal write failures do not break inspect or turn progress handlin
     });
 
     await (service as any).routeCommand("chat-1", "inspect", "");
+    const inspectMessage = getLatestNonStatusMessage(sent);
 
-    assert.ok(sent.some((entry) => /^<b>Runtime Status<\/b>/u.test(entry.text)));
+    assert.ok(sent.some((entry) => isRuntimeStatusText(entry.text)));
     assert.equal(sent.some((entry) => /^Command/u.test(entry.text)), false);
     assert.equal(edited.some((text) => /Command: \$ pnpm test/u.test(text)), false);
-    assert.ok(edited.some((text) => /<b>State:<\/b> Running/u.test(text)));
-    assert.equal(sent.at(-1)?.parseMode, "HTML");
-    assert.match(sent.at(-1)?.text ?? "", /<b>当前任务详情<\/b>/u);
-    assert.match(sent.at(-1)?.text ?? "", /<b>最近命令<\/b>/u);
-    assert.match(sent.at(-1)?.text ?? "", /1\. <b>命令：<\/b> \$ pnpm test/u);
+    assert.ok(edited.some((text) => /<b>状态<\/b> · Running/u.test(text)));
+    assert.equal(inspectMessage?.parseMode, "HTML");
+    assert.match(inspectMessage?.text ?? "", /<b>当前任务详情<\/b>/u);
+    assert.match(inspectMessage?.text ?? "", /<b>最近命令<\/b>/u);
+    assert.match(inspectMessage?.text ?? "", /1\. <b>命令：<\/b> \$ pnpm test/u);
   } finally {
     await cleanup();
   }
@@ -4545,7 +4552,7 @@ test("runtime card flow writes dedicated per-surface trace logs with rendered co
     assert.match(statusLog, /Checking Telegram session flow rendering\./u);
     assert.match(statusLog, /计划清单：Trace plan card/u);
     assert.match(statusLog, /Trace plan card \(inProgress\)/u);
-    assert.match(statusLog, /"renderedText":"<b>Runtime Status/u);
+    assert.match(statusLog, /"renderedText":"<b>(Runtime Status|运行状态)/u);
 
     assert.match(errorLog, /"message":"card_created"/u);
     assert.match(errorLog, /Telegram edit failed/u);
@@ -4602,11 +4609,10 @@ test("server requests are persisted and rendered as Telegram interaction cards",
     assert.equal(pending[0]?.requestMethod, "item/commandExecution/requestApproval");
     assert.ok(pending[0]?.telegramMessageId);
 
-    assert.equal(sent.length, 3);
-    assert.match(sent[0]?.text ?? "", /^<b>Runtime Status<\/b>/u);
+    assert.equal(sent.length, 2);
+    assert.equal(isRuntimeStatusText(sent[0]?.text ?? ""), true);
     assert.match(sent[1]?.text ?? "", /Codex 需要命令批准/u);
-    assert.match(sent[2]?.text ?? "", /^<b>Runtime Status<\/b>/u);
-    assert.equal((service as any).activeTurn?.statusCard.messageId, sent[2]?.messageId);
+    assert.equal((service as any).activeTurn?.statusCard.messageId, sent[0]?.messageId);
 
     const interactionMessage = sent[1];
     assert.match(interactionMessage?.text ?? "", /Codex 需要命令批准/u);
@@ -4614,6 +4620,133 @@ test("server requests are persisted and rendered as Telegram interaction cards",
       interactionMessage?.options?.replyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data?.startsWith("v3:ix:d:"),
       true
     );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("runtime reanchors after a blocked interaction resumes active and deletes the old status card", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string }> = [];
+  const deleted: number[] = [];
+
+  try {
+    const session = authorizeChatWithSession(store, "chat-1");
+    store.setActiveSession("chat-1", session.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, _options?: any) => {
+        const messageId = 1000 + sent.length;
+        sent.push({ messageId, text });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) =>
+        createFakeTelegramMessage(messageId, text),
+      deleteMessage: async (_chatId: string, messageId: number) => {
+        deleted.push(messageId);
+        return true;
+      },
+      answerCallbackQuery: async () => {}
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      startThread: async () => ({ thread: { id: "thread-1" } }),
+      startTurn: async () => ({ turn: { id: "turn-1", status: "inProgress" } }),
+      resumeThread: async () => ({ thread: { id: "thread-1", turns: [] } }),
+      respondToServerRequest: async () => {},
+      respondToServerRequestError: async () => {}
+    };
+
+    await (service as any).startRealTurn("chat-1", session, "Do the work");
+    await (service as any).handleAppServerNotification("thread/status/changed", {
+      threadId: "thread-1",
+      status: "active",
+      activeFlags: ["waitingOnApproval"]
+    });
+    await (service as any).handleAppServerServerRequest({
+      id: "server-1",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "item-1",
+        command: "pnpm test",
+        availableDecisions: ["accept", "decline", "cancel"]
+      }
+    });
+
+    assert.equal(sent.length, 2);
+    assert.equal((service as any).activeTurn?.statusCard.messageId, sent[0]?.messageId);
+
+    await (service as any).handleAppServerNotification("thread/status/changed", {
+      threadId: "thread-1",
+      status: "active",
+      activeFlags: []
+    });
+
+    assert.equal(sent.length, 3);
+    assert.match(sent[2]?.text ?? "", /^<b>Runtime Status<\/b>|^<b>运行状态<\/b>/u);
+    assert.deepEqual(deleted, [sent[0]!.messageId]);
+    assert.equal((service as any).activeTurn?.statusCard.messageId, sent[2]?.messageId);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("bridge commands while blocked do not reanchor runtime ahead of the pending interaction", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; parseMode?: string }> = [];
+
+  try {
+    const session = authorizeChatWithSession(store, "chat-1");
+    store.setActiveSession("chat-1", session.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const messageId = 1100 + sent.length;
+        sent.push({ messageId, text, parseMode: options?.parseMode });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, _options?: any) =>
+        createFakeTelegramMessage(messageId, text),
+      answerCallbackQuery: async () => {}
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      startThread: async () => ({ thread: { id: "thread-1" } }),
+      startTurn: async () => ({ turn: { id: "turn-1", status: "inProgress" } }),
+      resumeThread: async () => ({ thread: { id: "thread-1", turns: [] } }),
+      respondToServerRequest: async () => {},
+      respondToServerRequestError: async () => {}
+    };
+
+    await (service as any).startRealTurn("chat-1", session, "Do the work");
+    await (service as any).handleAppServerNotification("thread/status/changed", {
+      threadId: "thread-1",
+      status: "active",
+      activeFlags: ["waitingOnApproval"]
+    });
+    await (service as any).handleAppServerServerRequest({
+      id: "server-1",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "item-1",
+        command: "pnpm test",
+        availableDecisions: ["accept", "decline", "cancel"]
+      }
+    });
+
+    await (service as any).routeCommand("chat-1", "where", "");
+
+    assert.equal(sent.length, 3);
+    assert.match(sent[0]?.text ?? "", /^<b>Runtime Status<\/b>|^<b>运行状态<\/b>/u);
+    assert.match(sent[1]?.text ?? "", /Codex 需要命令批准/u);
+    assert.match(sent[2]?.text ?? "", /当前会话|Current Session/u);
+    assert.equal((service as any).activeTurn?.statusCard.messageId, sent[0]?.messageId);
   } finally {
     await cleanup();
   }
@@ -7423,6 +7556,60 @@ test("runtime callbacks expire after save closes the picker", async () => {
 
     assert.equal(callbackAnswers.at(-1), "这个按钮已过期，请重新发送 /runtime。");
     assert.deepEqual(store.getRuntimeCardPreferences().fields, ["model-name"]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("language command shows a picker and callback persists the global language", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; replyMarkup?: any }> = [];
+  const callbackAnswers: Array<string | undefined> = [];
+  const commandSyncs: Array<Array<{ command: string; description: string }>> = [];
+
+  try {
+    authorizeNumericChatWithSession(store, "1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        sent.push({ text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(2400 + sent.length, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      answerCallbackQuery: async (_callbackQueryId: string, text?: string) => {
+        callbackAnswers.push(text);
+      },
+      setMyCommands: async (commands: Array<{ command: string; description: string }>) => {
+        commandSyncs.push(commands);
+      }
+    };
+
+    await (service as any).routeCommand("1", "language", "");
+    assert.equal(sent[0]?.parseMode, "HTML");
+    assert.match(sent[0]?.text ?? "", /<b>桥接语言<\/b>/u);
+    assert.equal(sent[0]?.replyMarkup?.inline_keyboard?.[1]?.[0]?.callback_data, "v4:lg:s:en");
+
+    await (service as any).handleCallback({
+      id: "lang-en",
+      from: { id: 1, is_bot: false, first_name: "Tester" },
+      message: {
+        message_id: 2401,
+        chat: { id: 1, type: "private" },
+        date: 0,
+        text: sent[0]!.text
+      },
+      data: "v4:lg:s:en"
+    });
+
+    assert.equal(store.getUiLanguage(), "en");
+    assert.equal(callbackAnswers.at(-1), "Saved.");
+    assert.match(edited.at(-1)?.text ?? "", /<b>Bridge Language<\/b>/u);
+    assert.equal(commandSyncs.at(-1)?.some((entry) => entry.command === "language"), true);
+    assert.equal(commandSyncs.at(-1)?.find((entry) => entry.command === "help")?.description, "Show available commands");
   } finally {
     await cleanup();
   }

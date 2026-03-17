@@ -26,6 +26,7 @@ import type {
   SessionProjectStatsRow,
   SessionRow,
   SessionStatus,
+  UiLanguage,
   TurnInputSourceKind,
   TurnInputSourceRow
 } from "../types.js";
@@ -167,6 +168,12 @@ interface FinalAnswerViewRecord {
 interface RuntimeCardPreferencesRecord {
   key: "global";
   fields_json: string;
+  updated_at: string;
+}
+
+interface UiLanguageRecord {
+  key: "global";
+  ui_language: UiLanguage;
   updated_at: string;
 }
 
@@ -436,6 +443,10 @@ function mapRuntimeCardPreferences(record: RuntimeCardPreferencesRecord): Runtim
   };
 }
 
+function mapUiLanguage(record: UiLanguageRecord): UiLanguage {
+  return record.ui_language === "en" ? "en" : "zh";
+}
+
 function mapTurnInputSource(record: TurnInputSourceRecord): TurnInputSourceRow {
   return {
     threadId: record.thread_id,
@@ -562,6 +573,12 @@ function initialSchema(): string {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS bridge_settings (
+      key TEXT PRIMARY KEY,
+      ui_language TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS pending_interaction (
       interaction_id TEXT PRIMARY KEY,
       telegram_chat_id TEXT NOT NULL,
@@ -610,7 +627,7 @@ function initialSchema(): string {
   `;
 }
 
-const CURRENT_SCHEMA_VERSION = 10;
+const CURRENT_SCHEMA_VERSION = 12;
 
 function listColumns(db: DatabaseSync, tableName: string): string[] {
   const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
@@ -843,6 +860,20 @@ function applyMigrations(db: DatabaseSync): void {
     }
 
     recordMigration(db, 11);
+  }
+
+  if (!applied.has(12)) {
+    db.exec(
+      `
+        CREATE TABLE IF NOT EXISTS bridge_settings (
+          key TEXT PRIMARY KEY,
+          ui_language TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      `
+    );
+
+    recordMigration(db, 12);
   }
 }
 
@@ -2140,6 +2171,40 @@ export class BridgeStateStore {
       fields: uniqueFields,
       updatedAt
     };
+  }
+
+  getUiLanguage(): UiLanguage {
+    const row = this.db
+      .prepare(
+        `
+          SELECT *
+          FROM bridge_settings
+          WHERE key = 'global'
+        `
+      )
+      .get() as UiLanguageRecord | undefined;
+
+    return row ? mapUiLanguage(row) : "zh";
+  }
+
+  setUiLanguage(language: UiLanguage): UiLanguage {
+    const updatedAt = nowIso();
+    const next = language === "en" ? "en" : "zh";
+
+    this.db
+      .prepare(
+        `
+          INSERT OR REPLACE INTO bridge_settings (
+            key,
+            ui_language,
+            updated_at
+          )
+          VALUES ('global', ?, ?)
+        `
+      )
+      .run(next, updatedAt);
+
+    return next;
   }
 
   saveFinalAnswerView(options: {

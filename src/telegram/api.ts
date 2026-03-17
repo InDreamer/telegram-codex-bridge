@@ -223,6 +223,13 @@ export class TelegramApi {
     }, 20_000);
   }
 
+  async deleteMessage(chatId: string, messageId: number): Promise<boolean> {
+    return await this.call<boolean>("deleteMessage", {
+      chat_id: chatId,
+      message_id: messageId
+    }, 20_000);
+  }
+
   async answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void> {
     await this.call("answerCallbackQuery", {
       callback_query_id: callbackQueryId,

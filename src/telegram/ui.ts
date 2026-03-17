@@ -5,7 +5,8 @@ import type {
   ReasoningEffort,
   ReadinessSnapshot,
   RuntimeStatusField,
-  SessionRow
+  SessionRow,
+  UiLanguage
 } from "../types.js";
 import { ALL_RUNTIME_STATUS_FIELDS, BRIDGE_EXTENSION_RUNTIME_STATUS_FIELDS, CODEX_CLI_RUNTIME_STATUS_FIELDS } from "../types.js";
 import type { ActivityStatus, CollabAgentStateSnapshot, InspectSnapshot, StreamBlock, StreamSnapshot } from "../activity/types.js";
@@ -67,6 +68,7 @@ export type ParsedCallbackData =
   | { kind: "runtime_toggle"; token: string; field: RuntimeStatusField }
   | { kind: "runtime_save"; token: string }
   | { kind: "runtime_reset"; token: string }
+  | { kind: "language_set"; language: UiLanguage }
   | { kind: "inspect_expand"; sessionId: string; page: number }
   | { kind: "inspect_collapse"; sessionId: string }
   | { kind: "inspect_page"; sessionId: string; page: number }
@@ -220,6 +222,10 @@ export function encodeRuntimeSaveCallback(token: string): string {
 
 export function encodeRuntimeResetCallback(token: string): string {
   return ensureTelegramCallbackDataLimit(`v4:rt:r:${token}`);
+}
+
+export function encodeLanguageSetCallback(language: UiLanguage): string {
+  return ensureTelegramCallbackDataLimit(`v4:lg:s:${language}`);
 }
 
 export function encodeInspectExpandCallback(sessionId: string, page = 0): string {
@@ -426,6 +432,14 @@ export function parseCallbackData(data: string): ParsedCallbackData | null {
 
     if (parts[2] === "r" && parts[3]) {
       return { kind: "runtime_reset", token: parts[3] };
+    }
+
+    return null;
+  }
+
+  if (parts[0] === "v4" && parts[1] === "lg") {
+    if (parts[2] === "s" && (parts[3] === "zh" || parts[3] === "en")) {
+      return { kind: "language_set", language: parts[3] };
     }
 
     return null;
@@ -1071,6 +1085,7 @@ export function buildUnsupportedCommandText(): string {
 
 export function buildRuntimeStatusCard(
   options: RuntimeCardContext & {
+    language?: UiLanguage;
     state: string;
     statusLine?: string | null;
     optionalFieldLines?: string[];
@@ -1082,13 +1097,14 @@ export function buildRuntimeStatusCard(
     agentsExpanded?: boolean;
   }
 ): string {
-  const lines: string[] = ["<b>Runtime Status</b>"];
-  pushHtmlRuntimeCardContext(lines, options);
+  const language = options.language ?? "zh";
+  const lines: string[] = [formatHtmlHeading(language === "en" ? "Runtime Status" : "运行状态")];
+  pushHtmlRuntimeCardContext(lines, options, language);
 
-  lines.push(`<b>State:</b> ${escapeHtml(options.state)}`);
+  lines.push(formatRuntimeCardRow(language === "en" ? "State" : "状态", options.state));
 
   for (const line of options.optionalFieldLines ?? []) {
-    lines.push(formatRuntimeStatusOptionalField(line));
+    lines.push(formatRuntimeStatusOptionalField(line, language));
   }
 
   if (options.planExpanded && options.planEntries && options.planEntries.length > 0) {
@@ -1116,11 +1132,16 @@ export function buildRuntimeStatusCard(
   }
 
   if (options.progressText) {
-    lines.push("<b>Progress:</b>");
-    lines.push(renderInlineMarkdown(truncateText(options.progressText, 240)));
+    const progressText = renderInlineMarkdown(truncateText(options.progressText, 240));
+    if (stripHtml(progressText).length > 72) {
+      lines.push(formatHtmlHeading(language === "en" ? "Progress" : "进度"));
+      lines.push(progressText);
+    } else {
+      lines.push(formatRuntimeCardRow(language === "en" ? "Progress" : "进度", progressText, { valueIsHtml: true }));
+    }
   }
 
-  lines.push("Use /inspect for full details");
+  lines.push(language === "en" ? "Use /inspect for full details" : "使用 /inspect 查看完整详情");
   return lines.join("\n");
 }
 
@@ -1991,13 +2012,13 @@ function formatRelativeTime(isoTime: string): string {
   return `${days}天前`;
 }
 
-function pushHtmlRuntimeCardContext(lines: string[], context: RuntimeCardContext): void {
+function pushHtmlRuntimeCardContext(lines: string[], context: RuntimeCardContext, language: UiLanguage = "zh"): void {
   if (context.sessionName) {
-    lines.push(formatHtmlField("Session:", context.sessionName));
+    lines.push(formatRuntimeCardRow(language === "en" ? "Session" : "会话", context.sessionName));
   }
 }
 
-function formatRuntimeStatusOptionalField(line: string): string {
+function formatRuntimeStatusOptionalField(line: string, language: UiLanguage): string {
   const separatorIndex = line.indexOf(":");
   if (separatorIndex === -1) {
     return escapeHtml(line);
@@ -2009,7 +2030,10 @@ function formatRuntimeStatusOptionalField(line: string): string {
     return escapeHtml(line);
   }
 
-  return formatHtmlField(`${formatRuntimeStatusOptionalLabel(rawLabel)}:`, rawValue);
+  return formatRuntimeCardRow(
+    language === "en" ? formatRuntimeStatusOptionalLabel(rawLabel) : formatRuntimeStatusOptionalLabelZh(rawLabel),
+    rawValue
+  );
 }
 
 function formatRuntimeStatusOptionalLabel(label: string): string {
@@ -2026,6 +2050,19 @@ function formatRuntimeStatusOptionalLabel(label: string): string {
       return lower.charAt(0).toUpperCase() + lower.slice(1);
     })
     .join(" ");
+}
+
+function formatRuntimeStatusOptionalLabelZh(label: string): string {
+  switch (label) {
+    case "model-with-reasoning":
+      return "模型";
+    case "plan_mode":
+      return "Plan Mode";
+    case "current-dir":
+      return "目录";
+    default:
+      return formatRuntimeStatusOptionalLabel(label);
+  }
 }
 
 function buildCollapsedPlanButtonLabel(entries: string[]): string {
@@ -2319,6 +2356,21 @@ function formatHtmlHeading(text: string): string {
 
 function formatHtmlField(label: string, value: string): string {
   return `${formatHtmlHeading(label)} ${escapeHtml(value)}`;
+}
+
+function formatRuntimeCardRow(
+  label: string,
+  value: string,
+  options: {
+    valueIsHtml?: boolean;
+  } = {}
+): string {
+  const renderedValue = options.valueIsHtml ? value : escapeHtml(value);
+  return `${formatHtmlHeading(label)} · ${renderedValue}`;
+}
+
+function stripHtml(value: string): string {
+  return value.replace(/<[^>]+>/gu, "");
 }
 
 function formatHtmlListItem(value: string): string {
