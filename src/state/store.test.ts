@@ -1488,6 +1488,26 @@ test("runtime card preferences lazily migrate legacy runtime field ids to v4 cli
   }
 });
 
+test("ui language defaults to zh and persists across reopen", async () => {
+  const { paths, store, cleanup } = await openStore();
+
+  try {
+    assert.equal(store.getUiLanguage(), "zh");
+
+    store.setUiLanguage("en");
+    store.close();
+
+    const reopened = await BridgeStateStore.open(paths, testLogger);
+    try {
+      assert.equal(reopened.getUiLanguage(), "en");
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
 test("turn input source records persist across reopen", async () => {
   const { paths, store, cleanup } = await openStore();
 

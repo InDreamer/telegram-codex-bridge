@@ -24,6 +24,8 @@ export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "
 
 export type SessionPlanMode = "default" | "plan";
 
+export type UiLanguage = "zh" | "en";
+
 export type RuntimeStatusField =
   | "model-name"
   | "model-with-reasoning"
@@ -187,6 +189,12 @@ export interface FinalAnswerViewRow {
 export interface RuntimeCardPreferencesRow {
   key: "global";
   fields: RuntimeStatusField[];
+  updatedAt: string;
+}
+
+export interface UiLanguageRow {
+  key: "global";
+  language: UiLanguage;
   updatedAt: string;
 }
 

@@ -435,6 +435,7 @@ test("buildRenameTargetPicker includes project alias clear action when needed", 
 
 test("buildRuntimeStatusCard keeps only fixed runtime fields and renders progress on a new line", () => {
   const text = buildRuntimeStatusCard({
+    language: "en",
     sessionName: "ansi-escape",
     projectName: "codex-tui",
     state: "Completed",
@@ -445,10 +446,9 @@ test("buildRuntimeStatusCard keeps only fixed runtime fields and renders progres
     text,
     [
       "<b>Runtime Status</b>",
-      "<b>Session:</b> ansi-escape",
-      "<b>State:</b> Completed",
-      "<b>Progress:</b>",
-      "确认 <code>ansi-escape</code> 是 <b>codex-tui</b> 的 ANSI 到 <code>ratatui</code> 适配边界层。",
+      "<b>Session</b> · ansi-escape",
+      "<b>State</b> · Completed",
+      "<b>Progress</b> · 确认 <code>ansi-escape</code> 是 <b>codex-tui</b> 的 ANSI 到 <code>ratatui</code> 适配边界层。",
       "Use /inspect for full details"
     ].join("\n")
   );
@@ -473,6 +473,7 @@ test("buildRuntimeStatusReplyMarkup prefers the in-progress step over earlier pe
 
 test("buildRuntimeStatusCard renders expanded running agents inline", () => {
   const text = buildRuntimeStatusCard({
+    language: "en",
     state: "Running",
     progressText: "Delegating work",
     agentEntries: [
@@ -501,6 +502,7 @@ test("buildRuntimeStatusCard renders expanded running agents inline", () => {
 
 test("buildRuntimeStatusCard renders optional runtime fields on separate lines", () => {
   const text = buildRuntimeStatusCard({
+    language: "en",
     sessionName: "Session Alpha",
     projectName: "Project One",
     state: "Running",
@@ -510,14 +512,15 @@ test("buildRuntimeStatusCard renders optional runtime fields on separate lines",
     ]
   });
 
-  assert.match(text, /<b>Model With Reasoning:<\/b> gpt-5 \+ 高/u);
-  assert.match(text, /<b>Plan Mode:<\/b> on/u);
+  assert.match(text, /<b>Model With Reasoning<\/b> · gpt-5 \+ 高/u);
+  assert.match(text, /<b>Plan Mode<\/b> · on/u);
   assert.doesNotMatch(text, /<b>概览:<\/b>/u);
   assert.doesNotMatch(text, /\|/u);
 });
 
 test("buildRuntimeStatusCard renders progress after optional fields and expanded sections", () => {
   const text = buildRuntimeStatusCard({
+    language: "en",
     sessionName: "Session Alpha",
     state: "Running",
     optionalFieldLines: ["current-dir: /tmp/project-one"],
@@ -534,11 +537,43 @@ test("buildRuntimeStatusCard renders progress after optional fields and expanded
     progressText: "Preparing the latest card layout."
   });
 
-  assert.match(text, /<b>Current Dir:<\/b> \/tmp\/project-one/u);
-  assert.ok(text.indexOf("<b>计划清单:</b>") > text.indexOf("<b>Current Dir:</b>"));
+  assert.match(text, /<b>Current Dir<\/b> · \/tmp\/project-one/u);
+  assert.ok(text.indexOf("<b>计划清单:</b>") > text.indexOf("<b>Current Dir</b>"));
   assert.ok(text.indexOf("<b>Agents:</b>") > text.indexOf("<b>计划清单:</b>"));
-  assert.ok(text.indexOf("<b>Progress:</b>") > text.indexOf("<b>Agents:</b>"));
-  assert.ok(text.indexOf("Use /inspect for full details") > text.indexOf("<b>Progress:</b>"));
+  assert.ok(text.indexOf("<b>Progress</b>") > text.indexOf("<b>Agents:</b>"));
+  assert.ok(text.indexOf("Use /inspect for full details") > text.indexOf("<b>Progress</b>"));
+});
+
+test("buildRuntimeStatusCard uses compact label-dot-value rows and zh localization", () => {
+  const text = buildRuntimeStatusCard({
+    language: "zh",
+    sessionName: "会话 Alpha",
+    state: "运行中",
+    progressText: "短进度"
+  });
+
+  assert.equal(
+    text,
+    [
+      "<b>运行状态</b>",
+      "<b>会话</b> · 会话 Alpha",
+      "<b>状态</b> · 运行中",
+      "<b>进度</b> · 短进度",
+      "使用 /inspect 查看完整详情"
+    ].join("\n")
+  );
+});
+
+test("buildRuntimeStatusCard puts long progress on a second line", () => {
+  const text = buildRuntimeStatusCard({
+    language: "en",
+    state: "Running",
+    progressText: "This progress message is intentionally long enough to render on the next line instead of staying inline."
+  });
+
+  assert.match(text, /<b>State<\/b> · Running/u);
+  assert.match(text, /<b>Progress<\/b>\nThis progress message is intentionally long enough/u);
+  assert.doesNotMatch(text, /<b>Progress<\/b> · This progress message is intentionally long enough/u);
 });
 
 test("buildRuntimePreferencesMessage renders v4 callbacks for toggle and save actions", () => {
@@ -655,7 +690,7 @@ test("buildRuntimeErrorCard renders bold field labels and escapes detail text", 
     text,
     [
       "<b>Error</b>",
-      "<b>Session:</b> Session &lt;Alpha&gt;",
+      "<b>会话</b> · Session &lt;Alpha&gt;",
       "<b>Project:</b> Project &amp; One",
       "<b>Title:</b> Runtime &lt;error&gt;",
       "<b>Detail:</b> Need &lt;retry&gt;"
