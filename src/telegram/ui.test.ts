@@ -67,6 +67,7 @@ function createSession(overrides: Partial<SessionRow>): SessionRow {
     threadId: overrides.threadId ?? null,
     selectedModel: "selectedModel" in overrides ? overrides.selectedModel ?? null : null,
     selectedReasoningEffort: "selectedReasoningEffort" in overrides ? overrides.selectedReasoningEffort ?? null : null,
+    planMode: overrides.planMode ?? false,
     displayName: overrides.displayName ?? "Session Alpha",
     projectName: overrides.projectName ?? "Project One",
     projectAlias: "projectAlias" in overrides ? overrides.projectAlias ?? null : null,
@@ -269,6 +270,7 @@ test("buildWhereText includes stable bridge and Codex identifiers when available
       "<b>路径：</b> /tmp/project&lt;one&gt;",
       "<b>状态：</b> 空闲",
       "<b>模型 + 思考强度：</b> gpt-5 + 极省",
+      "<b>plan mode:</b> off",
       "<b>Bridge 会话 ID：</b> session-where",
       "<b>Codex 线程 ID：</b> thread-where",
       "<b>最近 Turn ID：</b> turn-where",
@@ -302,6 +304,7 @@ test("buildWhereText explains when the Codex thread has not been created yet", (
       "<b>路径：</b> /tmp/project-one",
       "<b>状态：</b> 空闲",
       "<b>模型 + 思考强度：</b> 默认模型 + 默认",
+      "<b>plan mode:</b> off",
       "<b>Bridge 会话 ID：</b> session-pending-thread",
       "<b>Codex 线程 ID：</b> 尚未创建（首次发送任务后生成）",
       "<b>最近 Turn ID：</b> 暂无"

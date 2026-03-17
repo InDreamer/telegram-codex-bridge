@@ -56,6 +56,9 @@ interface TurnStartParams {
   threadId: string;
   cwd: string;
   approvalPolicy: "never";
+  collaborationMode?: {
+    mode: "plan";
+  };
   sandboxPolicy: {
     type: "dangerFullAccess";
   };
@@ -343,12 +346,16 @@ export function buildTurnStartParams(options: {
   input?: UserInput[];
   model?: string;
   effort?: ReasoningEffort;
+  collaborationMode?: {
+    mode: "plan";
+  };
 }): TurnStartParams {
   const input = options.input ?? (options.text ? [{ type: "text", text: options.text }] : []);
   return {
     threadId: options.threadId,
     cwd: options.cwd,
     approvalPolicy: "never",
+    ...(options.collaborationMode ? { collaborationMode: options.collaborationMode } : {}),
     sandboxPolicy: { type: "dangerFullAccess" },
     input,
     ...(options.model ? { model: options.model } : {}),
@@ -617,6 +624,9 @@ export class CodexAppServerClient {
     input?: UserInput[];
     model?: string;
     effort?: ReasoningEffort;
+    collaborationMode?: {
+      mode: "plan";
+    };
   }): Promise<TurnStartResult> {
     return await this.request<TurnStartResult>("turn/start", buildTurnStartParams(options));
   }

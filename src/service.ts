@@ -1970,6 +1970,11 @@ export class BridgeService {
         return;
       }
 
+      case "plan": {
+        await this.handlePlan(chatId);
+        return;
+      }
+
       case "model": {
         await this.runGuardedCommand(chatId, "模型操作暂时不可用，请稍后重试。", async () => {
           await this.handleModel(chatId, args);
@@ -2705,6 +2710,27 @@ export class BridgeService {
     await this.safeSendHtmlMessage(chatId, buildProjectPinnedText(this.projectDisplayName(activeSession)));
   }
 
+  private async handlePlan(chatId: string): Promise<void> {
+    if (!this.store) {
+      return;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession) {
+      await this.safeSendMessage(chatId, "当前没有活动会话。");
+      return;
+    }
+
+    const nextPlanMode = !activeSession.planMode;
+    this.store.setSessionPlanMode(activeSession.sessionId, nextPlanMode);
+
+    const verb = nextPlanMode ? "开启" : "关闭";
+    const suffix = activeSession.status === "running"
+      ? "当前任务不受影响，下次任务开始时生效。"
+      : "下次任务开始时生效。";
+    await this.safeSendMessage(chatId, `已为当前会话${verb} Plan mode。${suffix}`);
+  }
+
   private async handleModel(chatId: string, args: string): Promise<void> {
     if (!this.store) {
       return;
@@ -3097,7 +3123,8 @@ export class BridgeService {
         projectPath: activeSession.projectPath,
         displayName: `Review: ${activeSession.displayName}`,
         selectedModel: activeSession.selectedModel,
-        selectedReasoningEffort: activeSession.selectedReasoningEffort
+        selectedReasoningEffort: activeSession.selectedReasoningEffort,
+        planMode: activeSession.planMode
       });
       this.store.updateSessionThreadId(reviewSession.sessionId, result.reviewThreadId);
       reviewSession = this.store.getSessionById(reviewSession.sessionId) ?? reviewSession;
@@ -3140,6 +3167,7 @@ export class BridgeService {
       displayName: args.trim() || `Fork: ${activeSession.displayName}`,
       selectedModel: activeSession.selectedModel ?? forked.model,
       selectedReasoningEffort: activeSession.selectedReasoningEffort ?? forked.reasoningEffort ?? null,
+      planMode: activeSession.planMode,
       threadId: forked.thread.id,
       lastTurnId: lastForkTurn?.id ?? activeSession.lastTurnId,
       lastTurnStatus: lastForkTurn?.status ?? activeSession.lastTurnStatus
@@ -4034,6 +4062,7 @@ export class BridgeService {
         threadId,
         cwd: session.projectPath,
         input,
+        ...(session.planMode ? { collaborationMode: { mode: "plan" as const } } : {}),
         ...(session.selectedModel ? { model: session.selectedModel } : {}),
         ...(session.selectedReasoningEffort ? { effort: session.selectedReasoningEffort } : {})
       });
@@ -4134,6 +4163,7 @@ export class BridgeService {
         threadId,
         cwd: session.projectPath,
         text,
+        ...(session.planMode ? { collaborationMode: { mode: "plan" as const } } : {}),
         ...(session.selectedModel ? { model: session.selectedModel } : {}),
         ...(session.selectedReasoningEffort ? { effort: session.selectedReasoningEffort } : {})
       });

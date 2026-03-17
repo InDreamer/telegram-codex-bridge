@@ -3342,6 +3342,7 @@ test("where command returns the active session with bridge and Codex identifiers
         "<b>路径：</b> /tmp/project-one",
         "<b>状态：</b> 空闲",
         "<b>模型 + 思考强度：</b> 默认模型 + 默认",
+        "<b>plan mode:</b> off",
         `<b>Bridge 会话 ID：</b> ${session.sessionId}`,
         "<b>Codex 线程 ID：</b> 尚未创建（首次发送任务后生成）",
         "<b>最近 Turn ID：</b> 暂无"
@@ -3359,6 +3360,7 @@ test("where command includes the current Codex thread and latest turn identifier
   try {
     const session = authorizeChatWithSession(store, "chat-1");
     store.renameSession(session.sessionId, "Session Alpha");
+    store.setSessionPlanMode(session.sessionId, true);
     store.updateSessionThreadId(session.sessionId, "thread-where");
     store.updateSessionStatus(session.sessionId, "idle", {
       lastTurnId: "turn-where",
@@ -3385,12 +3387,97 @@ test("where command includes the current Codex thread and latest turn identifier
         "<b>路径：</b> /tmp/project-one",
         "<b>状态：</b> 空闲",
         "<b>模型 + 思考强度：</b> 默认模型 + 默认",
+        "<b>plan mode:</b> on",
         `<b>Bridge 会话 ID：</b> ${session.sessionId}`,
         "<b>Codex 线程 ID：</b> thread-where",
         "<b>最近 Turn ID：</b> turn-where",
         "<b>上次结果：</b> 上次已完成"
       ].join("\n")
     );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("plan command toggles the active session mode while idle", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ text: string; parseMode?: string }> = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        sent.push({ text, parseMode: options?.parseMode });
+        return createFakeTelegramMessage(900, text);
+      }
+    };
+
+    await (service as any).routeCommand("1", "plan", "");
+    assert.equal(store.getSessionById(session.sessionId)?.planMode, true);
+    assert.equal(sent.at(-1)?.text, "已为当前会话开启 Plan mode。下次任务开始时生效。");
+
+    await (service as any).routeCommand("1", "plan", "");
+    assert.equal(store.getSessionById(session.sessionId)?.planMode, false);
+    assert.equal(sent.at(-1)?.text, "已为当前会话关闭 Plan mode。下次任务开始时生效。");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("plan command toggles the next-turn mode without affecting a running turn", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ text: string; parseMode?: string }> = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.updateSessionStatus(session.sessionId, "running");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        sent.push({ text, parseMode: options?.parseMode });
+        return createFakeTelegramMessage(901, text);
+      }
+    };
+
+    await (service as any).routeCommand("1", "plan", "");
+    assert.equal(store.getSessionById(session.sessionId)?.planMode, true);
+    assert.equal(sent.at(-1)?.text, "已为当前会话开启 Plan mode。当前任务不受影响，下次任务开始时生效。");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("startRealTurn sends collaborationMode when the active session uses plan mode", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const startTurnCalls: unknown[] = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.setSessionPlanMode(session.sessionId, true);
+
+    (service as any).appServer = {
+      isRunning: true,
+      startThread: async () => ({ thread: { id: "thread-plan-mode" } }),
+      startTurn: async (payload: unknown) => {
+        startTurnCalls.push(payload);
+        return { turn: { id: "turn-plan-mode", status: "inProgress" } };
+      },
+      resumeThread: async () => ({ thread: { id: "thread-plan-mode", turns: [] } })
+    };
+
+    await (service as any).startRealTurn(
+      "1",
+      store.getSessionById(session.sessionId) ?? session,
+      "Plan the rollout"
+    );
+
+    assert.deepEqual(startTurnCalls, [{
+      threadId: "thread-plan-mode",
+      cwd: "/tmp/project-one",
+      text: "Plan the rollout",
+      collaborationMode: { mode: "plan" }
+    }]);
   } finally {
     await cleanup();
   }

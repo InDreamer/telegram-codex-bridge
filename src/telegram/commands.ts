@@ -21,6 +21,7 @@ const TELEGRAM_COMMAND_ENTRIES: TelegramCommandEntry[] = [
   { command: "use", description: "按序号切换会话", help: "/use <序号> 切换到指定会话" },
   { command: "rename", description: "重命名当前会话或项目", help: "/rename <名称> 快速重命名当前会话；裸 /rename 可选择改会话名或项目别名" },
   { command: "pin", description: "收藏当前项目", help: "/pin 收藏当前项目" },
+  { command: "plan", description: "切换当前会话的 Plan mode", help: "/plan 切换当前会话的 Plan mode" },
   { command: "model", description: "查看或设置当前会话模型", help: "/model 查看或设置当前会话模型" },
   { command: "skills", description: "列出当前项目可用技能", help: "/skills 查看当前项目可用技能" },
   { command: "skill", description: "把技能作为结构化输入发送", help: "/skill <技能名> :: 任务说明 发送 skill 结构化输入" },

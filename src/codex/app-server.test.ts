@@ -35,6 +35,25 @@ test("buildTurnStartParams uses turn-level sandbox overrides", () => {
   );
 });
 
+test("buildTurnStartParams includes collaboration mode when requested", () => {
+  assert.deepEqual(
+    buildTurnStartParams({
+      threadId: "thread-1",
+      cwd: "/tmp/project",
+      text: "plan the work",
+      collaborationMode: { mode: "plan" }
+    } as any),
+    {
+      threadId: "thread-1",
+      cwd: "/tmp/project",
+      input: [{ type: "text", text: "plan the work" }],
+      approvalPolicy: "never",
+      sandboxPolicy: { type: "dangerFullAccess" },
+      collaborationMode: { mode: "plan" }
+    }
+  );
+});
+
 test("listThreads sends archived filters through the JSON-RPC client", async () => {
   const client = new CodexAppServerClient("codex", "/tmp/app-server.log", testLogger);
   let captured: { method: string; params: unknown } | null = null;

@@ -873,7 +873,8 @@ export function buildWhereText(session: SessionRow | null): string {
     formatHtmlField("项目：", displayProjectName(session.projectName, session.projectAlias)),
     formatHtmlField("路径：", session.projectPath),
     formatHtmlField("状态：", formatSessionState(session)),
-    formatHtmlField("模型 + 思考强度：", formatSessionModelReasoningConfig(session))
+    formatHtmlField("模型 + 思考强度：", formatSessionModelReasoningConfig(session)),
+    formatHtmlField("plan mode:", session.planMode ? "on" : "off")
   ];
 
   lines.push(formatHtmlField("Bridge 会话 ID：", session.sessionId));
