@@ -1,6 +1,6 @@
 # Codex App-Server Authoritative Reference
 
-Last refreshed: 2026-03-15
+Last refreshed: 2026-03-17
 
 Primary audience:
 - in-repo Codex/LLM agents
@@ -41,8 +41,8 @@ For raw protocol-only questions, use this order:
 4. Repository docs
 5. Historical verification docs and planning docs
 
-For this host on 2026-03-15:
-- `codex --version` returned `codex-cli 0.114.0`
+For this host on 2026-03-17:
+- `codex --version` returned `codex-cli 0.115.0`
 - `codex app-server --help` confirmed:
   - `--listen stdio://` default transport
   - `--listen ws://IP:PORT` available
@@ -50,7 +50,8 @@ For this host on 2026-03-15:
   - `generate-json-schema`
 
 Important implication:
-- the older runtime sample in `docs/research/app-server-phase-0-verification.md` remains useful evidence, but it is a dated `0.112.0` sample and must not outrank the current `0.114.0` CLI plus generated schema.
+- the older runtime sample in `docs/research/app-server-phase-0-verification.md` remains useful evidence, but it is a dated `0.112.0` sample and must not outrank the current `0.115.0` CLI plus generated schema.
+- the current schema also exposes a minimal filesystem RPC family under `fs/*`, but repository code still decides whether any of that surface is actually shipped in Telegram
 
 ## Official References
 
@@ -170,9 +171,9 @@ Commentary rule for integrations:
 
 ## Current Host Baseline
 
-Current host runtime facts captured on 2026-03-15:
+Current host runtime facts captured on 2026-03-17:
 
-- CLI version: `codex-cli 0.114.0`
+- CLI version: `codex-cli 0.115.0`
 - app-server help confirms:
   - `--listen stdio://` default
   - `--listen ws://IP:PORT`
@@ -189,7 +190,7 @@ LLM rule:
 
 ## API Surface Inventory
 
-This section summarizes the current `0.114.0` schema inventory. For exact request and response fields, generate JSON Schema or TypeScript bindings from the current CLI.
+This section summarizes the current `0.115.0` schema inventory. For exact request and response fields, generate JSON Schema or TypeScript bindings from the current CLI.
 
 ### Client requests
 
@@ -235,9 +236,19 @@ Review, skills, apps, and plugins:
 - `skills/remote/export`
 - `skills/config/write`
 - `plugin/list`
+- `plugin/read`
 - `plugin/install`
 - `plugin/uninstall`
 - `app/list`
+
+Filesystem RPC surface:
+- `fs/readFile`
+- `fs/writeFile`
+- `fs/createDirectory`
+- `fs/getMetadata`
+- `fs/readDirectory`
+- `fs/remove`
+- `fs/copy`
 
 MCP and external agent support:
 - `mcpServer/oauth/login`
@@ -292,6 +303,8 @@ Core lifecycle:
 
 Item streaming:
 - `item/started`
+- `item/autoApprovalReview/started`
+- `item/autoApprovalReview/completed`
 - `item/completed`
 - `item/agentMessage/delta`
 - `item/plan/delta`
@@ -340,6 +353,10 @@ Platform-specific signals:
 - `windows/worldWritableWarning`
 - `windowsSandbox/setupCompleted`
 
+Schema note:
+- the `item/autoApprovalReview/*` methods are currently backed by schema files still named `ItemGuardianApprovalReview*.json`
+- those payloads are explicitly marked unstable in the generated schema
+
 ### Server requests
 
 Approval and user-input surface:
@@ -387,6 +404,12 @@ These are especially useful because they affect how integrations should be writt
 `TurnInterruptParams`:
 - required: `threadId`, `turnId`
 
+Filesystem RPC params:
+- current `fs/*` methods use absolute normalized paths
+- `fs/readFile` and `fs/writeFile` move bytes as base64 payloads
+- `fs/copy` uses `sourcePath` and `destinationPath`, with `recursive = true` required for directory trees
+- the current public schema exposes no `fs/rename` request and no generic `fs/watch` request
+
 Practical implication:
 - model, approval, cwd, and sandbox choices can be scoped at thread start and at turn start
 - future work should not hardcode only one of those layers without checking the current schema
@@ -404,7 +427,7 @@ Those names were useful in the bridge's early implementation and may still appea
 
 ## What This Repository Uses Today
 
-Current bridge usage is intentionally narrower than the full `0.114.0` schema surface.
+Current bridge usage is intentionally narrower than the full `0.115.0` schema surface.
 
 Implemented today:
 - app-server child over `stdio`
@@ -464,6 +487,10 @@ Current implementation note:
   - `thread/rollback`
   - `thread/compact/start`
   - `thread/backgroundTerminals/clean`
+- the bridge also uses a narrow realtime request slice for bridge-side voice transcription fallback:
+  - `thread/realtime/start`
+  - `thread/realtime/appendAudio`
+  - `thread/realtime/stop`
 - the bridge now sends non-text Telegram-adapted inputs through `turn/start` and `turn/steer`:
   - `localImage`
   - `skill`
@@ -483,14 +510,17 @@ Current implementation note:
   - `skills/changed`
   - `thread/compacted`
 
-Current-host note for `codex-cli 0.114.0`:
+Current-host note for `codex-cli 0.115.0`:
 - `thread/status/changed` carries a structured `status` object such as `active` plus nested `activeFlags`, not only a flat status string
-- `collaborationMode/list` rejects requests unless the app-server is started with the experimental API capability, so the current bridge does not ship collaboration-mode selection
+- the bridge starts app-server with the experimental API capability enabled, so experimental methods such as `collaborationMode/list` remain protocol-visible even though the current Telegram UX still does not ship collaboration-mode discovery or preset selection
 
 Still not used today by the bridge:
 - `item/tool/call`
 - `account/chatgptAuthTokens/refresh`
-- realtime thread APIs
+- filesystem RPC surface
+- `plugin/read`
+- `collaborationMode/list` as a Telegram-facing selector
+- realtime notifications and `thread/realtime/appendText`
 - remote skills APIs
 - `externalAgentConfig/detect`
 - `externalAgentConfig/import`

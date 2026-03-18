@@ -30,6 +30,7 @@ The bridge is not a second Codex environment, not a provider-management layer, a
 - account diagnostics and thread background-terminal cleanup where the current CLI exposes stable support
 - rich input submission for `text`, `localImage`, `skill`, and `mention`
 - Telegram photo upload adaptation into bridge-managed `localImage` input
+- optional Telegram voice-message adaptation into transcribed text input when voice input is enabled
 - one-line install plus local self-check
 - operator-managed full-access runtime with adapted Telegram UX instead of a raw terminal
 
@@ -41,7 +42,7 @@ The bridge is not a second Codex environment, not a provider-management layer, a
 - raw or token-level streaming of tool calls, patches, or reasoning
 - reasoning surfaces in the normal Telegram chat flow
 - Telegram-driven provider setup
-- collaboration-mode selection on the current host, because `collaborationMode/list` requires the experimental API capability in `codex-cli 0.114.0`
+- general collaboration-mode discovery or preset selection beyond the existing `/plan` toggle
 - direct Telegram command support for schema-level remote URL `image` input
 - raw-terminal emulation or fake terminal widgets
 - client-managed dynamic tool execution via `item/tool/call`, because the live schema exposes only generic tool name plus arguments and does not give the bridge a stable Telegram-safe tool registry

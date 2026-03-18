@@ -29,7 +29,7 @@ Start with `docs/README.md`, then jump to the smallest relevant doc.
 Common starting points:
 
 - product scope: `docs/product/v1-scope.md`
-- Telegram UX / commands / sessions: `docs/product/chat-and-project-flow.md`
+- Telegram UX / commands / sessions / rich input: `docs/product/chat-and-project-flow.md`
 - runtime / state / recovery: `docs/architecture/runtime-and-state.md`
 - install / admin / diagnostics: `docs/operations/install-and-admin.md`
 - Codex app-server protocol/reference: `docs/research/codex-app-server-authoritative-reference.md`
@@ -63,7 +63,7 @@ Node requirement:
 Main admin commands:
 
 ```bash
-ctb install --telegram-token <token> [--codex-bin <bin>]
+ctb install --telegram-token <token> [--codex-bin <bin>] [--project-scan-roots <path1:path2:...>] [--voice-input <true|false>]
 ctb install-skill
 ctb status
 ctb doctor
@@ -79,6 +79,8 @@ ctb service run
 
 For operational details, caveats, paths, and diagnostics, read:
 - `docs/operations/install-and-admin.md`
+
+Current bridge behavior also includes Telegram photo adaptation into `localImage` input and optional voice-message transcription when voice input is enabled.
 
 ## Repository layout
 

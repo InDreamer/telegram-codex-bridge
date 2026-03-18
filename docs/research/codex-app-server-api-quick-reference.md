@@ -1,9 +1,9 @@
 # Codex App-Server API Quick Reference
 
-Last refreshed: 2026-03-15
+Last refreshed: 2026-03-17
 
 Version basis:
-- local host `codex-cli 0.114.0`
+- local host `codex-cli 0.115.0`
 
 Read this after:
 - `docs/research/codex-app-server-authoritative-reference.md`
@@ -307,6 +307,47 @@ Handshake order:
 - Repo status:
   - not used today
 
+### Filesystem RPC family
+
+- Methods:
+  - `fs/readFile`
+  - `fs/writeFile`
+  - `fs/createDirectory`
+  - `fs/getMetadata`
+  - `fs/readDirectory`
+  - `fs/remove`
+  - `fs/copy`
+- Params schema files:
+  - `v2/FsReadFileParams.json`
+  - `v2/FsWriteFileParams.json`
+  - `v2/FsCreateDirectoryParams.json`
+  - `v2/FsGetMetadataParams.json`
+  - `v2/FsReadDirectoryParams.json`
+  - `v2/FsRemoveParams.json`
+  - `v2/FsCopyParams.json`
+- Response schema files:
+  - `v2/FsReadFileResponse.json`
+  - `v2/FsWriteFileResponse.json`
+  - `v2/FsCreateDirectoryResponse.json`
+  - `v2/FsGetMetadataResponse.json`
+  - `v2/FsReadDirectoryResponse.json`
+  - `v2/FsRemoveResponse.json`
+  - `v2/FsCopyResponse.json`
+- Required params:
+  - all current methods use absolute paths
+  - `fs/writeFile` also requires `dataBase64`
+  - `fs/copy` requires `sourcePath` and `destinationPath`
+- Key response shapes:
+  - `fs/readFile` returns `dataBase64`
+  - `fs/readDirectory` returns `entries[]` with `fileName`, `isDirectory`, and `isFile`
+  - `fs/getMetadata` returns `createdAtMs`, `modifiedAtMs`, `isDirectory`, and `isFile`
+  - `fs/writeFile`, `fs/createDirectory`, `fs/remove`, and `fs/copy` return empty success bodies
+- Gotchas:
+  - there is no `fs/rename` in the current generated schema
+  - there is no generic `fs/watch` request in the current generated schema
+- Repo status:
+  - not used today
+
 ### `command/exec`
 
 - Params schema: `v2/CommandExecParams.json`
@@ -336,10 +377,20 @@ Skills, plugins, apps, and review:
 - `skills/remote/export`
 - `skills/config/write`
 - `plugin/list`
+- `plugin/read`
 - `plugin/install`
 - `plugin/uninstall`
 - `app/list`
 - `review/start`
+
+Filesystem:
+- `fs/readFile`
+- `fs/writeFile`
+- `fs/createDirectory`
+- `fs/getMetadata`
+- `fs/readDirectory`
+- `fs/remove`
+- `fs/copy`
 
 Account, config, and environment:
 - `account/login/start`
@@ -355,7 +406,8 @@ Account, config, and environment:
 - `collaborationMode/list`
 
 Current-host note:
-- live `codex-cli 0.114.0` rejects `collaborationMode/list` unless the app-server is started with the experimental API capability, so treat collaboration-mode selection as unavailable for the current bridge
+- `collaborationMode/list` remains experimental in the schema
+- the current bridge starts app-server with the experimental API capability enabled, but still does not ship Telegram-side collaboration-mode discovery or preset selection
 
 MCP and related:
 - `mcpServer/oauth/login`
@@ -387,7 +439,7 @@ Experimental or platform-specific:
 - High-value fields:
   - `status.type`
   - `status.activeFlags` when `status.type = active`
-- Shape note on `codex-cli 0.114.0`:
+- Shape note on `codex-cli 0.115.0`:
   - current runtime notifications send `status` as a structured object such as `{ "type": "active", "activeFlags": [] }` or `{ "type": "idle" }`
 - Repo status:
   - used today
@@ -492,11 +544,17 @@ Account and app:
 - `skills/changed`
 
 Other runtime:
+- `item/autoApprovalReview/started`
+- `item/autoApprovalReview/completed`
 - `hook/started`
 - `hook/completed`
 - `command/exec/outputDelta`
 - `serverRequest/resolved`
 - `thread/compacted`
+
+Auto-approval review note:
+- the current schema files are still named `ItemGuardianApprovalReview*.json`
+- these notifications are marked unstable and the bridge does not currently use them
 
 Realtime:
 - `thread/realtime/started`
@@ -614,6 +672,10 @@ Used today by the bridge:
 - `thread/rollback`
 - `thread/compact/start`
 - `thread/backgroundTerminals/clean`
+- narrow realtime request usage for bridge-side voice transcription fallback:
+  - `thread/realtime/start`
+  - `thread/realtime/appendAudio`
+  - `thread/realtime/stop`
 - `turn/start`
 - `turn/steer`
 - `turn/interrupt`
@@ -658,9 +720,11 @@ Used today by the bridge:
 - legacy compatibility events such as `codex/event/task_complete`
 
 Not used today by the bridge, but present in current schema:
-- realtime APIs
+- filesystem RPC family
 - `command/exec`
-- `collaborationMode/list` on the current host because it requires experimental API capability
+- `plugin/read`
+- `collaborationMode/list` as a Telegram-facing selector
+- realtime notifications and `thread/realtime/appendText`
 - `item/tool/call`
 - `account/chatgptAuthTokens/refresh`
 - remote skills APIs
@@ -681,6 +745,7 @@ Important distinction:
 - `thread/read` response uses `thread`, not `data`.
 - `turn/steer` requires `expectedTurnId`.
 - `turn/start` input is an array of `UserInput`, not a single text field.
+- current filesystem RPCs use absolute paths, and file bytes move as base64.
 - approval responses often use `decision`, not `approved`.
 - permissions approval returns a granted permission profile, not a yes or no flag.
 - the bridge's current implementation surface is much smaller than the current app-server schema.

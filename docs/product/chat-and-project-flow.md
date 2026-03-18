@@ -137,7 +137,7 @@ Validation flow:
 1. user sends a plain-text path
 2. bridge validates that the path exists, is readable, and is a directory
 3. if valid, bridge asks for confirmation and shows display name plus path
-5. if confirmed, bridge creates the session
+4. if confirmed, bridge creates the session
 
 Invalid path feedback:
 - `这个目录不可用，请重新发送目录路径。`

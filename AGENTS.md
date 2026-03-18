@@ -100,11 +100,17 @@ Read first:
 - `docs/product/chat-and-project-flow.md`
 
 Use for:
-- `/new`, `/use`, `/pin`, `/inspect`, `/where`
+- `/help`, `/start`, `/cancel`
+- `/new`, `/sessions`, `/archive`, `/unarchive`, `/use`, `/rename`, `/pin`
+- `/plan`, `/model`, `/status`, `/runtime`, `/inspect`, `/where`
+- `/skills`, `/plugins`, `/apps`, `/mcp`, `/account`
+- `/review`, `/fork`, `/rollback`, `/compact`
+- `/thread`, `/local_image`, `/mention`, `/interrupt`
 - auth flow
 - project picker
 - session switching
 - user-visible Telegram behavior
+- Telegram photo and voice input adaptation
 
 ### Runtime / lifecycle / state / recovery / answer delivery
 Read first:
@@ -127,7 +133,12 @@ Use for:
 - install flow
 - env/config keys
 - service ownership
+- voice-input backends
 - restart/update/doctor/status
+
+### Readiness / capability checks
+Read code first when needed:
+- `src/readiness.ts`
 - Node/Codex version floors
 
 ### Codex protocol / app-server methods
@@ -218,10 +229,11 @@ Use these patterns unless the task clearly needs more.
 ### Actual runtime behavior
 1. `docs/architecture/runtime-and-state.md`
 2. then the relevant `src/` file
+3. use `src/readiness.ts` when the question is really about startup gating, capability floors, or degraded states
 
 ### Install or operations
 1. `docs/operations/install-and-admin.md`
-2. then `src/install.ts`, `src/service.ts`, `src/config.ts`, or `src/paths.ts`
+2. then `src/install.ts`, `src/readiness.ts`, `src/service.ts`, `src/config.ts`, or `src/paths.ts`
 
 ### Codex protocol support
 1. `docs/research/codex-app-server-authoritative-reference.md`

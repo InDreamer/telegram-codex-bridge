@@ -8,6 +8,7 @@ It owns:
 - one long-lived local `codex app-server` child process over `stdio`
 - one local persistent SQLite database
 - the Telegram polling and command loop
+- an optional voice-input pipeline that serializes Telegram voice-message transcription before handing the resulting text back into normal turn or blocked-turn continuation flow
 
 This keeps Telegram-specific logic outside Codex core and avoids an extra network-facing transport for v1.
 
@@ -39,6 +40,7 @@ Integration assumptions:
 - Telegram may receive bridge-owned runtime cards before turn completion, but the final answer is still sent only after completion
 - the bridge uses a persisted interaction broker for current server-request surfaces such as approvals, structured user input, elicitation, and blocked-turn continuation
 - the bridge now also uses stable long-tail client requests where Telegram has a clear adapted UX, including plugin/app discovery, MCP admin discovery plus reload/login-link, account diagnostics, and background-terminal cleanup
+- when voice input is enabled, the bridge may create short-lived helper threads for realtime transcription fallback, then archive those helper threads after extracting the transcript
 
 ## Runtime Surface Reduction And Final-Answer Rule
 

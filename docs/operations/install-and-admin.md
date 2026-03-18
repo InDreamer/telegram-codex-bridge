@@ -1,3 +1,5 @@
+# Install And Admin Operations
+
 ## Runtime And Tooling Floor
 
 Package manager and build scripts:
@@ -13,6 +15,10 @@ Actual admin and runtime surface:
 
 Node requirement:
 - Node `>=25.0.0`
+
+Voice-input backend rule:
+- when voice input is enabled, the bridge tries OpenAI audio transcription first if `VOICE_OPENAI_API_KEY` is configured
+- if OpenAI transcription is unavailable or fails, the bridge falls back to app-server realtime audio transcription when the current Codex runtime and local `ffmpeg` support it
 
 ## Config Keys
 
@@ -40,8 +46,6 @@ macOS note:
 - `bridge.env` stays the source of truth for bridge config after install
 - the LaunchAgent plist only carries passthrough shell values like `PATH` and proxy env so `ctb start` and `ctb restart` pick up edited `bridge.env` values
 
-# Install And Admin Operations
-
 ## Default Paths
 
 Install root:
@@ -50,6 +54,10 @@ Install root:
 Installed command:
 - `~/.local/share/codex-telegram-bridge/bin/ctb`
 
+Service definition paths:
+- `~/.config/systemd/user/codex-telegram-bridge.service` on Linux
+- `~/Library/LaunchAgents/com.codex.telegram-bridge.plist` on macOS
+
 State directory:
 - `~/.local/state/codex-telegram-bridge`
 
@@ -57,6 +65,7 @@ State contents:
 - `bridge.db`
 - `state-store-open-failure.json`
 - `runtime/`
+- `runtime/telegram-offset.json`
 - `cache/`
 
 Structured activity debug path:
@@ -74,6 +83,11 @@ Log files:
 - `bridge.log`
 - `bootstrap.log`
 - `app-server.log`
+- `launchd.stdout.log` on macOS when managed by LaunchAgent
+- `launchd.stderr.log` on macOS when managed by LaunchAgent
+- `telegram-session-flow/status-card.log`
+- `telegram-session-flow/plan-card.log`
+- `telegram-session-flow/error-card.log`
 
 Config directory:
 - `~/.config/codex-telegram-bridge`
@@ -212,7 +226,9 @@ Primary operator diagnostics:
 - config and service presence
 - detected service manager and active state
 - installed version and timestamp
+- whether the SQLite state store opened successfully
 - active session summary
+- pending runtime notice count
 - readiness snapshot
 - Node version and whether it satisfies the declared engine floor
 - Codex version and whether it satisfies the bridge's minimum supported floor
@@ -274,7 +290,8 @@ Operational effect:
 - state, database, and logs remain in place
 - the reinstall path rewrites the local release files and the active service definition
 - the reinstall path reruns readiness checks and Telegram command sync
-- on hosts with an already-running long-lived service, follow `ctb update` with `ctb restart` to guarantee the live process picks up the rewritten release files
+- when `systemd --user` or `launchd` is managing the bridge, the reinstall path reloads or restarts that managed service automatically
+- when no supported local service manager exists, the operator must restart the external supervisor or rerun `ctb service run`
 - the CLI prints `update complete`, not a full status summary
 
 ## Uninstall Behavior
