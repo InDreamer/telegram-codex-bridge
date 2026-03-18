@@ -518,7 +518,7 @@ test("buildRuntimeStatusCard renders optional runtime fields on separate lines",
   assert.doesNotMatch(text, /\|/u);
 });
 
-test("buildRuntimeStatusCard renders progress after optional fields and expanded sections", () => {
+test("buildRuntimeStatusCard keeps expanded sections below progress", () => {
   const text = buildRuntimeStatusCard({
     language: "en",
     sessionName: "Session Alpha",
@@ -538,10 +538,11 @@ test("buildRuntimeStatusCard renders progress after optional fields and expanded
   });
 
   assert.match(text, /<b>Current Dir<\/b> · \/tmp\/project-one/u);
+  assert.ok(text.indexOf("<b>Progress</b>") > text.indexOf("<b>Current Dir</b>"));
   assert.ok(text.indexOf("<b>计划清单:</b>") > text.indexOf("<b>Current Dir</b>"));
+  assert.ok(text.indexOf("<b>计划清单:</b>") > text.indexOf("<b>Progress</b>"));
   assert.ok(text.indexOf("<b>Agents:</b>") > text.indexOf("<b>计划清单:</b>"));
-  assert.ok(text.indexOf("<b>Progress</b>") > text.indexOf("<b>Agents:</b>"));
-  assert.ok(text.indexOf("Use /inspect for full details") > text.indexOf("<b>Progress</b>"));
+  assert.ok(text.indexOf("Use /inspect for full details") > text.indexOf("<b>Agents:</b>"));
 });
 
 test("buildRuntimeStatusCard uses compact label-dot-value rows and zh localization", () => {

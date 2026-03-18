@@ -1950,6 +1950,26 @@ test("status card expands the current plan inline and keeps only the latest plan
     assert.doesNotMatch(collapsed?.text ?? "", /<b>Current Plan:<\/b>/u);
 
     await withMockedNow("2026-03-10T10:00:07.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/started", {
+        threadId: "thread-plan",
+        turnId: "turn-plan",
+        item: { id: "commentary-plan-1", type: "agentMessage" }
+      });
+    });
+    await withMockedNow("2026-03-10T10:00:08.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/completed", {
+        threadId: "thread-plan",
+        turnId: "turn-plan",
+        item: {
+          id: "commentary-plan-1",
+          type: "agentMessage",
+          phase: "commentary",
+          text: "Review the active implementation plan before changing code."
+        }
+      });
+    });
+
+    await withMockedNow("2026-03-10T10:00:09.000Z", async () => {
       await (service as any).handleCallback({
         id: "callback-plan-expand",
         from: { id: 1, is_bot: false, first_name: "Tester" },
@@ -1967,9 +1987,10 @@ test("status card expands the current plan inline and keeps only the latest plan
     assert.match(edited.at(-1)?.text ?? "", /<b>计划清单:<\/b>/u);
     assert.match(edited.at(-1)?.text ?? "", /1\. Collect protocol evidence \(pending\)/u);
     assert.match(edited.at(-1)?.text ?? "", /2\. Wire inspect renderer \(pending\)/u);
+    assert.ok((edited.at(-1)?.text ?? "").indexOf("<b>进度</b>") < (edited.at(-1)?.text ?? "").indexOf("<b>计划清单:</b>"));
     assert.equal(edited.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "收起计划清单");
 
-    await withMockedNow("2026-03-10T10:00:09.000Z", async () => {
+    await withMockedNow("2026-03-10T10:00:11.000Z", async () => {
       await (service as any).handleAppServerNotification("turn/plan/updated", {
         threadId: "thread-plan",
         turnId: "turn-plan",
@@ -1984,7 +2005,7 @@ test("status card expands the current plan inline and keeps only the latest plan
     assert.match(edited.at(-1)?.text ?? "", /2\. Wire inspect renderer \(inProgress\)/u);
     assert.doesNotMatch(edited.at(-1)?.text ?? "", /Collect protocol evidence \(pending\)/u);
 
-    await withMockedNow("2026-03-10T10:00:12.000Z", async () => {
+    await withMockedNow("2026-03-10T10:00:14.000Z", async () => {
       await (service as any).handleCallback({
         id: "callback-plan-collapse",
         from: { id: 1, is_bot: false, first_name: "Tester" },

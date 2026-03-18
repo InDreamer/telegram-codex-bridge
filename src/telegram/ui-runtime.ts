@@ -95,6 +95,16 @@ export function buildRuntimeStatusCard(
     lines.push(formatRuntimeStatusOptionalField(line, language));
   }
 
+  if (options.progressText) {
+    const progressText = renderInlineMarkdown(truncateText(options.progressText, 240));
+    if (stripHtml(progressText).length > 72) {
+      lines.push(formatHtmlHeading(language === "en" ? "Progress" : "进度"));
+      lines.push(progressText);
+    } else {
+      lines.push(formatRuntimeCardRow(language === "en" ? "Progress" : "进度", progressText, { valueIsHtml: true }));
+    }
+  }
+
   if (options.planExpanded && options.planEntries && options.planEntries.length > 0) {
     lines.push("", "<b>计划清单:</b>");
 
@@ -116,16 +126,6 @@ export function buildRuntimeStatusCard(
 
     if (options.agentEntries.length > 10) {
       lines.push(`... ${options.agentEntries.length - 10} more agents`);
-    }
-  }
-
-  if (options.progressText) {
-    const progressText = renderInlineMarkdown(truncateText(options.progressText, 240));
-    if (stripHtml(progressText).length > 72) {
-      lines.push(formatHtmlHeading(language === "en" ? "Progress" : "进度"));
-      lines.push(progressText);
-    } else {
-      lines.push(formatRuntimeCardRow(language === "en" ? "Progress" : "进度", progressText, { valueIsHtml: true }));
     }
   }
 
