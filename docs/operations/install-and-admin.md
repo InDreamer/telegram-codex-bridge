@@ -172,6 +172,7 @@ curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/mas
 
 Notes:
 - the bridge install shortcut downloads a repository archive, runs `npm install`, runs `npm run build`, and then runs `node dist/cli.js install`
+- GitHub archive installs persist source metadata in the install manifest so later `ctb update` can redownload the same repo/ref instead of depending on a retained temp directory
 - the skill install shortcut copies `skills/telegram-codex-linker` into `${CODEX_HOME:-~/.codex}/skills/`
 - both scripts accept `--ref <name>` plus `--ref-type branch|tag`; default is `master`
 - the bridge install shortcut also accepts `--project-scan-roots <path1:path2:...>` and forwards it into `ctb install`

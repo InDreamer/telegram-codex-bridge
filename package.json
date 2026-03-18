@@ -2,7 +2,25 @@
   "name": "telegram-codex-bridge",
   "version": "0.1.0",
   "private": true,
+  "description": "Turn Telegram into a control plane for the Codex installation already running on your server.",
   "type": "module",
+  "homepage": "https://github.com/InDreamer/telegram-codex-bridge#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/InDreamer/telegram-codex-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/InDreamer/telegram-codex-bridge/issues"
+  },
+  "keywords": [
+    "telegram",
+    "codex",
+    "bridge",
+    "vps",
+    "automation",
+    "cli",
+    "agent"
+  ],
   "bin": {
     "ctb": "./dist/cli.js"
   },

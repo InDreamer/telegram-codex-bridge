@@ -1,57 +1,96 @@
 # telegram-codex-bridge
 
-A VPS-hosted Telegram bridge for controlling the Codex installation that already exists on the server.
+[![CI](https://github.com/InDreamer/telegram-codex-bridge/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/InDreamer/telegram-codex-bridge/actions/workflows/ci.yml)
+[![GitHub stars](https://img.shields.io/github/stars/InDreamer/telegram-codex-bridge?style=flat)](https://github.com/InDreamer/telegram-codex-bridge/stargazers)
 
-- **Telegram** is the control surface
-- **Codex** remains the execution engine
-- the bridge is **not** a second Codex environment
-- the bridge is **not** a second permission system
-- the bridge is **not** a provider-management layer
+Turn Telegram into a remote control for the Codex installation that already runs on your server.
 
-## Current project status
+This bridge exists for one simple reason: Codex on a VPS is useful, but using it from a phone through a raw terminal is awful. `telegram-codex-bridge` gives you a Telegram-native control surface without pretending to be a second Codex runtime, a second sandbox, or a provider-management layer.
 
-This project is in active development.
-Docs and code are both evolving.
-There is not yet a single permanent source of truth for every question.
+```mermaid
+flowchart LR
+  TG[Telegram chat] --> BR[telegram-codex-bridge]
+  BR --> CX[local Codex app-server]
+  CX --> PRJ[project files on the server]
+```
 
-Current refactor status:
-- V5 code slimming is already landed in the current codebase.
-- post-V5 follow-up is tracked in `docs/plans/2026-03-18-v5-5-post-v5-slimming-plan.md`.
+## Why This Project Is Interesting
 
-In general:
-- current product intent lives under `docs/product/`
-- runtime/architecture intent lives under `docs/architecture/`
-- install and admin reference lives under `docs/operations/`
-- protocol/reference material lives under `docs/research/`
-- roadmap/future/plans/archive are not the same as shipped behavior
+- project-aware session startup from Telegram instead of blind remote execution
+- compact runtime cards plus `/inspect` and `/where` instead of terminal spam
+- bridge-owned approval and questionnaire UX when Codex asks for input
+- multi-session flow with archive, unarchive, rename, and switching
+- Telegram photo upload mapped into `localImage` input
+- optional Telegram voice-message transcription
+- `/review`, `/rollback`, `/compact`, model selection, plugin/app/MCP surfaces where the current Codex CLI supports them
+- one-line GitHub install scripts for both the bridge and the bundled Codex setup skill
 
-## Who should read what
+## What It Is
 
-### Humans
-Start with `docs/README.md`, then jump to the smallest relevant doc.
+- Telegram is the control surface
+- Codex remains the execution engine
+- the bridge runs as a VPS or always-on host service
+- the bridge adapts Telegram UX to a high-trust Codex runtime
 
-Common starting points:
+## What It Is Not
 
-- product scope: `docs/product/v1-scope.md`
-- Telegram UX / commands / sessions / rich input: `docs/product/chat-and-project-flow.md`
-- runtime / state / recovery: `docs/architecture/runtime-and-state.md`
-- current code organization / module ownership: `docs/architecture/current-code-organization.md`
-- install / admin / diagnostics: `docs/operations/install-and-admin.md`
-- Codex app-server protocol/reference: `docs/research/codex-app-server-authoritative-reference.md`
+- not a second Codex environment
+- not a second permission system
+- not a provider-management layer
+- not a multi-user team chat bot
+- not a fake terminal stuffed into Telegram
 
-### LLM coding agents
-Use `AGENTS.md`.
-It is the low-token router for gradual disclosure and narrow verification.
+## Fastest Install Paths
 
-## Runtime and tooling
+### Option 1: Let Codex Set It Up
 
-Package scripts:
+Install the bundled Codex skill:
 
 ```bash
-npm run build
-npm run dev
+curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/master/scripts/install-skill-from-github.sh | bash
+```
+
+Then tell Codex:
+
+```text
+Use $telegram-codex-linker to set up my Telegram bridge.
+```
+
+This is the cleanest install path. The skill handles bridge setup, repair, token collection, authorization, and verification, and only interrupts you for the parts a bot cannot do for you.
+
+### Option 2: Install The Bridge Directly
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/master/scripts/install-from-github.sh | bash -s -- --telegram-token "<BOT_TOKEN>" --project-scan-roots "$HOME/projects:$HOME/work"
+```
+
+## Requirements
+
+- an always-on Linux or macOS machine
+- an existing Codex installation on that machine
+- a Telegram bot token
+- Node `>=25.0.0` if you build from source
+
+## Typical Telegram Flow
+
+1. Run `/new` and choose the project instead of silently guessing a worktree.
+2. Send a task, or send a photo/voice message when that fits the job.
+3. Watch the runtime card and use `/inspect` or `/interrupt` when needed.
+4. Use `/sessions`, `/archive`, `/review`, `/rollback`, `/compact`, `/model`, `/plugins`, `/apps`, or `/mcp` as the task demands.
+
+## Development
+
+```bash
+npm ci
 npm run check
 npm run test
+npm run build
+```
+
+For local development:
+
+```bash
+npm run dev
 ```
 
 CLI entrypoint:
@@ -60,50 +99,18 @@ CLI entrypoint:
 ctb
 ```
 
-Node requirement:
-- `>=25.0.0`
+## Documentation
 
-## Operator/admin surface
+Start with the smallest relevant doc instead of trawling the whole repo for no reason.
 
-Main admin commands:
+- product scope and trust model: `docs/product/v1-scope.md`
+- Telegram UX and command behavior: `docs/product/chat-and-project-flow.md`
+- runtime, state, and recovery: `docs/architecture/runtime-and-state.md`
+- install, admin, and diagnostics: `docs/operations/install-and-admin.md`
+- current code organization: `docs/architecture/current-code-organization.md`
+- Codex protocol reference: `docs/research/codex-app-server-authoritative-reference.md`
+- agent routing guidance: `AGENTS.md`
 
-```bash
-ctb install --telegram-token <token> [--codex-bin <bin>] [--project-scan-roots <path1:path2:...>] [--voice-input <true|false>]
-ctb install-skill
-ctb status
-ctb doctor
-ctb start
-ctb stop
-ctb restart
-ctb update
-ctb uninstall [--purge-state]
-ctb authorize pending
-ctb authorize clear
-ctb service run
-```
+## Current Status
 
-For operational details, caveats, paths, and diagnostics, read:
-- `docs/operations/install-and-admin.md`
-
-Current bridge behavior also includes Telegram photo adaptation into `localImage` input and optional voice-message transcription when voice input is enabled.
-
-## Repository layout
-
-```text
-src/         implementation
-skills/      bundled Codex skills
-scripts/     install / helper scripts
-docs/        layered docs: current behavior, reference, planning, history
-AGENTS.md    agent-facing low-token router
-README.md    human-facing overview
-```
-
-## Important interpretation rule
-
-When reading this repo, keep these questions separate:
-
-- **What should the bridge do?** -> active product/spec docs
-- **What does the bridge do today?** -> repository code/runtime
-- **What does Codex support in principle?** -> live Codex API/schema and protocol docs
-
-Do not assume those are always identical during early development.
+The project is in active development. The current product, runtime, and operational docs are intentionally separated from protocol research and future planning so the repo does not blur shipped behavior with wishful thinking.

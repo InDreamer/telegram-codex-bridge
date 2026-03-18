@@ -112,6 +112,9 @@ export type UserInput =
 
 export interface ThreadStartResult {
   thread: { id: string };
+  model?: string | null;
+  modelProvider?: string | null;
+  reasoningEffort?: ReasoningEffort | null;
 }
 
 export interface ModelListResult {
@@ -254,6 +257,9 @@ export interface AccountRateLimitsReadResult {
 }
 
 export interface ThreadResumeResult {
+  model?: string | null;
+  modelProvider?: string | null;
+  reasoningEffort?: ReasoningEffort | null;
   thread: {
     id: string;
     reasoningEffort?: ReasoningEffort | null;

@@ -1,5 +1,6 @@
 import { constants } from "node:fs";
-import { access, cp, chmod, mkdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { access, cp, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 
 import { loadConfig, serializeProjectScanRoots, withInstallOverrides, writeConfig, type BridgeConfig } from "./config.js";
@@ -17,7 +18,13 @@ import {
 } from "./state/store.js";
 import { TelegramApi } from "./telegram/api.js";
 import { syncTelegramCommands } from "./telegram/commands.js";
-import { isOperationalReadinessState, type InstallManifest, type PendingAuthorizationRow, type ReadinessSnapshot } from "./types.js";
+import {
+  isOperationalReadinessState,
+  type InstallManifest,
+  type InstallSourceMetadata,
+  type PendingAuthorizationRow,
+  type ReadinessSnapshot
+} from "./types.js";
 import { readRepoPackageJson } from "./util/package-json.js";
 
 type CommandRunner = (
@@ -50,6 +57,14 @@ interface InstallDependencies {
 
 const SERVICE_LABEL = "com.codex.telegram-bridge";
 const CODEX_SKILL_NAME = "telegram-codex-linker";
+const GITHUB_ARCHIVE_INSTALL_SOURCE_KIND = "github-archive";
+const INSTALL_SOURCE_ENV_KEYS = {
+  kind: "CTB_INSTALL_SOURCE_KIND",
+  repoOwner: "CTB_INSTALL_SOURCE_REPO_OWNER",
+  repoName: "CTB_INSTALL_SOURCE_REPO_NAME",
+  ref: "CTB_INSTALL_SOURCE_REF",
+  refType: "CTB_INSTALL_SOURCE_REF_TYPE"
+} as const;
 
 function pathsOverlap(left: string, right: string): boolean {
   return left === right || left.startsWith(`${right}${sep}`) || right.startsWith(`${left}${sep}`);
@@ -187,11 +202,78 @@ async function readPackageVersion(paths: BridgePaths): Promise<string> {
   return packageJson.version;
 }
 
+function parseInstallSourceMetadataFromEnv(env: NodeJS.ProcessEnv = process.env): InstallSourceMetadata | null {
+  if (env[INSTALL_SOURCE_ENV_KEYS.kind] !== GITHUB_ARCHIVE_INSTALL_SOURCE_KIND) {
+    return null;
+  }
+
+  const repoOwner = env[INSTALL_SOURCE_ENV_KEYS.repoOwner]?.trim();
+  const repoName = env[INSTALL_SOURCE_ENV_KEYS.repoName]?.trim();
+  const ref = env[INSTALL_SOURCE_ENV_KEYS.ref]?.trim();
+  const refType = env[INSTALL_SOURCE_ENV_KEYS.refType];
+
+  if (!repoOwner || !repoName || !ref || (refType !== "branch" && refType !== "tag")) {
+    return null;
+  }
+
+  return {
+    kind: GITHUB_ARCHIVE_INSTALL_SOURCE_KIND,
+    repoOwner,
+    repoName,
+    ref,
+    refType
+  };
+}
+
+function applyInstallSourceMetadataToEnv(
+  env: NodeJS.ProcessEnv,
+  installSource: InstallSourceMetadata | null | undefined
+): NodeJS.ProcessEnv {
+  const nextEnv = { ...env };
+
+  for (const key of Object.values(INSTALL_SOURCE_ENV_KEYS)) {
+    delete nextEnv[key];
+  }
+
+  if (!installSource) {
+    return nextEnv;
+  }
+
+  if (installSource.kind === GITHUB_ARCHIVE_INSTALL_SOURCE_KIND) {
+    nextEnv[INSTALL_SOURCE_ENV_KEYS.kind] = installSource.kind;
+    nextEnv[INSTALL_SOURCE_ENV_KEYS.repoOwner] = installSource.repoOwner;
+    nextEnv[INSTALL_SOURCE_ENV_KEYS.repoName] = installSource.repoName;
+    nextEnv[INSTALL_SOURCE_ENV_KEYS.ref] = installSource.ref;
+    nextEnv[INSTALL_SOURCE_ENV_KEYS.refType] = installSource.refType;
+  }
+
+  return nextEnv;
+}
+
+function buildInstallEnvironment(
+  config: BridgeConfig,
+  installSource: InstallSourceMetadata | null | undefined
+): NodeJS.ProcessEnv {
+  return applyInstallSourceMetadataToEnv({
+    ...process.env,
+    TELEGRAM_BOT_TOKEN: config.telegramBotToken,
+    CODEX_BIN: config.codexBin,
+    TELEGRAM_API_BASE_URL: config.telegramApiBaseUrl,
+    PROJECT_SCAN_ROOTS: serializeProjectScanRoots(config.projectScanRoots),
+    VOICE_INPUT_ENABLED: config.voiceInputEnabled ? "1" : "0",
+    VOICE_OPENAI_API_KEY: config.voiceOpenaiApiKey,
+    VOICE_OPENAI_TRANSCRIBE_MODEL: config.voiceOpenaiTranscribeModel,
+    VOICE_FFMPEG_BIN: config.voiceFfmpegBin
+  }, installSource);
+}
+
 async function writeInstallManifest(paths: BridgePaths): Promise<void> {
+  const installSource = parseInstallSourceMetadataFromEnv();
   const manifest: InstallManifest = {
     version: await readPackageVersion(paths),
-    sourceRoot: paths.repoRoot.startsWith(paths.installRoot) ? null : paths.repoRoot,
-    installedAt: new Date().toISOString()
+    sourceRoot: installSource ? null : (paths.repoRoot.startsWith(paths.installRoot) ? null : paths.repoRoot),
+    installedAt: new Date().toISOString(),
+    installSource
   };
 
   await writeFile(paths.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
@@ -478,6 +560,84 @@ export async function installCodexSkill(paths: BridgePaths): Promise<string> {
   await cp(sourcePath, targetPath, { recursive: true });
 
   return `codex skill ${CODEX_SKILL_NAME} installed at ${targetPath}; restart Codex to load it`;
+}
+
+function githubArchiveUrl(installSource: InstallSourceMetadata): string {
+  if (installSource.kind !== GITHUB_ARCHIVE_INSTALL_SOURCE_KIND) {
+    throw new Error(`unsupported install source kind: ${installSource.kind}`);
+  }
+
+  if (installSource.refType === "branch") {
+    return `https://codeload.github.com/${installSource.repoOwner}/${installSource.repoName}/tar.gz/refs/heads/${installSource.ref}`;
+  }
+
+  return `https://codeload.github.com/${installSource.repoOwner}/${installSource.repoName}/tar.gz/refs/tags/${installSource.ref}`;
+}
+
+async function downloadGithubArchiveSource(
+  installSource: InstallSourceMetadata,
+  run: CommandRunner
+): Promise<{ sourceRoot: string; workDir: string }> {
+  const workDir = await mkdtemp(join(tmpdir(), "ctb-github-update-"));
+  const archivePath = join(workDir, "source.tar.gz");
+  const archiveUrl = githubArchiveUrl(installSource);
+
+  const download = await run("curl", ["-fsSL", archiveUrl, "-o", archivePath]);
+  if (download.exitCode !== 0) {
+    await rm(workDir, { recursive: true, force: true });
+    throw new Error(download.stderr || download.stdout || `failed to download ${archiveUrl}`);
+  }
+
+  const extract = await run("tar", ["-xzf", archivePath, "-C", workDir]);
+  if (extract.exitCode !== 0) {
+    await rm(workDir, { recursive: true, force: true });
+    throw new Error(extract.stderr || extract.stdout || "failed to extract GitHub archive");
+  }
+
+  const sourceEntry = (await readdir(workDir, { withFileTypes: true }))
+    .find((entry) => entry.isDirectory());
+  if (!sourceEntry) {
+    await rm(workDir, { recursive: true, force: true });
+    throw new Error("GitHub archive did not contain a source directory");
+  }
+
+  return {
+    sourceRoot: join(workDir, sourceEntry.name),
+    workDir
+  };
+}
+
+async function reinstallFromSourceRoot(
+  sourceRoot: string,
+  config: BridgeConfig,
+  installSource: InstallSourceMetadata | null | undefined,
+  run: CommandRunner
+): Promise<void> {
+  const env = buildInstallEnvironment(config, installSource);
+
+  const installResult = await run("npm", ["install"], {
+    cwd: sourceRoot,
+    env
+  });
+  if (installResult.exitCode !== 0) {
+    throw new Error(installResult.stderr || installResult.stdout || "npm install failed");
+  }
+
+  const buildResult = await run("npm", ["run", "build"], {
+    cwd: sourceRoot,
+    env
+  });
+  if (buildResult.exitCode !== 0) {
+    throw new Error(buildResult.stderr || buildResult.stdout || "npm run build failed");
+  }
+
+  const reinstallResult = await run(process.execPath, ["dist/cli.js", "install"], {
+    cwd: sourceRoot,
+    env
+  });
+  if (reinstallResult.exitCode !== 0) {
+    throw new Error(reinstallResult.stderr || reinstallResult.stdout || "reinstall failed");
+  }
 }
 
 export async function installBridge(
@@ -776,48 +936,39 @@ export async function restartService(paths: BridgePaths): Promise<void> {
   throw new Error("no supported service manager found");
 }
 
-export async function updateBridge(paths: BridgePaths): Promise<void> {
+export async function updateBridge(
+  paths: BridgePaths,
+  deps: {
+    runCommand?: typeof runCommand;
+  } = {}
+): Promise<void> {
+  const run = deps.runCommand ?? runCommand;
   const manifest = await readInstallManifest(paths);
-  if (!manifest?.sourceRoot) {
-    throw new Error("update requires a retained source checkout; reinstall from source instead");
+  if (!manifest) {
+    throw new Error("update requires an existing install manifest; reinstall first");
   }
 
   const config = await loadConfig(paths);
-  const env = {
-    ...process.env,
-    TELEGRAM_BOT_TOKEN: config.telegramBotToken,
-    CODEX_BIN: config.codexBin,
-    TELEGRAM_API_BASE_URL: config.telegramApiBaseUrl,
-    PROJECT_SCAN_ROOTS: serializeProjectScanRoots(config.projectScanRoots),
-    VOICE_INPUT_ENABLED: config.voiceInputEnabled ? "1" : "0",
-    VOICE_OPENAI_API_KEY: config.voiceOpenaiApiKey,
-    VOICE_OPENAI_TRANSCRIBE_MODEL: config.voiceOpenaiTranscribeModel,
-    VOICE_FFMPEG_BIN: config.voiceFfmpegBin
-  };
 
-  const installResult = await runCommand("npm", ["install"], {
-    cwd: manifest.sourceRoot,
-    env
-  });
-  if (installResult.exitCode !== 0) {
-    throw new Error(installResult.stderr || installResult.stdout || "npm install failed");
+  if (manifest.installSource?.kind === GITHUB_ARCHIVE_INSTALL_SOURCE_KIND) {
+    const { sourceRoot, workDir } = await downloadGithubArchiveSource(manifest.installSource, run);
+    try {
+      await reinstallFromSourceRoot(sourceRoot, config, manifest.installSource, run);
+      return;
+    } finally {
+      await rm(workDir, { recursive: true, force: true });
+    }
   }
 
-  const buildResult = await runCommand("npm", ["run", "build"], {
-    cwd: manifest.sourceRoot,
-    env
-  });
-  if (buildResult.exitCode !== 0) {
-    throw new Error(buildResult.stderr || buildResult.stdout || "npm run build failed");
+  if (!manifest.sourceRoot) {
+    throw new Error("update requires a retained source checkout or GitHub archive metadata; reinstall first");
   }
 
-  const reinstallResult = await runCommand(process.execPath, ["dist/cli.js", "install"], {
-    cwd: manifest.sourceRoot,
-    env
-  });
-  if (reinstallResult.exitCode !== 0) {
-    throw new Error(reinstallResult.stderr || reinstallResult.stdout || "reinstall failed");
+  if (!(await pathExists(manifest.sourceRoot))) {
+    throw new Error("retained source checkout is missing; reinstall from GitHub or from source instead");
   }
+
+  await reinstallFromSourceRoot(manifest.sourceRoot, config, null, run);
 }
 
 export async function uninstallBridge(paths: BridgePaths, purgeState: boolean): Promise<void> {

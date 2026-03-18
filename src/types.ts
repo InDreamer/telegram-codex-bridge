@@ -164,7 +164,18 @@ export interface InstallManifest {
   version: string;
   sourceRoot: string | null;
   installedAt: string;
+  installSource?: InstallSourceMetadata | null;
 }
+
+export interface GitHubArchiveInstallSource {
+  kind: "github-archive";
+  repoOwner: string;
+  repoName: string;
+  ref: string;
+  refType: "branch" | "tag";
+}
+
+export type InstallSourceMetadata = GitHubArchiveInstallSource;
 
 export interface RuntimeNotice {
   key: string;

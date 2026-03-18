@@ -26,10 +26,19 @@ Your job is to take over from there.
 
 Before acting, read `references/install-strategy.md`.
 
+Never assume the current working directory is the skill directory. Resolve these first:
+
+```bash
+SKILL_ROOT="${CODEX_HOME:-$HOME/.codex}/skills/telegram-codex-linker"
+INSTALL_SCRIPT="$SKILL_ROOT/scripts/install-bridge-from-github.sh"
+ROOT_DISCOVERY_SCRIPT="$SKILL_ROOT/scripts/discover-project-scan-roots.sh"
+CTB_BIN="${HOME}/.local/share/codex-telegram-bridge/bin/ctb"
+```
+
 For first install, use the bundled script:
 
 ```bash
-bash scripts/install-bridge-from-github.sh --telegram-token '<token>' --project-scan-roots '<path1:path2:path3>'
+bash "$INSTALL_SCRIPT" --telegram-token '<token>' --project-scan-roots '<path1:path2:path3>'
 ```
 
 That script is the default install path. Do not narrate the build steps unless the install fails.
@@ -40,13 +49,19 @@ That script is the default install path. Do not narrate the build steps unless t
 - detect before asking
 - ask for one thing at a time
 - ask only when the missing step is truly outside Codex control
+- choose the operating language from the user's recent messages
+- tell the user once which language you are using by default and that they can switch
 - use the bundled install script for first install
 - use `ctb` for post-install status, repair, authorization, restart, and update
+- if `ctb` is not on `PATH`, use `$CTB_BIN`
 - collect or infer project scan roots before first install and pass them through `--project-scan-roots`
 - if the user gives roots, use them
-- if the user gives none, auto-select up to 3 disjoint roots under `HOME`
-- if the user gives fewer than 3, supplement with obvious disjoint roots when possible
+- if the user gives none, run `$ROOT_DISCOVERY_SCRIPT` and prepare recommended roots before install
+- present recommended roots briefly and let the user override them
+- if the user does not choose, use the default recommended roots
+- if the user gives fewer than 3 roots, supplement with obvious disjoint roots when possible
 - do not invent junk roots and do not pass overlapping parent-child roots
+- canonicalize and deduplicate all roots before install
 - do not ask the user to run local commands you can run yourself
 - do not reinstall a healthy bridge
 - if the skill can continue locally, continue locally
@@ -54,10 +69,11 @@ That script is the default install path. Do not narrate the build steps unless t
 ## Minimal Flow
 
 1. Precheck using the strategy reference.
-2. If install is needed and a token is available, determine project scan roots and run the bundled install script.
-3. If install already exists, use `ctb status` and `ctb doctor`.
-4. Only interrupt for a token, a required Codex login, or one Telegram message to the bot.
-5. Finish by verifying the real Telegram path.
+2. Decide whether this is install, repair, update, or rebind.
+3. If install is needed and a token is available, recommend project scan roots, allow override, then run the bundled install script.
+4. If install already exists, use `ctb status` and `ctb doctor` to choose repair, update, or rebind instead of blindly reinstalling.
+5. Only interrupt for a token, a required Codex login, one root-selection reply if needed, or one Telegram message to the bot.
+6. Finish by verifying the real Telegram path.
 
 ## Allowed User Interruptions
 
@@ -65,6 +81,7 @@ Only interrupt for these:
 
 - missing or invalid Telegram bot token
 - missing Codex login
+- optional project-root selection when the recommended defaults may be wrong
 - one private Telegram message to the exact bot handle when authorization is pending
 - final Telegram smoke check such as `/status`
 
@@ -80,27 +97,54 @@ When asking for a token, keep it brutally short:
 For installed bridges, prefer:
 
 ```bash
-ctb status
-ctb doctor
-ctb restart
+"${CTB:-$CTB_BIN}" status
+"${CTB:-$CTB_BIN}" doctor
+"${CTB:-$CTB_BIN}" restart
 ```
 
 If the installed release is stale:
 
 ```bash
-ctb update
-ctb restart
+"${CTB:-$CTB_BIN}" update
+"${CTB:-$CTB_BIN}" restart
 ```
 
 For a rebind:
 
 ```bash
-ctb authorize clear
-ctb authorize pending
-ctb authorize pending --latest
+"${CTB:-$CTB_BIN}" authorize clear
+"${CTB:-$CTB_BIN}" authorize pending
+"${CTB:-$CTB_BIN}" authorize pending --latest
 ```
 
 Run these locally. The user should only be interrupted to message the bot once if required.
+
+## Project Root Recommendation
+
+When the user does not provide roots:
+
+1. Run `$ROOT_DISCOVERY_SCRIPT`.
+2. Combine that result with obvious context the agent already has, such as the current working tree or project names the user mentioned.
+3. Produce a short recommended list with a clear default set.
+4. Tell the user that if they do nothing, the default set will be used.
+5. If the user chooses specific roots, use those instead.
+6. Never pass duplicate or overlapping roots.
+
+Recommended prompt shape:
+
+1. `我默认用中文；如果你想切英文，直接说。`
+2. `我推荐这几个项目目录：[A] ... [B] ... [C] ...。`
+3. `如果你不选，我就用默认的 A+B。`
+
+Do not turn this into a questionnaire unless the defaults are genuinely uncertain.
+
+## Authorization Clarification
+
+The "one Telegram message" rule means this:
+
+- the skill does the local install, status checks, repair, and `ctb authorize ...` commands itself
+- the user only needs to open Telegram and privately message the bot once when the bridge is waiting to bind that Telegram account
+- after that, resume local commands and finish the bind
 
 ## Finish Condition
 

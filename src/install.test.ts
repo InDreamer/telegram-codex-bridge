@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { loadConfig } from "./config.js";
-import { buildLaunchAgentPlist, getStatus, installBridge, installCodexSkill, prepareRelease, runDoctor } from "./install.js";
+import { buildLaunchAgentPlist, getStatus, installBridge, installCodexSkill, prepareRelease, runDoctor, updateBridge } from "./install.js";
 import type { Logger } from "./logger.js";
 import { BridgeStateStore } from "./state/store.js";
 import type { BridgePaths } from "./paths.js";
@@ -313,9 +313,86 @@ test("bundled bridge install script parses cleanly in bash", async () => {
   assert.equal(result.exitCode, 0, result.stderr || result.stdout);
 });
 
+test("project root discovery script parses cleanly in bash", async () => {
+  const result = await runCommand("bash", ["-n", "skills/telegram-codex-linker/scripts/discover-project-scan-roots.sh"]);
+  assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+});
+
 test("public install script parses cleanly in bash", async () => {
   const result = await runCommand("bash", ["-n", "scripts/install-from-github.sh"]);
   assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+});
+
+test("project root discovery script selects likely disjoint roots", async () => {
+  const homeRoot = await mkdtemp(join(tmpdir(), "ctb-scan-roots-"));
+  const projectsRoot = join(homeRoot, "projects");
+  const workRoot = join(homeRoot, "work");
+  const miscRoot = join(homeRoot, "misc");
+
+  try {
+    await Promise.all([
+      mkdir(join(projectsRoot, "alpha", ".git"), { recursive: true }),
+      mkdir(join(projectsRoot, "beta"), { recursive: true }),
+      mkdir(join(workRoot, "tooling"), { recursive: true }),
+      mkdir(join(workRoot, "backend"), { recursive: true }),
+      mkdir(join(miscRoot, "solo", ".git"), { recursive: true })
+    ]);
+    await Promise.all([
+      writeFile(join(projectsRoot, "beta", "package.json"), "{}\n", "utf8"),
+      writeFile(join(workRoot, "tooling", "pyproject.toml"), "[project]\nname='tooling'\n", "utf8"),
+      writeFile(join(workRoot, "backend", "go.mod"), "module example.com/backend\n", "utf8")
+    ]);
+
+    const result = await runCommand("bash", [
+      "skills/telegram-codex-linker/scripts/discover-project-scan-roots.sh",
+      "--home",
+      homeRoot
+    ]);
+
+    assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+    assert.deepEqual(result.stdout.split(":"), [
+      await realpath(projectsRoot),
+      await realpath(workRoot)
+    ]);
+  } finally {
+    await rm(homeRoot, { recursive: true, force: true });
+  }
+});
+
+test("project root discovery script can emit one recommended root per line", async () => {
+  const homeRoot = await mkdtemp(join(tmpdir(), "ctb-scan-roots-lines-"));
+  const projectsRoot = join(homeRoot, "projects");
+  const workRoot = join(homeRoot, "work");
+
+  try {
+    await Promise.all([
+      mkdir(join(projectsRoot, "alpha", ".git"), { recursive: true }),
+      mkdir(join(projectsRoot, "beta"), { recursive: true }),
+      mkdir(join(workRoot, "tooling"), { recursive: true }),
+      mkdir(join(workRoot, "backend"), { recursive: true })
+    ]);
+    await Promise.all([
+      writeFile(join(projectsRoot, "beta", "package.json"), "{}\n", "utf8"),
+      writeFile(join(workRoot, "tooling", "pyproject.toml"), "[project]\nname='tooling'\n", "utf8"),
+      writeFile(join(workRoot, "backend", "go.mod"), "module example.com/backend\n", "utf8")
+    ]);
+
+    const result = await runCommand("bash", [
+      "skills/telegram-codex-linker/scripts/discover-project-scan-roots.sh",
+      "--home",
+      homeRoot,
+      "--format",
+      "lines"
+    ]);
+
+    assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+    assert.deepEqual(result.stdout.split("\n"), [
+      await realpath(projectsRoot),
+      await realpath(workRoot)
+    ]);
+  } finally {
+    await rm(homeRoot, { recursive: true, force: true });
+  }
 });
 
 test("installBridge validates and persists non-overlapping project scan roots", async () => {
@@ -458,6 +535,72 @@ exit 0
   }
 });
 
+test("installBridge writes GitHub archive metadata into the install manifest", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctb-install-test-"));
+  const paths = createTestPaths(root);
+  const binDir = join(root, "bin");
+
+  try {
+    await Promise.all([
+      createReleaseFixture(paths),
+      createSkillFixture(paths.repoRoot),
+      mkdir(join(paths.repoRoot, "dist"), { recursive: true }),
+      mkdir(binDir, { recursive: true })
+    ]);
+    await writeFile(join(paths.repoRoot, "dist", "cli.js"), "console.log('ok');\n", "utf8");
+    await writeFile(
+      join(binDir, "npm"),
+      "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n",
+      "utf8"
+    );
+    await chmod(join(binDir, "npm"), 0o755);
+
+    await withEnvironment(
+      {
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        CTB_INSTALL_SOURCE_KIND: "github-archive",
+        CTB_INSTALL_SOURCE_REPO_OWNER: "InDreamer",
+        CTB_INSTALL_SOURCE_REPO_NAME: "telegram-codex-bridge",
+        CTB_INSTALL_SOURCE_REF: "master",
+        CTB_INSTALL_SOURCE_REF_TYPE: "branch"
+      },
+      async () => {
+        await installBridge(paths, testLogger, {
+          telegramBotToken: "test-token"
+        }, {
+          detectServiceManager: async () => "none",
+          probeReadiness: async () => ({
+            snapshot: createReadinessSnapshot(),
+            appServer: null
+          }),
+          createTelegramApi: () => ({
+            getMe: async () => ({
+              id: 1,
+              is_bot: true,
+              first_name: "Bridge",
+              username: "bridge_bot"
+            }),
+            setMyCommands: async () => {}
+          }),
+          syncTelegramCommands: async () => {}
+        } as any);
+      }
+    );
+
+    const manifest = JSON.parse(await readFile(paths.manifestPath, "utf8"));
+    assert.equal(manifest.sourceRoot, null);
+    assert.deepEqual(manifest.installSource, {
+      kind: "github-archive",
+      repoOwner: "InDreamer",
+      repoName: "telegram-codex-bridge",
+      ref: "master",
+      refType: "branch"
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("buildLaunchAgentPlist keeps launchd passthrough env only and does not pin bridge config", async () => {
   const root = await mkdtemp(join(tmpdir(), "ctb-install-test-"));
   const paths = createTestPaths(root);
@@ -509,6 +652,88 @@ test("getStatus returns state-store failure diagnostics when the database cannot
     assert.match(status, /state_store_failure_class=integrity_failure/u);
     assert.match(status, /state_store_failure_stage=/u);
     assert.match(status, /state_store_failure_action=/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("updateBridge redownloads GitHub archive installs from manifest metadata", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctb-update-test-"));
+  const paths = createTestPaths(root);
+  const calls: Array<{
+    command: string;
+    args: string[];
+    cwd: string | URL | undefined;
+    env: NodeJS.ProcessEnv | undefined;
+  }> = [];
+
+  try {
+    await Promise.all([
+      mkdir(paths.configRoot, { recursive: true }),
+      mkdir(paths.installRoot, { recursive: true })
+    ]);
+    await writeFile(
+      paths.envPath,
+      [
+        "TELEGRAM_BOT_TOKEN=test-token",
+        "CODEX_BIN=/usr/local/bin/codex",
+        "PROJECT_SCAN_ROOTS=/Users/example/projects:/Users/example/work",
+        "VOICE_INPUT_ENABLED=0"
+      ].join("\n") + "\n",
+      "utf8"
+    );
+    await writeFile(paths.manifestPath, JSON.stringify({
+      version: "0.1.0",
+      sourceRoot: null,
+      installedAt: "2026-03-14T09:00:00.000Z",
+      installSource: {
+        kind: "github-archive",
+        repoOwner: "InDreamer",
+        repoName: "telegram-codex-bridge",
+        ref: "master",
+        refType: "branch"
+      }
+    }, null, 2));
+
+    await updateBridge(paths, {
+      runCommand: async (command, args, options) => {
+        calls.push({ command, args, cwd: options?.cwd, env: options?.env as NodeJS.ProcessEnv | undefined });
+
+        if (command === "curl") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+
+        if (command === "tar") {
+          const workDir = args[3];
+          if (!workDir) {
+            throw new Error("missing extraction workdir");
+          }
+          await mkdir(join(workDir, "telegram-codex-bridge-master"), { recursive: true });
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+    });
+
+    assert.equal(calls[0]?.command, "curl");
+    assert.deepEqual(calls[0]?.args, [
+      "-fsSL",
+      "https://codeload.github.com/InDreamer/telegram-codex-bridge/tar.gz/refs/heads/master",
+      "-o",
+      calls[0]?.args[3] ?? ""
+    ]);
+    assert.equal(calls[1]?.command, "tar");
+    assert.equal(calls[2]?.command, "npm");
+    assert.deepEqual(calls[2]?.args, ["install"]);
+    assert.equal(calls[2]?.cwd, join((calls[1]?.args[3] as string), "telegram-codex-bridge-master"));
+    assert.equal(calls[2]?.env?.CTB_INSTALL_SOURCE_KIND, "github-archive");
+    assert.equal(calls[2]?.env?.CTB_INSTALL_SOURCE_REPO_OWNER, "InDreamer");
+    assert.equal(calls[2]?.env?.TELEGRAM_BOT_TOKEN, "test-token");
+    assert.equal(calls[3]?.command, "npm");
+    assert.deepEqual(calls[3]?.args, ["run", "build"]);
+    assert.equal(calls[4]?.command, process.execPath);
+    assert.deepEqual(calls[4]?.args, ["dist/cli.js", "install"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

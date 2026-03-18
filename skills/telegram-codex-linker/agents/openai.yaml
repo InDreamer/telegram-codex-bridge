@@ -1,4 +1,4 @@
 interface:
   display_name: "Telegram Codex Linker"
-  short_description: "Precheck first, choose project scan roots, then run the bundled install path or ctb repair path with minimal user interruption."
-  default_prompt: "Use $telegram-codex-linker to precheck my environment, discover or collect project scan roots, then directly run the bundled bridge install script or the ctb repair path. Only interrupt me for unavoidable external steps like giving a bot token, logging into Codex, or messaging the bot once."
+  short_description: "Resolve the installed skill scripts first, choose install or repair mode, recommend project roots with defaults, and keep user interruption minimal."
+  default_prompt: "Use $telegram-codex-linker to resolve its installed script paths, choose whether this is install, repair, update, or rebind, recommend project scan roots with a default set, and then run the bundled bridge install script or the ctb maintenance path. Follow my language by default, tell me which language you picked, and only interrupt me for unavoidable external steps."
