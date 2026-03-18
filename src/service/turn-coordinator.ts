@@ -10,8 +10,7 @@ import {
   buildCollapsibleFinalAnswerView,
   buildFinalAnswerReplyMarkup,
   buildPlanResultActionRows,
-  buildPlanResultReplyMarkup,
-  renderFinalAnswerHtmlChunks
+  buildPlanResultReplyMarkup
 } from "../telegram/ui-final-answer.js";
 import type {
   BlockedTurnSteerAvailability,
@@ -35,6 +34,9 @@ const MAX_RECENT_ACTIVITY_ENTRIES = 20;
 interface ActiveTurnState extends InteractionBrokerActiveTurn {
   startedInPlanMode: boolean;
   finalMessage: string | null;
+  effectiveModel: string | null;
+  effectiveReasoningEffort: ReasoningEffort | null;
+  effectiveReasoningEffortPinned: boolean;
   tracker: ActivityTracker;
   debugJournal: DebugJournalWriter;
   statusCard: StatusCardState;
@@ -51,6 +53,18 @@ interface RecentActivityEntry {
   tracker: ActivityTracker;
   debugFilePath: string | null;
   statusCard: StatusCardState | null;
+}
+
+interface EffectiveTurnConfig {
+  model: string | null;
+  reasoningEffort: ReasoningEffort | null;
+  reasoningEffortPinned: boolean;
+}
+
+interface EnsuredThreadState {
+  threadId: string;
+  model: string | null;
+  reasoningEffort: ReasoningEffort | null;
 }
 
 type ThreadArchiveNotification = Extract<
@@ -122,22 +136,47 @@ interface TurnCoordinatorDeps {
 
 export class TurnCoordinator {
   private readonly recentActivityBySessionId = new Map<string, RecentActivityEntry>();
-  private activeTurn: ActiveTurnState | null = null;
+  private readonly activeTurnsBySessionId = new Map<string, ActiveTurnState>();
+  private readonly activeTurnSessionIdsByThreadId = new Map<string, string>();
 
   constructor(private readonly deps: TurnCoordinatorDeps) {}
 
+  getActiveTurnBySessionId(sessionId: string): ActiveTurnState | null {
+    return this.activeTurnsBySessionId.get(sessionId) ?? null;
+  }
+
+  getActiveTurnByThreadId(threadId: string): ActiveTurnState | null {
+    const directSessionId = this.activeTurnSessionIdsByThreadId.get(threadId);
+    if (directSessionId) {
+      return this.getActiveTurnBySessionId(directSessionId);
+    }
+
+    for (const activeTurn of this.activeTurnsBySessionId.values()) {
+      if (activeTurn.tracker.getInspectSnapshot().agentSnapshot.some((agent) => agent.threadId === threadId)) {
+        return activeTurn;
+      }
+    }
+
+    return null;
+  }
+
   getActiveTurn(): ActiveTurnState | null {
-    return this.activeTurn;
+    return this.activeTurnsBySessionId.values().next().value ?? null;
+  }
+
+  listActiveTurns(): ActiveTurnState[] {
+    return [...this.activeTurnsBySessionId.values()];
   }
 
   getActiveInspectActivity(sessionId: string): { tracker: ActivityTracker; statusCard: StatusCardState } | null {
-    if (!this.activeTurn || this.activeTurn.sessionId !== sessionId) {
+    const activeTurn = this.getActiveTurnBySessionId(sessionId);
+    if (!activeTurn) {
       return null;
     }
 
     return {
-      tracker: this.activeTurn.tracker,
-      statusCard: this.activeTurn.statusCard
+      tracker: activeTurn.tracker,
+      statusCard: activeTurn.statusCard
     };
   }
 
@@ -164,19 +203,28 @@ export class TurnCoordinator {
   }
 
   getBlockedTurnSteerAvailability(chatId: string, session: SessionRow): BlockedTurnSteerAvailability {
-    return this.deps.interactionBroker.getBlockedTurnSteerAvailability(chatId, session, this.activeTurn);
+    return this.deps.interactionBroker.getBlockedTurnSteerAvailability(
+      chatId,
+      session,
+      this.getActiveTurnBySessionId(session.sessionId)
+    );
   }
 
   async handleInterrupt(chatId: string): Promise<void> {
     const store = this.deps.getStore();
-    const activeTurn = this.activeTurn;
-    if (!store || !activeTurn) {
+    if (!store) {
       await this.deps.safeSendMessage(chatId, "当前没有正在执行的操作。");
       return;
     }
 
     const activeSession = store.getActiveSession(chatId);
-    if (!activeSession || activeSession.sessionId !== activeTurn.sessionId || activeSession.status !== "running") {
+    if (!activeSession || activeSession.status !== "running") {
+      await this.deps.safeSendMessage(chatId, "当前没有正在执行的操作。");
+      return;
+    }
+
+    const activeTurn = this.getActiveTurnBySessionId(activeSession.sessionId);
+    if (!activeTurn) {
       await this.deps.safeSendMessage(chatId, "当前没有正在执行的操作。");
       return;
     }
@@ -187,6 +235,30 @@ export class TurnCoordinator {
       await this.deps.safeSendMessage(chatId, "已请求停止当前操作。");
     } catch {
       await this.deps.safeSendMessage(chatId, "当前无法中断正在运行的操作。");
+    }
+  }
+
+  async interruptSession(chatId: string, sessionId: string): Promise<{ ok: boolean; message: string }> {
+    const activeTurn = this.getActiveTurnBySessionId(sessionId);
+    if (!activeTurn || activeTurn.chatId !== chatId) {
+      return {
+        ok: false,
+        message: "这个按钮已过期，请重新操作。"
+      };
+    }
+
+    try {
+      await this.deps.ensureAppServerAvailable();
+      await this.deps.getAppServer()?.interruptTurn(activeTurn.threadId, activeTurn.turnId);
+      return {
+        ok: true,
+        message: "已请求停止这个会话的当前操作。"
+      };
+    } catch {
+      return {
+        ok: false,
+        message: "当前无法中断这个会话的操作。"
+      };
     }
   }
 
@@ -206,15 +278,15 @@ export class TurnCoordinator {
 
     try {
       await this.deps.ensureAppServerAvailable();
-      const threadId = await this.ensureSessionThread(session);
+      const threadState = await this.ensureSessionThreadState(session);
+      const threadId = threadState.threadId;
       const appServer = this.deps.getAppServer();
-      const turn = await appServer?.startTurn(
-        await this.buildTurnStartRequest(session, {
-          threadId,
-          cwd: session.projectPath,
-          text
-        })
-      );
+      const request = await this.buildTurnStartRequest(session, {
+        threadId,
+        cwd: session.projectPath,
+        text
+      });
+      const turn = await appServer?.startTurn(request);
 
       if (!turn) {
         throw new Error("turn start returned no result");
@@ -230,7 +302,8 @@ export class TurnCoordinator {
           transcript: options.transcript
         });
       }
-      await this.beginActiveTurn(chatId, session, threadId, turn.turn.id, turn.turn.status);
+      const effectiveConfig = this.resolveEffectiveTurnConfig(session, request, threadState);
+      await this.beginActiveTurn(chatId, session, threadId, turn.turn.id, turn.turn.status, effectiveConfig);
     } catch (error) {
       await this.deps.logger.error("turn start failed", {
         sessionId: session.sessionId,
@@ -253,15 +326,15 @@ export class TurnCoordinator {
 
     try {
       await this.deps.ensureAppServerAvailable();
-      const threadId = await this.ensureSessionThread(session);
+      const threadState = await this.ensureSessionThreadState(session);
+      const threadId = threadState.threadId;
       const appServer = this.deps.getAppServer();
-      const turn = await appServer?.startTurn(
-        await this.buildTurnStartRequest(session, {
-          threadId,
-          cwd: session.projectPath,
-          input
-        })
-      );
+      const request = await this.buildTurnStartRequest(session, {
+        threadId,
+        cwd: session.projectPath,
+        input
+      });
+      const turn = await appServer?.startTurn(request);
       if (!turn) {
         throw new Error("turn start returned no result");
       }
@@ -269,7 +342,8 @@ export class TurnCoordinator {
         store.clearSessionDefaultCollaborationModeReset(session.sessionId);
       }
 
-      await this.beginActiveTurn(chatId, session, threadId, turn.turn.id, turn.turn.status);
+      const effectiveConfig = this.resolveEffectiveTurnConfig(session, request, threadState);
+      await this.beginActiveTurn(chatId, session, threadId, turn.turn.id, turn.turn.status, effectiveConfig);
     } catch (error) {
       await this.deps.logger.error("structured turn start failed", {
         sessionId: session.sessionId,
@@ -289,20 +363,30 @@ export class TurnCoordinator {
     session: SessionRow,
     threadId: string,
     turnId: string,
-    turnStatus: string
+    turnStatus: string,
+    effectiveConfig?: EffectiveTurnConfig
   ): Promise<void> {
     const store = this.deps.getStore();
     if (!store) {
       return;
     }
 
-    this.activeTurn = {
+    const resolvedEffectiveConfig = effectiveConfig ?? {
+      model: session.selectedModel ?? null,
+      reasoningEffort: session.selectedReasoningEffort ?? null,
+      reasoningEffortPinned: session.selectedReasoningEffort !== null
+    };
+
+    const activeTurn: ActiveTurnState = {
       sessionId: session.sessionId,
       chatId,
       threadId,
       turnId,
       startedInPlanMode: session.planMode,
       finalMessage: null,
+      effectiveModel: resolvedEffectiveConfig.model,
+      effectiveReasoningEffort: resolvedEffectiveConfig.reasoningEffort,
+      effectiveReasoningEffortPinned: resolvedEffectiveConfig.reasoningEffortPinned,
       tracker: new ActivityTracker({
         threadId,
         turnId
@@ -321,23 +405,29 @@ export class TurnCoordinator {
       nextErrorCardId: 1,
       surfaceQueue: Promise.resolve()
     };
+    this.registerActiveTurn(activeTurn);
 
     this.setRecentActivity(session.sessionId, {
-      tracker: this.activeTurn.tracker,
-      debugFilePath: this.activeTurn.debugJournal.filePath,
-      statusCard: this.activeTurn.statusCard
+      tracker: activeTurn.tracker,
+      debugFilePath: activeTurn.debugJournal.filePath,
+      statusCard: activeTurn.statusCard
     });
     store.updateSessionStatus(session.sessionId, "running", {
       lastTurnId: turnId,
       lastTurnStatus: turnStatus
     });
-    await this.deps.syncRuntimeCards(this.activeTurn, null, null, this.activeTurn.tracker.getStatus(), {
+    await this.deps.syncRuntimeCards(activeTurn, null, null, activeTurn.tracker.getStatus(), {
       force: true,
       reason: "turn_initialized"
     });
   }
 
   async ensureSessionThread(session: SessionRow): Promise<string> {
+    const ensured = await this.ensureSessionThreadState(session);
+    return ensured.threadId;
+  }
+
+  private async ensureSessionThreadState(session: SessionRow): Promise<EnsuredThreadState> {
     const store = this.deps.getStore();
     const appServer = this.deps.getAppServer();
     if (!store) {
@@ -354,12 +444,20 @@ export class TurnCoordinator {
         ...(session.selectedModel ? { model: session.selectedModel } : {})
       });
       store.updateSessionThreadId(session.sessionId, started.thread.id);
-      return started.thread.id;
+      return {
+        threadId: started.thread.id,
+        model: started.model ?? null,
+        reasoningEffort: started.reasoningEffort ?? null
+      };
     }
 
     try {
-      await appServer.resumeThread(session.threadId);
-      return session.threadId;
+      const resumed = await appServer.resumeThread(session.threadId);
+      return {
+        threadId: session.threadId,
+        model: resumed.model ?? null,
+        reasoningEffort: resumed.reasoningEffort ?? resumed.thread.reasoningEffort ?? null
+      };
     } catch (error) {
       if (!isMissingRemoteThreadError(error)) {
         throw error;
@@ -374,7 +472,11 @@ export class TurnCoordinator {
         ...(session.selectedModel ? { model: session.selectedModel } : {})
       });
       store.updateSessionThreadId(session.sessionId, started.thread.id);
-      return started.thread.id;
+      return {
+        threadId: started.thread.id,
+        model: started.model ?? null,
+        reasoningEffort: started.reasoningEffort ?? null
+      };
     }
   }
 
@@ -387,7 +489,7 @@ export class TurnCoordinator {
 
     const knownUnsupported = getKnownUnsupportedServerRequest(request);
     if (knownUnsupported) {
-      const activeTurn = this.activeTurn;
+      const activeTurn = this.findActiveTurnForRequestParams(request.params);
       await this.deps.logger.warn("known unsupported app-server server request", {
         method: request.method,
         id: request.id,
@@ -421,7 +523,11 @@ export class TurnCoordinator {
       return;
     }
 
-    await this.deps.interactionBroker.handleNormalizedServerRequest(request, normalized, this.activeTurn);
+    await this.deps.interactionBroker.handleNormalizedServerRequest(
+      request,
+      normalized,
+      this.findActiveTurnForInteraction(normalized.threadId, normalized.turnId ?? null)
+    );
   }
 
   async handleAppServerNotification(method: string, params: unknown): Promise<void> {
@@ -432,8 +538,11 @@ export class TurnCoordinator {
     }
 
     if (classified.kind === "thread_archived" || classified.kind === "thread_unarchived") {
-      if (this.activeTurn) {
-        await this.appendDebugJournal(this.activeTurn, method, params, {
+      const activeTurn = classified.threadId
+        ? this.getActiveTurnByThreadId(classified.threadId) ?? this.getActiveTurn()
+        : this.getActiveTurn();
+      if (activeTurn) {
+        await this.appendDebugJournal(activeTurn, method, params, {
           threadId: classified.threadId ?? null,
           turnId: null
         });
@@ -442,14 +551,14 @@ export class TurnCoordinator {
       return;
     }
 
-    if (!this.activeTurn) {
+    const activeTurn = this.findActiveTurnForNotification(classified);
+    if (!activeTurn) {
       if (isGlobalRuntimeNotice(classified)) {
         await this.deps.handleGlobalRuntimeNotice(classified);
       }
       return;
     }
 
-    const activeTurn = this.activeTurn;
     await this.appendDebugJournal(activeTurn, method, params, {
       threadId: classified.threadId ?? activeTurn.threadId,
       turnId: classified.turnId ?? activeTurn.turnId
@@ -464,8 +573,15 @@ export class TurnCoordinator {
       activeTurn.finalMessage = classified.message;
     }
 
+    if (classified.kind === "model_rerouted" && classified.toModel) {
+      activeTurn.effectiveModel = classified.toModel;
+    }
+
     activeTurn.tracker.apply(classified);
     await this.logSubagentIdentityEvents(activeTurn, activeTurn.tracker.drainSubagentIdentityEvents());
+    for (const agent of activeTurn.tracker.getInspectSnapshot().agentSnapshot) {
+      this.activeTurnSessionIdsByThreadId.set(agent.threadId, activeTurn.sessionId);
+    }
     const after = activeTurn.tracker.getStatus();
     const forceSurfaceSync = classified.kind === "turn_completed";
     await this.deps.logger.info("turn event processed", {
@@ -494,7 +610,7 @@ export class TurnCoordinator {
       resolutionSource: "turn_expired"
     });
 
-    this.activeTurn = null;
+    this.unregisterActiveTurn(activeTurn);
 
     const store = this.deps.getStore();
     if (!store) {
@@ -546,24 +662,29 @@ export class TurnCoordinator {
 
   async handleActiveTurnAppServerExit(): Promise<void> {
     const store = this.deps.getStore();
-    const runningTurn = this.activeTurn;
-    if (!store || !runningTurn) {
+    if (!store) {
       return;
     }
 
-    await this.deps.interactionBroker.resolveActionablePendingInteractionsForSession(runningTurn.chatId, runningTurn.sessionId, {
-      state: "failed",
-      reason: "app_server_lost",
-      resolutionSource: "app_server_exit"
-    });
-    this.activeTurn = null;
-    this.deps.disposeRuntimeCards(runningTurn);
-    store.updateSessionStatus(runningTurn.sessionId, "failed", {
-      failureReason: "app_server_lost",
-      lastTurnId: runningTurn.turnId,
-      lastTurnStatus: "failed"
-    });
-    await this.deps.safeSendMessage(runningTurn.chatId, "Codex 服务暂时不可用，请稍后重试。");
+    for (const runningTurn of this.listActiveTurns()) {
+      await this.deps.interactionBroker.resolveActionablePendingInteractionsForSession(
+        runningTurn.chatId,
+        runningTurn.sessionId,
+        {
+          state: "failed",
+          reason: "app_server_lost",
+          resolutionSource: "app_server_exit"
+        }
+      );
+      this.unregisterActiveTurn(runningTurn);
+      this.deps.disposeRuntimeCards(runningTurn);
+      store.updateSessionStatus(runningTurn.sessionId, "failed", {
+        failureReason: "app_server_lost",
+        lastTurnId: runningTurn.turnId,
+        lastTurnStatus: "failed"
+      });
+      await this.deps.safeSendMessage(runningTurn.chatId, "Codex 服务暂时不可用，请稍后重试。");
+    }
   }
 
   private async buildTurnStartRequest(
@@ -617,9 +738,26 @@ export class TurnCoordinator {
     return model.id;
   }
 
+  private resolveEffectiveTurnConfig(
+    session: SessionRow,
+    request: Parameters<CodexAppServerClient["startTurn"]>[0],
+    threadState: EnsuredThreadState
+  ): EffectiveTurnConfig {
+    const requestedModel = request.collaborationMode?.settings.model ?? request.model ?? null;
+    const explicitReasoningEffort = request.collaborationMode?.settings.reasoningEffort
+      ?? request.effort
+      ?? null;
+
+    return {
+      model: requestedModel ?? threadState.model ?? session.selectedModel ?? null,
+      reasoningEffort: explicitReasoningEffort ?? threadState.reasoningEffort ?? session.selectedReasoningEffort ?? null,
+      reasoningEffortPinned: explicitReasoningEffort !== null
+    };
+  }
+
   private async sendFinalAnswer(activeTurn: ActiveTurnState, finalMessage: string | null): Promise<void> {
     const text = finalMessage || "本次操作已完成，但没有可返回的最终答复。";
-    const rendered = buildCollapsibleFinalAnswerView(text);
+    const rendered = buildCollapsibleFinalAnswerView(text, this.getFinalAnswerRenderContext(activeTurn.sessionId));
     await this.deps.logger.info("sending final answer", {
       chatId: activeTurn.chatId,
       chunkCount: rendered.pages.length,
@@ -675,14 +813,13 @@ export class TurnCoordinator {
       return;
     }
 
-    const chunks = renderFinalAnswerHtmlChunks(text, 3000);
-    for (const chunk of chunks) {
-      await this.deps.safeSendHtmlMessageResult(activeTurn.chatId, chunk);
+    for (const page of rendered.pages) {
+      await this.deps.safeSendHtmlMessageResult(activeTurn.chatId, page);
     }
   }
 
   private async sendPlanResult(activeTurn: ActiveTurnState, planMarkdown: string): Promise<void> {
-    const rendered = buildCollapsibleFinalAnswerView(planMarkdown);
+    const rendered = buildCollapsibleFinalAnswerView(planMarkdown, this.getFinalAnswerRenderContext(activeTurn.sessionId));
     const store = this.deps.getStore();
 
     if (store) {
@@ -720,6 +857,82 @@ export class TurnCoordinator {
     }
 
     await this.deps.safeSendHtmlMessageResult(activeTurn.chatId, rendered.pages[0] ?? "");
+  }
+
+  private getFinalAnswerRenderContext(sessionId: string): {
+    sessionName?: string | null;
+    projectName?: string | null;
+  } {
+    const session = this.deps.getStore()?.getSessionById(sessionId) ?? null;
+    if (!session) {
+      return {};
+    }
+
+    return {
+      sessionName: session.displayName,
+      projectName: session.projectAlias?.trim() || session.projectName
+    };
+  }
+
+  private registerActiveTurn(activeTurn: ActiveTurnState): void {
+    const previous = this.activeTurnsBySessionId.get(activeTurn.sessionId);
+    if (previous) {
+      this.unregisterActiveTurn(previous);
+    }
+
+    this.activeTurnsBySessionId.set(activeTurn.sessionId, activeTurn);
+    this.activeTurnSessionIdsByThreadId.set(activeTurn.threadId, activeTurn.sessionId);
+  }
+
+  private unregisterActiveTurn(activeTurn: ActiveTurnState): void {
+    const current = this.activeTurnsBySessionId.get(activeTurn.sessionId);
+    if (current?.turnId === activeTurn.turnId) {
+      this.activeTurnsBySessionId.delete(activeTurn.sessionId);
+    }
+
+    for (const [threadId, sessionId] of this.activeTurnSessionIdsByThreadId.entries()) {
+      if (sessionId === activeTurn.sessionId) {
+        this.activeTurnSessionIdsByThreadId.delete(threadId);
+      }
+    }
+  }
+
+  private findActiveTurnForInteraction(
+    threadId: string | null,
+    turnId: string | null
+  ): ActiveTurnState | null {
+    if (threadId) {
+      const byThread = this.getActiveTurnByThreadId(threadId);
+      if (byThread) {
+        return byThread;
+      }
+    }
+
+    if (turnId) {
+      for (const activeTurn of this.activeTurnsBySessionId.values()) {
+        if (activeTurn.turnId === turnId) {
+          return activeTurn;
+        }
+      }
+    }
+
+    if (this.activeTurnsBySessionId.size === 1) {
+      return this.getActiveTurn();
+    }
+
+    return null;
+  }
+
+  private findActiveTurnForNotification(
+    classified: ReturnType<typeof classifyNotification>
+  ): ActiveTurnState | null {
+    return this.findActiveTurnForInteraction(classified.threadId, classified.turnId);
+  }
+
+  private findActiveTurnForRequestParams(params: unknown): ActiveTurnState | null {
+    const record = asRecord(params);
+    return this.findActiveTurnForInteraction(getString(record, "threadId"), getString(record, "turnId"))
+      ?? this.getActiveTurn();
   }
 
   private async appendDebugJournal(

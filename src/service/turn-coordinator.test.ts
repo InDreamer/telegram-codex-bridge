@@ -190,8 +190,135 @@ test("TurnCoordinator starts plan-mode turns with collaborationMode and records 
     }]);
     assert.equal(coordinator.getActiveTurn()?.threadId, "thread-plan");
     assert.equal(coordinator.getActiveTurn()?.turnId, "turn-plan");
+    assert.equal(coordinator.getActiveTurn()?.effectiveModel, "gpt-5-default");
+    assert.equal(coordinator.getActiveTurn()?.effectiveReasoningEffort, "medium");
     assert.deepEqual(syncReasons, ["turn_initialized"]);
     assert.equal(store.getSessionById(session.sessionId)?.status, "running");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator resolves the default model and reasoning effort for runtime surfaces", async () => {
+  const { coordinator, store, cleanup } = await createCoordinatorContext({
+    models: [{
+      id: "gpt-5.3-codex",
+      model: "gpt-5.3-codex",
+      displayName: "GPT-5.3 Codex",
+      description: "Picker default model",
+      hidden: false,
+      isDefault: true,
+      defaultReasoningEffort: "medium",
+      supportedReasoningEfforts: [
+        { reasoningEffort: "medium", description: "medium" },
+        { reasoningEffort: "high", description: "high" }
+      ]
+    }],
+    appServer: {
+      startThread: async () => ({
+        thread: { id: "thread-default" },
+        model: "gpt-5.4",
+        modelProvider: "openai",
+        reasoningEffort: "high"
+      }),
+      startTurn: async () => ({ turn: { id: "turn-default", status: "inProgress" } })
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      displayName: "Session Alpha",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.startTextTurn("chat-1", session, "Use the default runtime settings.");
+
+    assert.equal(coordinator.getActiveTurn()?.effectiveModel, "gpt-5.4");
+    assert.equal(coordinator.getActiveTurn()?.effectiveReasoningEffort, "high");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator uses resumed thread runtime config instead of model picker defaults", async () => {
+  const { coordinator, store, cleanup } = await createCoordinatorContext({
+    models: [{
+      id: "gpt-5.3-codex",
+      model: "gpt-5.3-codex",
+      displayName: "GPT-5.3 Codex",
+      description: "Picker default model",
+      hidden: false,
+      isDefault: true,
+      defaultReasoningEffort: "medium",
+      supportedReasoningEfforts: [
+        { reasoningEffort: "medium", description: "medium" },
+        { reasoningEffort: "high", description: "high" }
+      ]
+    }],
+    appServer: {
+      resumeThread: async () => ({
+        model: "gpt-5.4",
+        modelProvider: "openai",
+        reasoningEffort: "high",
+        thread: {
+          id: "thread-existing",
+          turns: []
+        }
+      }),
+      startTurn: async () => ({ turn: { id: "turn-existing", status: "inProgress" } })
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one",
+      threadId: "thread-existing"
+    });
+
+    await coordinator.startTextTurn("chat-1", session, "Resume the thread.");
+
+    assert.equal(coordinator.getActiveTurn()?.effectiveModel, "gpt-5.4");
+    assert.equal(coordinator.getActiveTurn()?.effectiveReasoningEffort, "high");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator keeps the known reasoning effort when the model is rerouted", async () => {
+  const { coordinator, store, cleanup } = await createCoordinatorContext({
+    appServer: {
+      startThread: async () => ({
+        thread: { id: "thread-reroute" },
+        model: "gpt-5.4",
+        modelProvider: "openai",
+        reasoningEffort: "high"
+      }),
+      startTurn: async () => ({ turn: { id: "turn-reroute", status: "inProgress" } })
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      displayName: "Session Alpha",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.startTextTurn("chat-1", session, "Start the reroute test.");
+    await coordinator.handleAppServerNotification("model/rerouted", {
+      threadId: "thread-reroute",
+      fromModel: "gpt-5.4",
+      toModel: "gpt-5.5",
+      reason: "capacity"
+    });
+
+    assert.equal(coordinator.getActiveTurn()?.effectiveModel, "gpt-5.5");
+    assert.equal(coordinator.getActiveTurn()?.effectiveReasoningEffort, "high");
   } finally {
     await cleanup();
   }
@@ -261,6 +388,7 @@ test("TurnCoordinator completes a normal turn and delivers the recovered final a
   try {
     const session = store.createSession({
       telegramChatId: "chat-1",
+      displayName: "Session Alpha",
       projectName: "Project One",
       projectPath: "/tmp/project-one"
     });
@@ -274,6 +402,7 @@ test("TurnCoordinator completes a normal turn and delivers the recovered final a
 
     assert.equal(coordinator.getActiveTurn(), null);
     assert.equal(sentHtmlMessages.length, 1);
+    assert.match(sentHtmlMessages[0]?.html ?? "", /<b>Session Alpha \/ Project One<\/b>/u);
     assert.match(sentHtmlMessages[0]?.html ?? "", /Recovered final answer/u);
     assert.equal(store.listFinalAnswerViews("chat-1").length, 0);
     assert.deepEqual(interactionResolutions, [{
@@ -310,6 +439,7 @@ test("TurnCoordinator completes plan-mode turns by sending a plan result with im
   try {
     const session = store.createSession({
       telegramChatId: "chat-1",
+      displayName: "Session Plan",
       projectName: "Project One",
       projectPath: "/tmp/project-one",
       planMode: true
@@ -323,6 +453,7 @@ test("TurnCoordinator completes plan-mode turns by sending a plan result with im
     });
 
     assert.equal(sentHtmlMessages.length, 1);
+    assert.match(sentHtmlMessages[0]?.html ?? "", /<b>Session Plan \/ Project One<\/b>/u);
     assert.match(sentHtmlMessages[0]?.html ?? "", /<b>Plan<\/b>/u);
     assert.equal(sentHtmlMessages[0]?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "实施这个计划");
     const views = store.listFinalAnswerViews("chat-1");

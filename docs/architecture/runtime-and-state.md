@@ -51,7 +51,7 @@ The bridge must not mirror the raw runtime notification stream into Telegram.
 It should:
 - listen to the mixed runtime notification stream
 - reduce that stream into compact user-facing runtime surfaces
-- keep one status card for the running turn
+- keep one status card per running Telegram session turn
 - keep only `Session`, `State`, and `Progress` as fixed runtime-card rows
 - render any operator-selected optional runtime fields as one row per field instead of a single pipe-delimited summary line
 - expose current plan state through a collapsed button on the status card rather than a separate plan card
@@ -76,6 +76,7 @@ It should:
 - capture the final assistant message emitted before `turn/completed`
 - send the final assistant message as a separate Telegram message after turn completion
 - render the final assistant message with Telegram HTML derived from a safe Markdown subset rather than sending raw Markdown literals
+- include session and project identity in bridge-owned final-answer renders so concurrent background completions remain distinguishable in chat
 - prefer a persisted collapsed preview plus inline expand/collapse/page controls for oversized final answers so one bridge-owned final-answer message remains readable in chat
 - persist collapsed previews and rendered pages in SQLite so final-answer buttons survive bridge restart without relying on Telegram as a state store
 - keep chunked `(2/N)` continuation sends only as a delivery fallback when the collapsible path cannot be established safely
@@ -325,9 +326,9 @@ v1 concurrency rules:
 4. only the active session receives normal text input
 
 Behavioral guardrails:
-- do not queue a second turn while one is still running
-- reject `/use` while the active session is running
-- scope `/interrupt` to the current active session only
+- do not queue a second turn in the same session while that session is still running
+- allow `/use` to switch the foreground session even while another session is running
+- scope free-text input and typed `/interrupt` to the current active session only; inline status-card actions target their owning session
 
 ## Failure Handling
 

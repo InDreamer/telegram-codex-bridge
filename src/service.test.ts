@@ -888,7 +888,14 @@ test("runtime cards keep command activity on the status message and final answer
         .every((entry) => entry.parseMode === "HTML"),
       true
     );
-    assert.equal(sent.some((entry) => entry.text === "All done." && entry.parseMode === "HTML"), true);
+    assert.equal(
+      sent.some((entry) =>
+        entry.parseMode === "HTML"
+        && /All done\./u.test(entry.text)
+        && /Project One/u.test(entry.text)
+      ),
+      true
+    );
     assert.equal(sent.filter((entry) => isRuntimeStatusText(entry.text)).length, 1);
     assert.equal(sent.filter((entry) => entry.text.startsWith("Plan")).length, 0);
     assert.equal(sent.filter((entry) => entry.text.startsWith("Command")).length, 0);
@@ -998,7 +1005,10 @@ test("status card removes command toggles and treats old command callbacks as ex
     assert.doesNotMatch(collapsed?.text ?? "", /Latest command/u);
     assert.doesNotMatch(collapsed?.text ?? "", /Command: \$ pnpm test/u);
     assert.doesNotMatch(collapsed?.text ?? "", /Earlier commands/u);
-    assert.equal(collapsed?.replyMarkup, undefined);
+    assert.deepEqual(collapsed?.replyMarkup?.inline_keyboard, [[
+      { text: "查看详情", callback_data: `v5:st:i:${session.sessionId}` },
+      { text: "中断操作", callback_data: `v5:st:x:${session.sessionId}` }
+    ]]);
 
     const editCountBeforeCallbacks = edited.length;
 
@@ -1103,7 +1113,7 @@ test("completed turns fall back to thread history when task_complete is missing"
       true
     );
     assert.equal(sent.filter((entry) => isRuntimeStatusText(entry.text)).length, 1);
-    assert.ok(sent.some((entry) => entry.text === "Recovered from thread history." && entry.parseMode === "HTML"));
+    assert.ok(sent.some((entry) => entry.text.includes("Recovered from thread history.") && entry.parseMode === "HTML"));
     assert.ok(edited.some((entry) => /<b>状态<\/b> · Completed/u.test(entry.text)));
     assert.equal(store.getSessionById(session.sessionId)?.status, "idle");
     assert.equal((service as any).activeTurn, null);
@@ -1490,7 +1500,10 @@ test("startRealTurn sends an initial runtime status card immediately", async () 
     assert.match(sent[0]?.text ?? "", /<b>状态<\/b> · Starting/u);
     assert.match(sent[0]?.text ?? "", /使用 \/inspect 查看完整详情/u);
     assert.equal(sent[0]?.parseMode, "HTML");
-    assert.equal(sent[0]?.replyMarkup, undefined);
+    assert.deepEqual(sent[0]?.replyMarkup?.inline_keyboard, [[
+      { text: "查看详情", callback_data: `v5:st:i:${session.sessionId}` },
+      { text: "中断操作", callback_data: `v5:st:x:${session.sessionId}` }
+    ]]);
     assert.equal((service as any).activeTurn.statusCard.messageId, 800);
   } finally {
     await cleanup();
@@ -2097,7 +2110,10 @@ test("status card does not expose proposed-plan drafts through the checklist but
 
     const collapsed = edited.at(-1) ?? sent.at(-1);
     assert.equal(collapsed?.parseMode, "HTML");
-    assert.equal(collapsed?.replyMarkup?.inline_keyboard?.length ?? 0, 0);
+    assert.deepEqual(collapsed?.replyMarkup?.inline_keyboard, [[
+      { text: "查看详情", callback_data: `v5:st:i:${session.sessionId}` },
+      { text: "中断操作", callback_data: `v5:st:x:${session.sessionId}` }
+    ]]);
     assert.doesNotMatch(collapsed?.text ?? "", /Telegram 命令体验优化（轻量一周版）/u);
   } finally {
     await cleanup();
@@ -4136,7 +4152,8 @@ test("structured project and session replies use Telegram HTML parse mode", asyn
       }
     };
 
-    await (service as any).routeCommand("chat-1", "use", "1");
+    const secondSessionIndex = store.listSessions("chat-1").findIndex((entry) => entry.sessionId === secondSession.sessionId) + 1;
+    await (service as any).routeCommand("chat-1", "use", `${secondSessionIndex}`);
     assert.equal(sent.at(-1)?.parseMode, "HTML");
     assert.equal(sent.at(-1)?.text, "<b>已切换到项目：</b> Project &lt;Two&gt;");
 
@@ -4149,6 +4166,40 @@ test("structured project and session replies use Telegram HTML parse mode", asyn
     assert.equal(sent.at(-1)?.text, "<b>已收藏项目：</b> Project &lt;Two&gt;");
 
     assert.equal(store.getActiveSession("chat-1")?.sessionId, secondSession.sessionId);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("use command can switch away from a running session so another session becomes foreground", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ text: string; parseMode?: string }> = [];
+
+  try {
+    authorizeChat(store, "chat-1");
+    const runningSession = await withMockedNow("2026-03-10T09:00:00.000Z", async () => createSession(store, "chat-1"));
+    const idleSession = await withMockedNow("2026-03-10T09:05:00.000Z", async () => store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project Idle",
+      projectPath: "/tmp/project-idle"
+    }));
+    store.setActiveSession("chat-1", runningSession.sessionId);
+    store.updateSessionStatus(runningSession.sessionId, "running");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        sent.push({ text, parseMode: options?.parseMode });
+        return createFakeTelegramMessage(950 + sent.length, text);
+      }
+    };
+
+    const idleSessionIndex = store.listSessions("chat-1").findIndex((entry) => entry.sessionId === idleSession.sessionId) + 1;
+    await (service as any).routeCommand("chat-1", "use", `${idleSessionIndex}`);
+
+    assert.equal(sent.at(-1)?.parseMode, "HTML");
+    assert.equal(sent.at(-1)?.text, "<b>已切换到项目：</b> Project Idle");
+    assert.equal(store.getActiveSession("chat-1")?.sessionId, idleSession.sessionId);
+    assert.equal(store.getSessionById(runningSession.sessionId)?.status, "running");
   } finally {
     await cleanup();
   }
@@ -4221,7 +4272,7 @@ test("rename command can set and clear the current project alias", async () => {
   }
 });
 
-test("new command refuses to open the picker while the active session is running", async () => {
+test("new command still opens the picker while the active session is running", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ text: string; parseMode?: string }> = [];
 
@@ -4237,7 +4288,7 @@ test("new command refuses to open the picker while the active session is running
     };
 
     await (service as any).routeCommand("chat-1", "new", "");
-    assert.equal(sent.at(-1)?.text, "当前项目仍在执行，请先等待完成或停止当前操作。");
+    assert.match(sent.at(-1)?.text ?? "", /选择要新建会话的项目/u);
   } finally {
     await cleanup();
   }
@@ -5647,12 +5698,12 @@ test("app-server exit fails unresolved interactions and clears pending text mode
     });
 
     assert.equal(store.getPendingInteraction(pending?.interactionId ?? "", "1")?.state, "awaiting_text");
-    assert.ok((service as any).interactionBroker.getPendingTextMode("1"));
+    assert.ok((service as any).interactionBroker.getPendingTextMode("1", session.sessionId));
 
     await (service as any).handleAppServerExit(new Error("lost child"));
 
     assert.equal(store.getPendingInteraction(pending?.interactionId ?? "", "1")?.state, "failed");
-    assert.equal((service as any).interactionBroker.getPendingTextMode("1"), null);
+    assert.equal((service as any).interactionBroker.getPendingTextMode("1", session.sessionId), null);
     assert.match(edited.at(-1)?.text ?? "", /Codex 服务已断开/u);
   } finally {
     CodexAppServerClient.prototype.initializeAndProbe = originalInitializeAndProbe;
@@ -7646,6 +7697,11 @@ test("formatRuntimeStatusLineField uses cli token and context field semantics fo
 
     const persistedSession = store.getSessionById(session.sessionId);
     assert.ok(persistedSession);
+    ((service as any).turnCoordinator as any).activeTurnsBySessionId.set(persistedSession.sessionId, {
+      sessionId: persistedSession.sessionId,
+      effectiveModel: "gpt-5",
+      effectiveReasoningEffort: "high"
+    });
 
     const inspect = {
       ...createActivityStatus(),
@@ -7683,11 +7739,11 @@ test("formatRuntimeStatusLineField uses cli token and context field semantics fo
     );
     assert.equal(
       (service as any).formatRuntimeStatusLineField("model-name", persistedSession, inspect, null, null),
-      "model-name: 默认模型"
+      "model-name: gpt-5"
     );
     assert.equal(
       (service as any).formatRuntimeStatusLineField("model-with-reasoning", persistedSession, inspect, null, null),
-      "model-with-reasoning: 默认模型 + 默认"
+      "model-with-reasoning: gpt-5 + 高"
     );
     assert.equal(
       (service as any).formatRuntimeStatusLineField("total-input-tokens", persistedSession, inspect, null, null),

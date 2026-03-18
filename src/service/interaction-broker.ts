@@ -17,6 +17,7 @@ import { asRecord, getString, getStringArray } from "../util/untyped.js";
 import type { TelegramEditResult } from "./runtime-surface-state.js";
 
 export interface PendingInteractionTextMode {
+  sessionId: string;
   interactionId: string;
   questionId: string;
 }
@@ -97,8 +98,12 @@ export class InteractionBroker {
 
   constructor(private readonly deps: InteractionBrokerDeps) {}
 
-  getPendingTextMode(chatId: string): PendingInteractionTextMode | null {
-    return this.pendingInteractionTextModes.get(chatId) ?? null;
+  getPendingTextMode(_chatId: string, sessionId: string | null): PendingInteractionTextMode | null {
+    if (!sessionId) {
+      return null;
+    }
+
+    return this.pendingInteractionTextModes.get(sessionId) ?? null;
   }
 
   buildPendingInteractionSummaries(activeSession: SessionRow): PendingInteractionSummary[] {
@@ -172,14 +177,14 @@ export class InteractionBroker {
 
     const row = store.getPendingInteraction(interactionId, chatId);
     if (!row) {
-      this.pendingInteractionTextModes.delete(chatId);
+      this.clearPendingInteractionTextMode(interactionId);
       await this.deps.safeSendMessage(chatId, "这个交互已过期。");
       return;
     }
 
     const interaction = parseStoredInteraction(row.promptJson);
     if (!interaction) {
-      this.pendingInteractionTextModes.delete(chatId);
+      this.clearPendingInteractionTextMode(interactionId);
       await this.deps.safeSendMessage(chatId, "这个交互已过期。");
       return;
     }
@@ -199,20 +204,26 @@ export class InteractionBroker {
 
     const row = store.getPendingInteraction(mode.interactionId, chatId);
     if (!row) {
-      this.pendingInteractionTextModes.delete(chatId);
+      this.clearPendingInteractionTextMode(mode.interactionId);
+      await this.deps.safeSendMessage(chatId, "这个交互已过期。");
+      return;
+    }
+
+    if (row.sessionId !== mode.sessionId) {
+      this.clearPendingInteractionTextMode(mode.interactionId);
       await this.deps.safeSendMessage(chatId, "这个交互已过期。");
       return;
     }
 
     const interaction = parseStoredInteraction(row.promptJson);
     if (!interaction || interaction.kind !== "questionnaire") {
-      this.pendingInteractionTextModes.delete(chatId);
+      this.clearPendingInteractionTextMode(mode.interactionId);
       await this.deps.safeSendMessage(chatId, "这个交互已过期。");
       return;
     }
 
     if (!isPendingInteractionActionable(row)) {
-      this.pendingInteractionTextModes.delete(chatId);
+      this.clearPendingInteractionTextMode(mode.interactionId);
       await this.renderStoredPendingInteraction(chatId, row, interaction);
       await this.deps.safeSendMessage(chatId, isPendingInteractionHandled(row) ? "这个操作已处理。" : "这个交互已过期。");
       return;
@@ -221,7 +232,7 @@ export class InteractionBroker {
     const draft = parseQuestionnaireDraft(row.responseJson);
     const currentQuestion = getCurrentQuestion(interaction, draft);
     if (!currentQuestion || currentQuestion.id !== mode.questionId) {
-      this.pendingInteractionTextModes.delete(chatId);
+      this.clearPendingInteractionTextMode(mode.interactionId);
       await this.deps.safeSendMessage(chatId, "这个交互已过期。");
       return;
     }
@@ -234,7 +245,7 @@ export class InteractionBroker {
 
     draft.answers[currentQuestion.id] = parsedAnswer.value;
     draft.awaitingQuestionId = null;
-    this.pendingInteractionTextModes.delete(chatId);
+    this.clearPendingInteractionTextMode(mode.interactionId);
 
     const nextQuestion = getCurrentQuestion(interaction, draft);
     if (nextQuestion) {
@@ -398,9 +409,16 @@ export class InteractionBroker {
       return;
     }
 
+    const activeSession = store.getActiveSession(chatId);
+    if (!activeSession || activeSession.sessionId !== row.sessionId) {
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "请先切换到这个会话，再发送文字回答。");
+      return;
+    }
+
     draft.awaitingQuestionId = currentQuestion.id;
     store.markPendingInteractionAwaitingText(row.interactionId, JSON.stringify(draft));
-    this.pendingInteractionTextModes.set(chatId, {
+    this.pendingInteractionTextModes.set(row.sessionId, {
+      sessionId: row.sessionId,
       interactionId: row.interactionId,
       questionId: currentQuestion.id
     });
@@ -648,9 +666,9 @@ export class InteractionBroker {
   }
 
   private clearPendingInteractionTextMode(interactionId: string): void {
-    for (const [chatId, pending] of this.pendingInteractionTextModes.entries()) {
+    for (const [sessionId, pending] of this.pendingInteractionTextModes.entries()) {
       if (pending.interactionId === interactionId) {
-        this.pendingInteractionTextModes.delete(chatId);
+        this.pendingInteractionTextModes.delete(sessionId);
       }
     }
   }

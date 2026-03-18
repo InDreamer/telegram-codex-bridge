@@ -30,6 +30,7 @@ import {
   buildRuntimeStatusReplyMarkup,
   buildRuntimeStatusCard,
   buildSessionsText,
+  buildCollapsibleFinalAnswerView,
   parseCallbackData,
   renderFinalAnswerHtmlChunks
 } from "./ui.js";
@@ -523,7 +524,7 @@ test("buildRuntimeStatusCard keeps only fixed runtime fields and renders progres
       "<b>Session</b> · ansi-escape",
       "<b>State</b> · Completed",
       "<b>Progress</b> · 确认 <code>ansi-escape</code> 是 <b>codex-tui</b> 的 ANSI 到 <code>ratatui</code> 适配边界层。",
-      "Use /inspect for full details"
+      "Use /inspect for full details. Use /interrupt to stop the current turn."
     ].join("\n")
   );
 
@@ -543,6 +544,16 @@ test("buildRuntimeStatusReplyMarkup prefers the in-progress step over earlier pe
   });
 
   assert.equal(replyMarkup?.inline_keyboard[0]?.[0]?.text, "计划清单：Wire inspect renderer");
+  assert.equal(replyMarkup?.inline_keyboard.at(-1)?.[0]?.text, "查看详情");
+  assert.equal(replyMarkup?.inline_keyboard.at(-1)?.[1]?.text, "中断操作");
+  assert.deepEqual(parseCallbackData(replyMarkup?.inline_keyboard.at(-1)?.[0]?.callback_data ?? ""), {
+    kind: "status_inspect",
+    sessionId: "session-1"
+  });
+  assert.deepEqual(parseCallbackData(replyMarkup?.inline_keyboard.at(-1)?.[1]?.callback_data ?? ""), {
+    kind: "status_interrupt",
+    sessionId: "session-1"
+  });
 });
 
 test("buildRuntimeStatusCard renders expanded running agents inline", () => {
@@ -616,7 +627,9 @@ test("buildRuntimeStatusCard keeps expanded sections below progress", () => {
   assert.ok(text.indexOf("<b>计划清单:</b>") > text.indexOf("<b>Current Dir</b>"));
   assert.ok(text.indexOf("<b>计划清单:</b>") > text.indexOf("<b>Progress</b>"));
   assert.ok(text.indexOf("<b>Agents:</b>") > text.indexOf("<b>计划清单:</b>"));
-  assert.ok(text.indexOf("Use /inspect for full details") > text.indexOf("<b>Agents:</b>"));
+  assert.ok(
+    text.indexOf("Use /inspect for full details. Use /interrupt to stop the current turn.") > text.indexOf("<b>Agents:</b>")
+  );
 });
 
 test("buildRuntimeStatusCard uses compact label-dot-value rows and zh localization", () => {
@@ -634,7 +647,7 @@ test("buildRuntimeStatusCard uses compact label-dot-value rows and zh localizati
       "<b>会话</b> · 会话 Alpha",
       "<b>状态</b> · 运行中",
       "<b>进度</b> · 短进度",
-      "使用 /inspect 查看完整详情"
+      "使用 /inspect 查看完整详情，使用 /interrupt 打断当前操作"
     ].join("\n")
   );
 });
@@ -751,6 +764,7 @@ test("buildRuntimeStatusReplyMarkup adds an agent button when running subagents 
   });
 
   assert.equal(replyMarkup?.inline_keyboard[0]?.[0]?.text, "Agent：1 个运行中");
+  assert.equal(replyMarkup?.inline_keyboard.at(-1)?.[0]?.text, "查看详情");
 });
 
 test("buildRuntimeErrorCard renders bold field labels and escapes detail text", () => {
@@ -1089,6 +1103,14 @@ test("parseCallbackData understands compact and legacy v3 interaction callbacks"
     kind: "rename_project_clear",
     sessionId: "session-1"
   });
+  assert.deepEqual(parseCallbackData("v5:st:i:session-1"), {
+    kind: "status_inspect",
+    sessionId: "session-1"
+  });
+  assert.deepEqual(parseCallbackData("v5:st:x:session-1"), {
+    kind: "status_interrupt",
+    sessionId: "session-1"
+  });
   assert.deepEqual(parseCallbackData("v5:br:o:tok123:7"), {
     kind: "browse_open",
     token: "tok123",
@@ -1344,4 +1366,21 @@ test("renderFinalAnswerHtmlChunks preserves ordered list start numbers", () => {
       "3. Verify the result"
     ].join("\n")
   );
+});
+
+test("buildCollapsibleFinalAnswerView prefixes every rendered page with session and project identity", () => {
+  const rendered = buildCollapsibleFinalAnswerView(
+    "Progress ".repeat(1200),
+    {
+      sessionName: "Session Alpha",
+      projectName: "Project One"
+    }
+  );
+
+  assert.equal(rendered.truncated, true);
+  assert.ok(rendered.pages.length > 1);
+  assert.match(rendered.previewHtml, /^<b>Session Alpha \/ Project One<\/b>/u);
+  for (const page of rendered.pages) {
+    assert.match(page, /^<b>Session Alpha \/ Project One<\/b>/u);
+  }
 });

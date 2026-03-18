@@ -53,7 +53,7 @@ import {
   buildRuntimeStatusCard,
   buildUnsupportedCommandText,
   encodeLanguageSetCallback,
-  formatSessionModelReasoningConfig,
+  formatReasoningEffortLabel,
   type ParsedCallbackData,
   parseCallbackData,
   parseCommand,
@@ -63,6 +63,7 @@ import { buildHelpText, syncTelegramCommands } from "./telegram/commands.js";
 import {
   DEFAULT_RUNTIME_STATUS_FIELDS,
   isOperationalReadinessState,
+  type ReasoningEffort,
   type RuntimeStatusField,
   PendingInteractionRow,
   ReadinessSnapshot,
@@ -125,6 +126,9 @@ interface ActiveTurnState {
   turnId: string;
   startedInPlanMode: boolean;
   finalMessage: string | null;
+  effectiveModel: string | null;
+  effectiveReasoningEffort: ReasoningEffort | null;
+  effectiveReasoningEffortPinned: boolean;
   tracker: ActivityTracker;
   debugJournal: DebugJournalWriter;
   statusCard: StatusCardState;
@@ -403,6 +407,23 @@ export class BridgeService {
     });
   }
 
+  private getActiveTurnForSession(sessionId: string): ActiveTurnState | null {
+    return this.turnCoordinator.getActiveTurnBySessionId(sessionId) as ActiveTurnState | null;
+  }
+
+  private getActiveTurnForThread(threadId: string): ActiveTurnState | null {
+    return this.turnCoordinator.getActiveTurnByThreadId(threadId) as ActiveTurnState | null;
+  }
+
+  private getActiveTurnForChat(chatId: string): ActiveTurnState | null {
+    const activeSession = this.store?.getActiveSession(chatId);
+    return activeSession ? this.getActiveTurnForSession(activeSession.sessionId) : null;
+  }
+
+  private listActiveTurns(): ActiveTurnState[] {
+    return this.turnCoordinator.listActiveTurns() as ActiveTurnState[];
+  }
+
   private get activeTurn(): ActiveTurnState | null {
     return this.turnCoordinator.getActiveTurn() as ActiveTurnState | null;
   }
@@ -490,8 +511,8 @@ export class BridgeService {
     this.stopping = true;
     this.poller?.stop();
     this.threadArchiveReconciler.clear();
-    if (this.activeTurn) {
-      this.runtimeSurfaceController.disposeRuntimeCards(this.activeTurn);
+    for (const activeTurn of this.listActiveTurns()) {
+      this.runtimeSurfaceController.disposeRuntimeCards(activeTurn);
     }
     await this.appServer?.stop();
     this.store?.close();
@@ -545,7 +566,10 @@ export class BridgeService {
       return;
     }
 
-    const pendingTextMode = this.interactionBroker.getPendingTextMode(chatId);
+    const pendingTextMode = this.interactionBroker.getPendingTextMode(
+      chatId,
+      this.store.getActiveSession(chatId)?.sessionId ?? null
+    );
     if (pendingTextMode) {
       const command = parseCommand(text);
       if (command?.name === "cancel") {
@@ -657,6 +681,18 @@ export class BridgeService {
         sessionId,
         expanded,
         section
+      ),
+      handleStatusCardInspect: async (sessionId) => this.handleStatusCardInspectCallback(
+        callbackQuery.id,
+        chatId,
+        message.message_id,
+        sessionId
+      ),
+      handleStatusCardInterrupt: async (sessionId) => this.handleStatusCardInterruptCallback(
+        callbackQuery.id,
+        chatId,
+        message.message_id,
+        sessionId
       ),
       renderPersistedFinalAnswer: async (answerId, mode) => this.renderPersistedFinalAnswer(
         callbackQuery.id,
@@ -849,7 +885,7 @@ export class BridgeService {
   }
 
   private async refreshActiveRuntimeStatusCard(chatId: string, reason: string): Promise<void> {
-    await this.runtimeSurfaceController.refreshActiveRuntimeStatusCard(this.activeTurn, chatId, reason);
+    await this.runtimeSurfaceController.refreshActiveRuntimeStatusCard(this.getActiveTurnForChat(chatId), chatId, reason);
   }
 
   private async handleStatusCardSectionToggle(
@@ -860,13 +896,45 @@ export class BridgeService {
     section: "plan" | "agents"
   ): Promise<void> {
     await this.runtimeSurfaceController.handleStatusCardSectionToggle(
-      this.activeTurn,
+      this.getActiveTurnForSession(sessionId),
       callbackQueryId,
       messageId,
       sessionId,
       expanded,
       section
     );
+  }
+
+  private async handleStatusCardInspectCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    sessionId: string
+  ): Promise<void> {
+    const activeTurn = this.getActiveTurnForSession(sessionId);
+    if (!activeTurn || activeTurn.chatId !== chatId || activeTurn.statusCard.messageId !== messageId) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    await this.safeAnswerCallbackQuery(callbackQueryId);
+    await this.runtimeSurfaceController.handleInspect(chatId, sessionId);
+  }
+
+  private async handleStatusCardInterruptCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    sessionId: string
+  ): Promise<void> {
+    const activeTurn = this.getActiveTurnForSession(sessionId);
+    if (!activeTurn || activeTurn.chatId !== chatId || activeTurn.statusCard.messageId !== messageId) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    const result = await this.turnCoordinator.interruptSession(chatId, sessionId);
+    await this.safeAnswerCallbackQuery(callbackQueryId, result.message);
   }
 
   private async renderPersistedFinalAnswer(
@@ -924,7 +992,7 @@ export class BridgeService {
       return;
     }
 
-    if (this.activeTurn) {
+    if (session.status === "running" || this.getActiveTurnForSession(sessionId)) {
       await this.safeAnswerCallbackQuery(callbackQueryId, "当前项目仍在执行，请等待完成或发送 /interrupt。");
       return;
     }
@@ -1211,7 +1279,7 @@ export class BridgeService {
     }
 
     if (activeSession.status === "running") {
-      const steerAvailability = this.interactionBroker.getBlockedTurnSteerAvailability(chatId, activeSession, this.activeTurn);
+      const steerAvailability = this.turnCoordinator.getBlockedTurnSteerAvailability(chatId, activeSession);
       if (text && steerAvailability.kind === "available") {
         try {
           await this.ensureAppServerAvailable();
@@ -1751,12 +1819,11 @@ export class BridgeService {
   }
 
   private resolveDebugJournalWriter(threadId: string | null, turnId: string | null): DebugJournalWriter | null {
-    if (
-      threadId
-      && this.activeTurn?.threadId === threadId
-      && (turnId === null || this.activeTurn.turnId === turnId)
-    ) {
-      return this.activeTurn.debugJournal;
+    if (threadId) {
+      const activeTurn = this.getActiveTurnForThread(threadId);
+      if (activeTurn && (turnId === null || activeTurn.turnId === turnId)) {
+        return activeTurn.debugJournal;
+      }
     }
 
     if (!threadId || !turnId) {
@@ -1811,9 +1878,9 @@ export class BridgeService {
   ): string | null {
     switch (field) {
       case "model-name":
-        return `model-name: ${session.selectedModel ?? "默认模型"}`;
+        return `model-name: ${this.getRuntimeEffectiveModelConfig(session).model ?? "默认模型"}`;
       case "model-with-reasoning":
-        return `model-with-reasoning: ${formatSessionModelReasoningConfig(session)}`;
+        return `model-with-reasoning: ${this.formatRuntimeEffectiveModelReasoning(session)}`;
       case "current-dir":
         return session.projectPath ? `current-dir: ${session.projectPath}` : null;
       case "project-root":
@@ -1861,7 +1928,7 @@ export class BridgeService {
       case "plan_mode":
         return `plan_mode: ${session.planMode ? "on" : "off"}`;
       case "model_reasoning":
-        return `model_reasoning: ${formatSessionModelReasoningConfig(session)}`;
+        return `model_reasoning: ${this.formatRuntimeEffectiveModelReasoning(session)}`;
       case "thread_id":
         return session.threadId ? `thread_id: ${session.threadId}` : null;
       case "turn_id":
@@ -1887,6 +1954,30 @@ export class BridgeService {
     }
   }
 
+  private getRuntimeEffectiveModelConfig(session: SessionRow): {
+    model: string | null;
+    reasoningEffort: ReasoningEffort | null;
+  } {
+    const activeTurn = this.getActiveTurnForSession(session.sessionId);
+    if (activeTurn) {
+      return {
+        model: activeTurn.effectiveModel,
+        reasoningEffort: activeTurn.effectiveReasoningEffort
+      };
+    }
+
+    return {
+      model: session.selectedModel ?? null,
+      reasoningEffort: session.selectedReasoningEffort ?? null
+    };
+  }
+
+  private formatRuntimeEffectiveModelReasoning(session: SessionRow): string {
+    const effective = this.getRuntimeEffectiveModelConfig(session);
+    const modelLabel = effective.model ?? "默认模型";
+    const effortLabel = effective.reasoningEffort ? formatReasoningEffortLabel(effective.reasoningEffort) : "默认";
+    return `${modelLabel} + ${effortLabel}`;
+  }
 
   private formatContextRemainingPercent(inspect: InspectSnapshot): number | null {
     const contextWindow = inspect.tokenUsage?.modelContextWindow;
@@ -2206,7 +2297,7 @@ export class BridgeService {
   }
 
   private async reanchorRuntimeAfterBridgeReply(chatId: string, reason: string): Promise<void> {
-    await this.runtimeSurfaceController.reanchorRuntimeAfterBridgeReply(this.activeTurn, chatId, reason);
+    await this.runtimeSurfaceController.reanchorRuntimeAfterBridgeReply(this.getActiveTurnForChat(chatId), chatId, reason);
   }
 
   private async safeDeleteMessage(chatId: string, messageId: number): Promise<boolean> {

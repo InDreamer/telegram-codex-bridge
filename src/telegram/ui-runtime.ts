@@ -29,7 +29,9 @@ import {
   encodeRuntimePageCallback,
   encodeRuntimeResetCallback,
   encodeRuntimeSaveCallback,
-  encodeRuntimeToggleCallback
+  encodeRuntimeToggleCallback,
+  encodeStatusInspectCallback,
+  encodeStatusInterruptCallback
 } from "./ui-callbacks.js";
 import { renderInlineMarkdown } from "./ui-final-answer.js";
 import {
@@ -129,17 +131,23 @@ export function buildRuntimeStatusCard(
     }
   }
 
-  lines.push(language === "en" ? "Use /inspect for full details" : "使用 /inspect 查看完整详情");
+  lines.push(
+    language === "en"
+      ? "Use /inspect for full details. Use /interrupt to stop the current turn."
+      : "使用 /inspect 查看完整详情，使用 /interrupt 打断当前操作"
+  );
   return lines.join("\n");
 }
 
 export function buildRuntimeStatusReplyMarkup(options: {
   sessionId: string;
+  language?: UiLanguage;
   planEntries: string[];
   planExpanded: boolean;
   agentEntries: CollabAgentStateSnapshot[];
   agentsExpanded: boolean;
 }): TelegramInlineKeyboardMarkup | undefined {
+  const language = options.language ?? "zh";
   const rows: TelegramInlineKeyboardMarkup["inline_keyboard"] = [];
 
   if (options.planEntries.length > 0) {
@@ -160,9 +168,16 @@ export function buildRuntimeStatusReplyMarkup(options: {
     }]);
   }
 
-  if (rows.length === 0) {
-    return undefined;
-  }
+  rows.push([
+    {
+      text: language === "en" ? "Inspect" : "查看详情",
+      callback_data: encodeStatusInspectCallback(options.sessionId)
+    },
+    {
+      text: language === "en" ? "Interrupt" : "中断操作",
+      callback_data: encodeStatusInterruptCallback(options.sessionId)
+    }
+  ]);
 
   return {
     inline_keyboard: rows
@@ -654,7 +669,7 @@ export function buildTurnStatusCard(
     lines.push("Final answer: ready");
   }
 
-  lines.push("Use /inspect for full details");
+  lines.push("Use /inspect for full details. Use /interrupt to stop the current turn.");
   return lines.join("\n");
 }
 

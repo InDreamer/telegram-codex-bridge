@@ -83,16 +83,33 @@ export function renderFinalAnswerHtmlChunks(
   });
 }
 
-export function buildCollapsibleFinalAnswerView(markdown: string): FinalAnswerViewRender {
+export function buildCollapsibleFinalAnswerView(
+  markdown: string,
+  options?: {
+    sessionName?: string | null;
+    projectName?: string | null;
+  }
+): FinalAnswerViewRender {
+  const headerHtml = buildFinalAnswerIdentityHeader(options);
   const rawPages = renderFinalAnswerHtmlChunks(markdown, 3000, { prefixContinuations: false });
-  const pages = rawPages.map((page, index) =>
-    rawPages.length > 1 ? `<i>第 ${index + 1}/${rawPages.length} 页</i>\n\n${page}` : page
-  );
+  const pages = rawPages.map((page, index) => {
+    const parts: string[] = [];
+    if (headerHtml) {
+      parts.push(headerHtml);
+    }
+    if (rawPages.length > 1) {
+      parts.push(`<i>第 ${index + 1}/${rawPages.length} 页</i>`);
+    }
+    if (page) {
+      parts.push(page);
+    }
+    return parts.join("\n\n");
+  });
   const preview = renderCollapsedFinalAnswerPreview(markdown);
 
   if (!preview.truncated) {
     return {
-      previewHtml: pages[0] ?? escapeHtml(markdown),
+      previewHtml: pages[0] ?? (headerHtml || escapeHtml(markdown)),
       pages,
       truncated: false
     };
@@ -103,7 +120,11 @@ export function buildCollapsibleFinalAnswerView(markdown: string): FinalAnswerVi
     : "已折叠，点击“展开全文”查看剩余内容。";
 
   return {
-    previewHtml: `${preview.html}\n\n<i>${escapeHtml(note)}</i>`,
+    previewHtml: [
+      headerHtml,
+      preview.html,
+      `<i>${escapeHtml(note)}</i>`
+    ].filter((part) => part.length > 0).join("\n\n"),
     pages,
     truncated: true
   };
@@ -293,6 +314,24 @@ export function buildStreamStatusFooter(statusLine: string | null): string {
     return "";
   }
   return `\n<b>▸</b> ${escapeHtml(truncateText(statusLine, STREAM_BLOCK_TEXT_LIMIT))}`;
+}
+
+function buildFinalAnswerIdentityHeader(options?: {
+  sessionName?: string | null;
+  projectName?: string | null;
+}): string {
+  const sessionName = options?.sessionName?.trim();
+  const projectName = options?.projectName?.trim();
+  const headerParts: string[] = [];
+
+  if (sessionName) {
+    headerParts.push(escapeHtml(sessionName));
+  }
+  if (projectName && projectName !== sessionName) {
+    headerParts.push(escapeHtml(projectName));
+  }
+
+  return headerParts.length > 0 ? `<b>${headerParts.join(" / ")}</b>` : "";
 }
 
 export function renderInlineMarkdown(text: string): string {

@@ -154,7 +154,7 @@ Shows the project picker:
 Rules:
 - selecting a project always creates a new session
 - `/new` never resumes or switches to an old session
-- if the current active session is still running, reject `/new` with `当前项目仍在执行，请先等待完成或停止当前操作。`
+- `/new` may be used even when another session is already running; the newly created session becomes the active foreground session
 
 ### `/browse`
 
@@ -226,9 +226,10 @@ Responses:
 - success: `已切换到项目：{project_name}`
 - failure: `找不到这个会话。`
 
-If the current active session is running:
-- reject the switch
-- return `当前项目仍在执行，请先等待完成或停止当前操作。`
+Rules:
+- switching the active session does not stop other running sessions
+- background running sessions keep their own runtime card and final-answer delivery
+- subsequent free-text user input targets the newly active session
 
 ### `/archive`
 
@@ -515,6 +516,7 @@ Versioned callback families currently emitted by the bridge:
 - `v2` model picker callbacks: `model:default:{session_id}`, `model:page:{session_id}:{page36}`, `model:pick:{session_id}:{model_index36}`, `model:effort:{session_id}:{model_index36}:{effort|default}`
 - `v3` interaction callbacks: compact `ix:d|q|t|c|a:...` forms using base64url interaction tokens plus base36 indexes; legacy `v3:ix:decision|question|text|cancel:...` callbacks are still accepted for compatibility
 - `v4` runtime and long-tail UI callbacks: `plan:open|close|page:{answer_id}[:{page}]`, `rt:p|t|s|r:{token}[:{value}]`, `lg:s:{zh|en}`, `in:e|c|p:{session_id}[:{page36}]`, `rb:p|k|c|b:{session_id}:...`, `pr:i:{session_id}`
+- `v5` targeted runtime and project-browser callbacks: `st:i|x:{session_id}`, `br:o|p|u|r|f|b|c:{token}[:{value36}]`
 
 Rules:
 - `project_key` is a stable short hash of the project path, never the raw path

@@ -86,12 +86,6 @@ export class SessionProjectCoordinator {
       return;
     }
 
-    const activeSession = store.getActiveSession(chatId);
-    if (activeSession?.status === "running") {
-      await this.deps.safeSendMessage(chatId, "当前项目仍在执行，请先等待完成或停止当前操作。");
-      return;
-    }
-
     await this.showProjectPicker(chatId);
   }
 
@@ -151,12 +145,6 @@ export class SessionProjectCoordinator {
     const candidate = pickerState.picker.projectMap.get(projectKey);
     if (!candidate) {
       await this.deps.safeSendMessage(chatId, "这个按钮已过期，请重新操作。");
-      return;
-    }
-
-    const activeSession = store.getActiveSession(chatId);
-    if (activeSession?.status === "running") {
-      await this.deps.safeSendMessage(chatId, "当前项目仍在执行，请先等待完成或停止当前操作。");
       return;
     }
 
@@ -270,12 +258,6 @@ export class SessionProjectCoordinator {
       return;
     }
 
-    const activeSession = store.getActiveSession(chatId);
-    if (activeSession?.status === "running") {
-      await this.deps.safeSendMessage(chatId, "当前项目仍在执行，请先等待完成或停止当前操作。");
-      return;
-    }
-
     store.createSession({
       telegramChatId: chatId,
       projectName: candidate.projectName,
@@ -359,12 +341,6 @@ export class SessionProjectCoordinator {
   async handleUse(chatId: string, args: string): Promise<void> {
     const store = this.deps.getStore();
     if (!store) {
-      return;
-    }
-
-    const activeSession = store.getActiveSession(chatId);
-    if (activeSession?.status === "running") {
-      await this.deps.safeSendMessage(chatId, "当前项目仍在执行，请先等待完成或停止当前操作。");
       return;
     }
 

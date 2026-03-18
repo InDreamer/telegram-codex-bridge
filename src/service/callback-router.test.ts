@@ -64,6 +64,12 @@ function createHandlers(calls: Call[]) {
     toggleStatusCardSection: async (sessionId: string, expanded: boolean, section: "plan" | "agents") => {
       calls.push({ name: "toggleStatusCardSection", args: [sessionId, expanded, section] });
     },
+    handleStatusCardInspect: async (sessionId: string) => {
+      calls.push({ name: "handleStatusCardInspect", args: [sessionId] });
+    },
+    handleStatusCardInterrupt: async (sessionId: string) => {
+      calls.push({ name: "handleStatusCardInterrupt", args: [sessionId] });
+    },
     renderPersistedFinalAnswer: async (answerId: string, mode: { expanded: boolean; page?: number }) => {
       calls.push({ name: "renderPersistedFinalAnswer", args: [answerId, mode] });
     },
@@ -221,6 +227,8 @@ test("status-card, inspect, and persisted-result callbacks preserve their routin
   const cases: Array<{ parsed: ParsedCallbackData; expected: Call[] }> = [
     { parsed: { kind: "plan_expand", sessionId: "session-1" }, expected: [{ name: "toggleStatusCardSection", args: ["session-1", true, "plan"] }] },
     { parsed: { kind: "agent_collapse", sessionId: "session-2" }, expected: [{ name: "toggleStatusCardSection", args: ["session-2", false, "agents"] }] },
+    { parsed: { kind: "status_inspect", sessionId: "session-2b" }, expected: [{ name: "handleStatusCardInspect", args: ["session-2b"] }] },
+    { parsed: { kind: "status_interrupt", sessionId: "session-2c" }, expected: [{ name: "handleStatusCardInterrupt", args: ["session-2c"] }] },
     { parsed: { kind: "final_open", answerId: "answer-1" }, expected: [{ name: "renderPersistedFinalAnswer", args: ["answer-1", { expanded: true, page: 1 }] }] },
     { parsed: { kind: "final_page", answerId: "answer-2", page: 4 }, expected: [{ name: "renderPersistedFinalAnswer", args: ["answer-2", { expanded: true, page: 4 }] }] },
     { parsed: { kind: "plan_result_close", answerId: "answer-3" }, expected: [{ name: "renderPersistedPlanResult", args: ["answer-3", { expanded: false }] }] },

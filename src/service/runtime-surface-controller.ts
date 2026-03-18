@@ -287,6 +287,7 @@ export class RuntimeSurfaceController {
     });
     const replyMarkup = buildRuntimeStatusReplyMarkup({
       sessionId,
+      language: this.deps.getUiLanguage(),
       planEntries: inspect.planSnapshot,
       planExpanded: statusCard.planExpanded,
       agentEntries: inspect.agentSnapshot,
@@ -938,13 +939,15 @@ export class RuntimeSurfaceController {
     await this.finishPersistedFinalAnswerRender(callbackQueryId, answerId, messageId, result);
   }
 
-  async handleInspect(chatId: string): Promise<void> {
+  async handleInspect(chatId: string, sessionId?: string): Promise<void> {
     const store = this.deps.getStore();
     if (!store) {
       return;
     }
 
-    const activeSession = store.getActiveSession(chatId);
+    const activeSession = sessionId
+      ? this.getInspectableSession(chatId, sessionId)
+      : store.getActiveSession(chatId);
     if (!activeSession) {
       await this.deps.safeSendMessage(chatId, "当前没有活动会话。");
       return;
