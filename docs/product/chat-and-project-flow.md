@@ -102,6 +102,47 @@ General rule:
 - structured Telegram command replies render field labels in bold via Telegram HTML
 - plain one-line prompts and session lists may stay plain text when they do not expose label-value fields
 
+### `/help`, `/start`, and `/commands`
+
+Shows:
+- the current localized help text derived from the Telegram command registry
+
+Rules:
+- `/start` and `/commands` are aliases of `/help`
+- the Telegram command menu and the help text stay aligned because both are generated from the same command registry
+- no active session is required
+
+### `/cancel`
+
+Behavior:
+- cancels the current manual-path flow, rename input flow, queued structured-input prompt, or pending free-text interaction answer
+
+Responses:
+- manual project-path mode returns to the current project picker
+- session rename cancel: `已取消会话重命名。`
+- project alias cancel: `已取消项目别名修改。`
+- queued structured-input cancel: `已取消待发送的结构化输入。`
+- nothing to cancel: `当前没有可取消的输入。`
+
+Rules:
+- `/cancel` does not interrupt an active turn; use `/interrupt` for that
+- interaction cards that are waiting for button-based approval stay on the card flow; `/cancel` only applies when the bridge is explicitly waiting for free text
+
+### `/language`
+
+Behavior:
+- shows an inline picker for `中文` and `English`
+- persists the selected bridge UI language in SQLite
+- resyncs the Telegram command menu to the selected language
+- reanchors any active runtime status card after the language change so bridge-owned UI surfaces stay consistent
+
+Responses:
+- callback save acknowledgement: `已保存。` or `Saved.`
+
+Rules:
+- no active session is required
+- this changes bridge-owned UI copy only; it does not reconfigure Codex itself
+
 ### `/new`
 
 Shows the project picker:
@@ -450,33 +491,24 @@ Rules:
 
 ## Callback Contract
 
-Versioned callback formats:
-- `v1:pick:{project_key}`
-- `v1:scan:more`
-- `v1:path:manual`
-- `v1:path:back`
-- `v1:path:confirm:{project_key}`
-- `v1:plan:expand:{session_id}`
-- `v1:plan:collapse:{session_id}`
-- `v1:agent:expand:{session_id}`
-- `v1:agent:collapse:{session_id}`
-- `v1:final:open:{answer_id}`
-- `v1:final:close:{answer_id}`
-- `v1:final:page:{answer_id}:{page}`
-- `v3:ix:d:{interaction_token}:{decision_index}`
-- `v3:ix:q:{interaction_token}:{question_index}:{option_index}`
-- `v3:ix:t:{interaction_token}:{question_index}`
-- `v3:ix:c:{interaction_token}`
+Versioned callback families currently emitted by the bridge:
+- `v1` project picker and session-surface callbacks: `pick:{project_key}`, `scan:more`, `path:manual`, `path:back`, `path:confirm:{project_key}`, `rename:session:{session_id}`, `rename:project:{session_id}`, `rename:project:clear:{session_id}`, `plan:expand|collapse:{session_id}`, `agent:expand|collapse:{session_id}`, `final:open|close|page:{answer_id}[:{page}]`
+- `v2` model picker callbacks: `model:default:{session_id}`, `model:page:{session_id}:{page36}`, `model:pick:{session_id}:{model_index36}`, `model:effort:{session_id}:{model_index36}:{effort|default}`
+- `v3` interaction callbacks: compact `ix:d|q|t|c|a:...` forms using base64url interaction tokens plus base36 indexes; legacy `v3:ix:decision|question|text|cancel:...` callbacks are still accepted for compatibility
+- `v4` runtime and long-tail UI callbacks: `plan:open|close|page:{answer_id}[:{page}]`, `rt:p|t|s|r:{token}[:{value}]`, `lg:s:{zh|en}`, `in:e|c|p:{session_id}[:{page36}]`, `rb:p|k|c|b:{session_id}:...`, `pr:i:{session_id}`
 
 Rules:
 - `project_key` is a stable short hash of the project path, never the raw path
 - `interaction_token` is a bridge-owned compact token for the persisted interaction id, not a raw protocol id
 - decision and question selectors are compact bridge-local indexes, not raw `decision_key` or `question_id` values
-- interaction callback payloads must stay within Telegram's 64-byte `callback_data` limit
+- runtime field selectors use short bridge-owned codes such as `mn`, `mw`, `pm`, and `fr`
+- compact callback indexes use base36 encoding to stay within Telegram size limits
+- bridge-emitted callback payloads must stay within Telegram's 64-byte `callback_data` limit; interaction callbacks are the tightest budget
 - duplicate clicks must be idempotent and return `这个操作已处理。`
 - stale callbacks must return `这个按钮已过期，请重新操作。`
 - session switching and pinning are text commands (`/use <n>` and `/pin`), not callback actions
 - interaction callbacks are bridge-owned UX for persisted pending interactions, not raw protocol passthrough
+- rename, model, runtime, language, inspect, rollback, and plan-result callbacks are also bridge-owned UI contracts, not raw Codex callback passthrough
 
 ## Message And Turn Rules
 

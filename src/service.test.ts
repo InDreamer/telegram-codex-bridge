@@ -1448,13 +1448,13 @@ test("runtime card edit failures retry the same message instead of sending a rep
     assert.match(activeTurn.statusCard.pendingText ?? "", /<b>状态<\/b> · Running/u);
 
     await withMockedNow("2026-03-10T10:00:09.000Z", async () => {
-      await (service as any).flushRuntimeCardRender(activeTurn, activeTurn.statusCard);
+      await (service as any).runtimeSurfaceController.flushRuntimeCardRender(activeTurn, activeTurn.statusCard);
     });
 
     assert.equal(sent.length, 1);
     assert.equal(edited.length, 2);
     assert.match(activeTurn.statusCard.lastRenderedText, /<b>状态<\/b> · Running/u);
-    (service as any).clearRuntimeCardTimer(activeTurn.statusCard);
+    (service as any).runtimeSurfaceController.clearRuntimeCardTimer(activeTurn.statusCard);
   } finally {
     await cleanup();
   }
@@ -2556,7 +2556,7 @@ test("status card shows running subagents behind an agent button and expands the
 
     await withMockedNow("2026-03-10T11:00:18.500Z", async () => {
       const activeTurn = (service as any).activeTurn;
-      await (service as any).flushRuntimeCardRender(activeTurn, activeTurn.statusCard);
+      await (service as any).runtimeSurfaceController.flushRuntimeCardRender(activeTurn, activeTurn.statusCard);
     });
 
     assert.match(
@@ -3019,7 +3019,7 @@ test("status card ignores stale thread read identity after newer notification", 
     assert.equal(readCalls, 1);
 
     const activeTurn = (service as any).activeTurn;
-    await (service as any).flushRuntimeCardRender(activeTurn, activeTurn.statusCard);
+    await (service as any).runtimeSurfaceController.flushRuntimeCardRender(activeTurn, activeTurn.statusCard);
     assert.equal((edited.at(-1) ?? sent.at(-1))?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "Agent：1 个运行中");
 
     const inspect = activeTurn.tracker.getInspectSnapshot();
@@ -3028,7 +3028,7 @@ test("status card ignores stale thread read identity after newer notification", 
 
     activeTurn.statusCard.agentsExpanded = true;
     const rendered = (service as any).buildStatusCardRenderPayload(session.sessionId, activeTurn.tracker, activeTurn.statusCard);
-    await (service as any).requestRuntimeCardRender(
+    await (service as any).runtimeSurfaceController.requestRuntimeCardRender(
       activeTurn,
       activeTurn.statusCard,
       rendered.text,
@@ -3397,14 +3397,14 @@ test("runtime card rate limits keep the same message and retry later without rep
     assert.equal(edited.length, 1);
 
     await withMockedNow("2026-03-10T10:01:05.000Z", async () => {
-      await (service as any).flushRuntimeCardRender(activeTurn, activeTurn.statusCard);
+      await (service as any).runtimeSurfaceController.flushRuntimeCardRender(activeTurn, activeTurn.statusCard);
     });
 
     assert.equal(sent.length, 1);
     assert.equal(edited.length, 2);
     assert.match(activeTurn.statusCard.lastRenderedText, /<b>状态<\/b> · Running/u);
     assert.doesNotMatch(activeTurn.statusCard.lastRenderedText, /Command: \$ pnpm test/u);
-    (service as any).clearRuntimeCardTimer(activeTurn.statusCard);
+    (service as any).runtimeSurfaceController.clearRuntimeCardTimer(activeTurn.statusCard);
   } finally {
     await cleanup();
   }
@@ -5626,12 +5626,12 @@ test("app-server exit fails unresolved interactions and clears pending text mode
     });
 
     assert.equal(store.getPendingInteraction(pending?.interactionId ?? "", "1")?.state, "awaiting_text");
-    assert.equal((service as any).pendingInteractionTextModes.size, 1);
+    assert.ok((service as any).interactionBroker.getPendingTextMode("1"));
 
     await (service as any).handleAppServerExit(new Error("lost child"));
 
     assert.equal(store.getPendingInteraction(pending?.interactionId ?? "", "1")?.state, "failed");
-    assert.equal((service as any).pendingInteractionTextModes.size, 0);
+    assert.equal((service as any).interactionBroker.getPendingTextMode("1"), null);
     assert.match(edited.at(-1)?.text ?? "", /Codex 服务已断开/u);
   } finally {
     CodexAppServerClient.prototype.initializeAndProbe = originalInitializeAndProbe;
@@ -6035,7 +6035,7 @@ test("blocked turns do not queue rich input prompts while an interaction card is
     const runningSession = store.getActiveSession("1");
     assert.ok(runningSession);
 
-    await (service as any).submitOrQueueRichInput(
+    await (service as any).richInputAdapter.submitOrQueueRichInput(
       "1",
       runningSession,
       [{ type: "mention", name: "Repo", path: "app://repo" }],
@@ -6043,7 +6043,7 @@ test("blocked turns do not queue rich input prompts while an interaction card is
       "引用"
     );
 
-    assert.equal((service as any).pendingRichInputComposers.size, 0);
+    assert.equal((service as any).richInputAdapter.pendingRichInputComposers.size, 0);
     assert.match(sent.at(-1) ?? "", /当前正在等待你处理交互卡片/u);
   } finally {
     await cleanup();
@@ -7194,7 +7194,7 @@ test("telegram photo download failures do not leave a pending rich input behind"
     });
 
     assert.equal(startTurnCalls.length, 0);
-    assert.equal((service as any).pendingRichInputComposers.size, 0);
+    assert.equal((service as any).richInputAdapter.pendingRichInputComposers.size, 0);
     assert.match(sent.at(-1) ?? "", /暂时无法读取这张图片/u);
   } finally {
     await cleanup();
@@ -7878,7 +7878,7 @@ test("voice processing runs in the background so later commands are not blocked"
 
   try {
     authorizeNumericChatWithSession(store, "1");
-    (service as any).processQueuedVoiceTask = async () => {
+    (service as any).richInputAdapter.processQueuedVoiceTask = async () => {
       await voiceTaskGate;
     };
     (service as any).api = {
@@ -7910,7 +7910,7 @@ test("voice processing runs in the background so later commands are not blocked"
     assert.equal(sent[1]?.parseMode, "HTML");
 
     releaseVoiceTask();
-    await (service as any).voiceTaskQueue;
+    await (service as any).richInputAdapter.voiceTaskQueue;
   } finally {
     await cleanup();
   }

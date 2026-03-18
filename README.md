@@ -14,6 +14,10 @@ This project is in active development.
 Docs and code are both evolving.
 There is not yet a single permanent source of truth for every question.
 
+Current refactor status:
+- V5 code slimming is already landed in the current codebase.
+- post-V5 follow-up is tracked in `docs/plans/2026-03-18-v5-5-post-v5-slimming-plan.md`.
+
 In general:
 - current product intent lives under `docs/product/`
 - runtime/architecture intent lives under `docs/architecture/`
@@ -31,6 +35,7 @@ Common starting points:
 - product scope: `docs/product/v1-scope.md`
 - Telegram UX / commands / sessions / rich input: `docs/product/chat-and-project-flow.md`
 - runtime / state / recovery: `docs/architecture/runtime-and-state.md`
+- current code organization / module ownership: `docs/architecture/current-code-organization.md`
 - install / admin / diagnostics: `docs/operations/install-and-admin.md`
 - Codex app-server protocol/reference: `docs/research/codex-app-server-authoritative-reference.md`
 

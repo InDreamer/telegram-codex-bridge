@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { TELEGRAM_COMMANDS, buildHelpText, syncTelegramCommands } from "./commands.js";
+import { TELEGRAM_COMMANDS, buildHelpText, resolveTelegramCommandHandler, syncTelegramCommands } from "./commands.js";
 import type { TelegramBotCommand, TelegramBotCommandScope } from "./api.js";
 
 test("syncTelegramCommands syncs default and language-specific command scopes", async () => {
@@ -48,6 +48,17 @@ test("buildHelpText renders the English command surface when requested", () => {
   assert.ok(helpText.includes("/sessions Show recent sessions\n/sessions archived Show archived sessions"));
   assert.ok(helpText.includes("/language Change bridge UI language"));
   assert.ok(helpText.endsWith("/cancel Cancel the current input and return"));
+});
+
+test("resolveTelegramCommandHandler keeps aliases and synced commands aligned", () => {
+  assert.equal(resolveTelegramCommandHandler("start"), "sendHelp");
+  assert.equal(resolveTelegramCommandHandler("commands"), "sendHelp");
+
+  for (const entry of TELEGRAM_COMMANDS) {
+    assert.notEqual(resolveTelegramCommandHandler(entry.command), null);
+  }
+
+  assert.equal(resolveTelegramCommandHandler("does_not_exist"), null);
 });
 
 interface CommandSyncCall {

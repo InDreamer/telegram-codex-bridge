@@ -1,0 +1,441 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import type { Logger } from "../logger.js";
+import type { BridgePaths } from "../paths.js";
+import type { CodexAppServerClient } from "../codex/app-server.js";
+import { BridgeStateStore } from "../state/store.js";
+import { TurnCoordinator } from "./turn-coordinator.js";
+
+const testLogger: Logger = {
+  info: async () => {},
+  warn: async () => {},
+  error: async () => {}
+};
+
+function createTestPaths(root: string): BridgePaths {
+  const logsDir = join(root, "logs");
+  const telegramSessionFlowLogsDir = join(logsDir, "telegram-session-flow");
+  const runtimeDir = join(root, "runtime");
+
+  return {
+    homeDir: root,
+    repoRoot: root,
+    installRoot: join(root, "install"),
+    stateRoot: join(root, "state"),
+    configRoot: join(root, "config"),
+    logsDir,
+    telegramSessionFlowLogsDir,
+    runtimeDir,
+    cacheDir: join(root, "cache"),
+    dbPath: join(root, "state", "bridge.db"),
+    stateStoreFailurePath: join(root, "state", "state-store-open-failure.json"),
+    envPath: join(root, "config", "bridge.env"),
+    servicePath: join(root, "service", "bridge.service"),
+    launchAgentPath: join(root, "LaunchAgents", "bridge.plist"),
+    binPath: join(root, "bin", "ctb"),
+    manifestPath: join(root, "install", "install-manifest.json"),
+    offsetPath: join(runtimeDir, "telegram-offset.json"),
+    bridgeLogPath: join(logsDir, "bridge.log"),
+    bootstrapLogPath: join(logsDir, "bootstrap.log"),
+    appServerLogPath: join(logsDir, "app-server.log"),
+    telegramStatusCardLogPath: join(telegramSessionFlowLogsDir, "status-card.log"),
+    telegramPlanCardLogPath: join(telegramSessionFlowLogsDir, "plan-card.log"),
+    telegramErrorCardLogPath: join(telegramSessionFlowLogsDir, "error-card.log")
+  };
+}
+
+async function createCoordinatorContext(options: {
+  appServer?: Partial<CodexAppServerClient>;
+  models?: Array<{
+    id: string;
+    model: string;
+    displayName: string;
+    description: string;
+    hidden: boolean;
+    isDefault: boolean;
+    defaultReasoningEffort: "low" | "medium" | "high";
+    supportedReasoningEfforts: Array<{ reasoningEffort: "low" | "medium" | "high"; description: string }>;
+  }>;
+} = {}) {
+  const root = await mkdtemp(join(tmpdir(), "ctb-turn-coordinator-test-"));
+  const paths = createTestPaths(root);
+  await Promise.all([
+    mkdir(paths.installRoot, { recursive: true }),
+    mkdir(paths.stateRoot, { recursive: true }),
+    mkdir(paths.logsDir, { recursive: true }),
+    mkdir(paths.configRoot, { recursive: true })
+  ]);
+
+  const store = await BridgeStateStore.open(paths, testLogger);
+  const appServer = options.appServer ?? {};
+  const syncReasons: string[] = [];
+  const safeMessages: string[] = [];
+  const sentHtmlMessages: Array<{
+    chatId: string;
+    html: string;
+    replyMarkup?: {
+      inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+    };
+  }> = [];
+  const interactionResolutions: Array<{ chatId: string; sessionId: string; state: string; reason: string }> = [];
+  const reanchorReasons: string[] = [];
+  let nextMessageId = 1;
+
+  const coordinator = new TurnCoordinator({
+    paths: { runtimeDir: paths.runtimeDir },
+    logger: testLogger,
+    getStore: () => store,
+    getAppServer: () => appServer as CodexAppServerClient,
+    ensureAppServerAvailable: async () => {},
+    fetchAllModels: async () => options.models ?? [{
+      id: "gpt-5-default",
+      model: "gpt-5-default",
+      displayName: "GPT-5 Default",
+      description: "Default model",
+      hidden: false,
+      isDefault: true,
+      defaultReasoningEffort: "medium",
+      supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "Default" }]
+    }],
+    interactionBroker: {
+      getBlockedTurnSteerAvailability: (_chatId, _session, activeTurn) =>
+        activeTurn ? { kind: "available", activeTurn } : { kind: "busy" },
+      handleNormalizedServerRequest: async () => {},
+      handleServerRequestResolvedNotification: async () => {},
+      resolveActionablePendingInteractionsForSession: async (chatId, sessionId, resolution) => {
+        interactionResolutions.push({
+          chatId,
+          sessionId,
+          state: resolution.state,
+          reason: resolution.reason
+        });
+      }
+    },
+    syncRuntimeCards: async (_activeTurn, _classified, _previousStatus, _nextStatus, options) => {
+      syncReasons.push(options.reason);
+    },
+    runRuntimeCardOperation: async (_activeTurn, operation) => {
+      await operation();
+    },
+    reanchorStatusCardToLatestMessage: async (_activeTurn, reason) => {
+      reanchorReasons.push(reason);
+    },
+    disposeRuntimeCards: () => {},
+    safeSendMessage: async (_chatId, text) => {
+      safeMessages.push(text);
+      return true;
+    },
+    safeSendHtmlMessageResult: async (chatId, html, replyMarkup) => {
+      sentHtmlMessages.push(replyMarkup ? { chatId, html, replyMarkup } : { chatId, html });
+      return { message_id: nextMessageId++ };
+    },
+    handleGlobalRuntimeNotice: async () => {},
+    handleThreadArchiveNotification: async () => {}
+  });
+
+  return {
+    coordinator,
+    store,
+    syncReasons,
+    safeMessages,
+    sentHtmlMessages,
+    interactionResolutions,
+    reanchorReasons,
+    cleanup: async () => {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  };
+}
+
+test("TurnCoordinator starts plan-mode turns with collaborationMode and records the active turn", async () => {
+  const startTurnCalls: unknown[] = [];
+  const { coordinator, store, syncReasons, cleanup } = await createCoordinatorContext({
+    appServer: {
+      startThread: async () => ({ thread: { id: "thread-plan" } }),
+      startTurn: async (payload: unknown) => {
+        startTurnCalls.push(payload);
+        return { turn: { id: "turn-plan", status: "inProgress" } };
+      }
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one",
+      planMode: true,
+      selectedReasoningEffort: "medium"
+    });
+
+    await coordinator.startTextTurn("chat-1", session, "Implement the plan.");
+
+    assert.deepEqual(startTurnCalls, [{
+      threadId: "thread-plan",
+      cwd: "/tmp/project-one",
+      text: "Implement the plan.",
+      collaborationMode: {
+        mode: "plan",
+        settings: {
+          model: "gpt-5-default",
+          developerInstructions: null,
+          reasoningEffort: "medium"
+        }
+      }
+    }]);
+    assert.equal(coordinator.getActiveTurn()?.threadId, "thread-plan");
+    assert.equal(coordinator.getActiveTurn()?.turnId, "turn-plan");
+    assert.deepEqual(syncReasons, ["turn_initialized"]);
+    assert.equal(store.getSessionById(session.sessionId)?.status, "running");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator recreates missing remote threads before starting a turn", async () => {
+  const startTurnCalls: unknown[] = [];
+  let startThreadCalls = 0;
+  const { coordinator, store, cleanup } = await createCoordinatorContext({
+    appServer: {
+      resumeThread: async () => {
+        throw new Error("no rollout found for thread id thread-missing");
+      },
+      startThread: async () => {
+        startThreadCalls += 1;
+        return { thread: { id: "thread-new" } };
+      },
+      startTurn: async (payload: unknown) => {
+        startTurnCalls.push(payload);
+        return { turn: { id: "turn-new", status: "inProgress" } };
+      }
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one",
+      threadId: "thread-missing"
+    });
+
+    await coordinator.startTextTurn("chat-1", session, "Do the work");
+
+    assert.equal(startThreadCalls, 1);
+    assert.deepEqual(startTurnCalls, [{
+      threadId: "thread-new",
+      cwd: "/tmp/project-one",
+      text: "Do the work"
+    }]);
+    assert.equal(store.getSessionById(session.sessionId)?.threadId, "thread-new");
+    assert.equal(coordinator.getActiveTurn()?.threadId, "thread-new");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator completes a normal turn and delivers the recovered final answer", async () => {
+  const { coordinator, store, sentHtmlMessages, interactionResolutions, cleanup } = await createCoordinatorContext({
+    appServer: {
+      resumeThread: async () => ({
+        thread: {
+          id: "thread-1",
+          turns: [{
+            id: "turn-1",
+            items: [{
+              type: "agentMessage",
+              phase: "final_answer",
+              text: "Recovered final answer"
+            }]
+          }]
+        }
+      })
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.beginActiveTurn("chat-1", session, "thread-1", "turn-1", "inProgress");
+    await coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      status: "completed"
+    });
+
+    assert.equal(coordinator.getActiveTurn(), null);
+    assert.equal(sentHtmlMessages.length, 1);
+    assert.match(sentHtmlMessages[0]?.html ?? "", /Recovered final answer/u);
+    assert.equal(store.listFinalAnswerViews("chat-1").length, 0);
+    assert.deepEqual(interactionResolutions, [{
+      chatId: "chat-1",
+      sessionId: session.sessionId,
+      state: "expired",
+      reason: "turn_completed"
+    }]);
+    assert.equal(store.getSessionById(session.sessionId)?.status, "idle");
+    assert.equal(store.getSessionById(session.sessionId)?.lastTurnId, "turn-1");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator completes plan-mode turns by sending a plan result with implementation action markup", async () => {
+  const { coordinator, store, sentHtmlMessages, cleanup } = await createCoordinatorContext({
+    appServer: {
+      resumeThread: async () => ({
+        thread: {
+          id: "thread-plan",
+          turns: [{
+            id: "turn-plan",
+            items: [{
+              type: "plan",
+              text: "## Plan\n\nShip the refactor."
+            }]
+          }]
+        }
+      })
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one",
+      planMode: true
+    });
+
+    await coordinator.beginActiveTurn("chat-1", session, "thread-plan", "turn-plan", "inProgress");
+    await coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-plan",
+      turnId: "turn-plan",
+      status: "completed"
+    });
+
+    assert.equal(sentHtmlMessages.length, 1);
+    assert.match(sentHtmlMessages[0]?.html ?? "", /<b>Plan<\/b>/u);
+    assert.equal(sentHtmlMessages[0]?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "实施这个计划");
+    const views = store.listFinalAnswerViews("chat-1");
+    assert.equal(views.length, 1);
+    assert.equal(views[0]?.telegramMessageId, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator marks interrupted turns without sending a terminal answer", async () => {
+  const { coordinator, store, sentHtmlMessages, interactionResolutions, cleanup } = await createCoordinatorContext();
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.beginActiveTurn("chat-1", session, "thread-interrupted", "turn-interrupted", "inProgress");
+    await coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-interrupted",
+      turnId: "turn-interrupted",
+      status: "interrupted"
+    });
+
+    assert.equal(coordinator.getActiveTurn(), null);
+    assert.deepEqual(sentHtmlMessages, []);
+    assert.deepEqual(interactionResolutions, [{
+      chatId: "chat-1",
+      sessionId: session.sessionId,
+      state: "expired",
+      reason: "turn_interrupted"
+    }]);
+    assert.equal(store.getSessionById(session.sessionId)?.status, "interrupted");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator rejects known unsupported server requests and journals the rejection", async () => {
+  const requestErrors: Array<{ id: string; code: number; message: string }> = [];
+  const { coordinator, store, safeMessages, reanchorReasons, cleanup } = await createCoordinatorContext({
+    appServer: {
+      respondToServerRequestError: async (id, code, message) => {
+        requestErrors.push({ id: `${id}`, code, message });
+      }
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.beginActiveTurn("chat-1", session, "thread-unsupported", "turn-unsupported", "inProgress");
+    const debugFilePath = coordinator.getRecentActivity(session.sessionId)?.debugFilePath;
+
+    await coordinator.handleAppServerServerRequest({
+      id: "tool-call-1",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-unsupported",
+        turnId: "turn-unsupported",
+        tool: "view_image"
+      }
+    });
+
+    assert.deepEqual(requestErrors, [{
+      id: "tool-call-1",
+      code: -32601,
+      message: "Dynamic tool calls are not supported by the Telegram bridge"
+    }]);
+    assert.equal(safeMessages.length, 1);
+    assert.match(safeMessages[0] ?? "", /动态工具调用/u);
+    assert.deepEqual(reanchorReasons, ["known_unsupported_server_request"]);
+    assert.ok(debugFilePath);
+
+    const journal = await readFile(debugFilePath!, "utf8");
+    assert.match(journal, /bridge\/serverRequest\/rejected/u);
+    assert.match(journal, /item\/tool\/call/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator fails the active turn when the app-server exits mid-run", async () => {
+  const { coordinator, store, safeMessages, interactionResolutions, cleanup } = await createCoordinatorContext();
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.beginActiveTurn("chat-1", session, "thread-exit", "turn-exit", "inProgress");
+    await coordinator.handleActiveTurnAppServerExit();
+
+    assert.equal(coordinator.getActiveTurn(), null);
+    assert.deepEqual(interactionResolutions, [{
+      chatId: "chat-1",
+      sessionId: session.sessionId,
+      state: "failed",
+      reason: "app_server_lost"
+    }]);
+    assert.deepEqual(safeMessages, ["Codex 服务暂时不可用，请稍后重试。"]);
+    assert.equal(store.getSessionById(session.sessionId)?.status, "failed");
+    assert.equal(store.getSessionById(session.sessionId)?.failureReason, "app_server_lost");
+  } finally {
+    await cleanup();
+  }
+});

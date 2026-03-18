@@ -17,6 +17,7 @@ Use these first depending on who is reading:
 ## Layer 1 — Current intended behavior
 
 These docs describe the current intended product/runtime/operational shape of the bridge.
+When a document in this layer is explicitly marked as code-derived, treat it as a verified current implementation map rather than a roadmap.
 This is the default layer for most human readers.
 
 ### Product
@@ -25,6 +26,7 @@ This is the default layer for most human readers.
 
 ### Architecture
 - `docs/architecture/runtime-and-state.md`
+- `docs/architecture/current-code-organization.md`
 
 ### Operations
 - `docs/operations/install-and-admin.md`
@@ -74,14 +76,20 @@ These docs capture implementation plans, sequencing notes, and design handoff ma
 They are useful for understanding why something was planned, not as automatic proof of current behavior.
 
 - `docs/plans/`
+- current active repo-wide follow-up tracker:
+  - `docs/plans/2026-03-18-v5-5-post-v5-slimming-plan.md`
+- recently closed repo-wide slimming tracker:
+  - `docs/plans/2026-03-18-v5-project-slimming-plan.md`
 
 Rule:
-- when an implementation handoff is complete and no longer the active working set, move it into `docs/archive/`
+- active and recently closed implementation trackers can stay in `docs/plans/`
+- move superseded or low-signal historical handoff material into `docs/archive/`
 
 Use this layer for:
 - implementation history
 - design sequencing
 - engineering handoff context
+- active staged refactor execution planning
 
 ## Layer 5 — Historical archive
 
@@ -106,6 +114,10 @@ Do not read `docs/archive/` by default.
 ### I want to understand runtime behavior and delivery
 1. `docs/architecture/runtime-and-state.md`
 2. then relevant `src/` files if needed
+
+### I want to understand current code organization
+1. `docs/architecture/current-code-organization.md`
+2. then the narrow module under `src/service/`, `src/telegram/ui-*.ts`, `src/state/store-*.ts`, or `src/install.ts`
 
 ### I want to operate or deploy the bridge
 1. `docs/operations/install-and-admin.md`

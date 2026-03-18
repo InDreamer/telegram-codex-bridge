@@ -124,6 +124,16 @@ Use for:
 - runtime-card reduction
 - final-answer delivery
 
+### Current code organization / module ownership / refactor state
+Read first:
+- `docs/architecture/current-code-organization.md`
+
+Use for:
+- post-V5 and post-V5.5 code shape
+- service/UI/store/install ownership boundaries
+- current hotspots and where to read next in `src/`
+- distinguishing shell or facade files from extracted collaborators
+
 ### Install / config / service / update / diagnostics
 Read first:
 - `docs/operations/install-and-admin.md`
@@ -168,6 +178,8 @@ Do **not** use it as the top source for the latest CLI surface.
 
 ### Planning / future direction / history
 Read only when the task is explicitly about planning or future direction:
+- `docs/plans/2026-03-18-v5-5-post-v5-slimming-plan.md`
+- `docs/plans/2026-03-18-v5-project-slimming-plan.md`
 - `docs/roadmap/phase-1-delivery.md`
 - `docs/future/v2-prd.md`
 - `docs/future/v3-prd.md`
@@ -195,11 +207,16 @@ If docs are insufficient, verify against the **narrowest relevant source file**.
 - `src/config.ts`
 - `src/install.ts`
 - `src/service.ts`
+- `src/service/`
 - `src/paths.ts`
 
 ### Telegram behavior
 - `src/telegram/commands.ts`
-- `src/telegram/ui.ts`
+- `src/telegram/ui-callbacks.ts`
+- `src/telegram/ui-messages.ts`
+- `src/telegram/ui-runtime.ts`
+- `src/telegram/ui-final-answer.ts`
+- `src/telegram/ui-shared.ts`
 - `src/telegram/api.ts`
 - `src/telegram/poller.ts`
 
@@ -209,6 +226,7 @@ If docs are insufficient, verify against the **narrowest relevant source file**.
 
 ### Runtime state
 - `src/state/store.ts`
+- `src/state/store-*.ts`
 
 ### Interaction handling
 - `src/interactions/normalize.ts`
@@ -224,7 +242,7 @@ Use these patterns unless the task clearly needs more.
 
 ### User-visible command behavior
 1. `docs/product/chat-and-project-flow.md`
-2. then `src/telegram/commands.ts` or `src/telegram/ui.ts` if needed
+2. then `src/telegram/commands.ts` or the narrow `src/telegram/ui-*.ts` module if needed
 
 ### Actual runtime behavior
 1. `docs/architecture/runtime-and-state.md`
@@ -234,6 +252,10 @@ Use these patterns unless the task clearly needs more.
 ### Install or operations
 1. `docs/operations/install-and-admin.md`
 2. then `src/install.ts`, `src/readiness.ts`, `src/service.ts`, `src/config.ts`, or `src/paths.ts`
+
+### Current module ownership or refactor status
+1. `docs/architecture/current-code-organization.md`
+2. then the narrow module under `src/service/`, `src/telegram/ui-*.ts`, `src/state/store-*.ts`, or `src/install.ts`
 
 ### Codex protocol support
 1. `docs/research/codex-app-server-authoritative-reference.md`
@@ -261,12 +283,12 @@ If a conflict remains, report the conflict instead of reading the whole repo.
 Use these labels mentally:
 
 - `docs/product/` = current intended product behavior
-- `docs/architecture/` = current intended runtime behavior
+- `docs/architecture/` = current runtime behavior and verified implementation-structure maps
 - `docs/operations/` = current operational reference
 - `docs/research/` = protocol/reference evidence; freshness varies
 - `docs/roadmap/` = delivery intent
 - `docs/future/` = future product/evaluation input
-- `docs/plans/` = implementation planning / handoff history
+- `docs/plans/` = active or closed implementation planning / handoff history
 - `docs/archive/` = historical context only; avoid by default
 
 ## Anti-patterns

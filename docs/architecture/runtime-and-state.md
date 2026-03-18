@@ -12,6 +12,8 @@ It owns:
 
 This keeps Telegram-specific logic outside Codex core and avoids an extra network-facing transport for v1.
 
+For the current code-derived ownership map of the service shell, extracted collaborators, UI modules, and store internals, read `docs/architecture/current-code-organization.md`.
+
 ## Codex App-Server Integration Contract
 
 Primary transport:
@@ -403,11 +405,11 @@ System behavior:
 
 ### `state store corruption`
 
-User sees:
-- `桥接状态已损坏并已重置，请重新选择会话或项目。`
+Operator sees:
+- `ctb status` and `ctb doctor` surface `state_store_open=failed` plus the failure classification and stage fields
 
 System behavior:
-- rotate the corrupt DB
-- create a fresh one
-- preserve logs
-- expose details in `ctb doctor`
+- fail closed before entering the Telegram polling loop
+- preserve the existing `bridge.db`
+- write a classified `state-store-open-failure.json` marker
+- preserve logs and require manual inspection instead of destructive auto-recovery
