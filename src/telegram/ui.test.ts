@@ -9,6 +9,9 @@ import {
   buildInteractionQuestionCard,
   buildInteractionResolvedCard,
   buildInspectText,
+  buildProjectBrowserDirectoryMessage,
+  buildProjectBrowserFileInfoMessage,
+  buildProjectBrowserTextPreviewMessage,
   buildManualPathConfirmMessage,
   buildProjectAliasClearedText,
   buildProjectAliasRenamedText,
@@ -418,6 +421,77 @@ test("buildProjectPickerMessage renders grouped candidates with path hints", () 
   assert.match(rendered.text, /最近 · 本地发现 · 有历史会话/u);
   assert.match(rendered.text, /本地发现/u);
   assert.equal(rendered.replyMarkup.inline_keyboard.at(-1)?.[0]?.text, "扫描本地项目");
+});
+
+test("project browser directory message renders entries and browse callbacks", () => {
+  const rendered = buildProjectBrowserDirectoryMessage({
+    language: "zh",
+    token: "tok123",
+    projectName: "Alias One",
+    relativePathLabel: "项目根/src",
+    page: 1,
+    totalPages: 3,
+    canGoUp: true,
+    entries: [
+      { index: 6, name: "docs", kind: "directory", sizeLabel: null },
+      { index: 7, name: "README.md", kind: "file", sizeLabel: "2 KB" }
+    ]
+  });
+
+  assert.match(rendered.text, /<b>文件浏览<\/b>/u);
+  assert.match(rendered.text, /<b>当前项目：<\/b> Alias One/u);
+  assert.match(rendered.text, /1\. docs\//u);
+  assert.match(rendered.text, /2\. README\.md · 2 KB/u);
+  assert.deepEqual(parseCallbackData(rendered.replyMarkup.inline_keyboard[0]?.[0]?.callback_data ?? ""), {
+    kind: "browse_open",
+    token: "tok123",
+    entryIndex: 6
+  });
+  assert.deepEqual(parseCallbackData(rendered.replyMarkup.inline_keyboard.at(-1)?.[1]?.callback_data ?? ""), {
+    kind: "browse_close",
+    token: "tok123"
+  });
+});
+
+test("project browser text preview and file info messages render safely", () => {
+  const preview = buildProjectBrowserTextPreviewMessage({
+    language: "en",
+    token: "tok123",
+    projectName: "Project One",
+    relativeFilePath: "Project Root/src/index.ts",
+    fileName: "index.ts",
+    sizeLabel: "1.2 KB",
+    modifiedAtLabel: "2026-03-18T10:00:00.000Z",
+    page: 1,
+    totalPages: 2,
+    pageText: "const html = '<tag>';\n",
+    truncated: true
+  });
+
+  assert.match(preview.text, /<b>File Preview<\/b>/u);
+  assert.match(preview.text, /Previewing only the first 48 KB\./u);
+  assert.match(preview.text, /<pre>const html = '&lt;tag&gt;';\n<\/pre>/u);
+  assert.deepEqual(parseCallbackData(preview.replyMarkup.inline_keyboard[0]?.[0]?.callback_data ?? ""), {
+    kind: "browse_page",
+    token: "tok123",
+    page: 0
+  });
+  assert.deepEqual(parseCallbackData(preview.replyMarkup.inline_keyboard.at(-1)?.[0]?.callback_data ?? ""), {
+    kind: "browse_back",
+    token: "tok123"
+  });
+
+  const info = buildProjectBrowserFileInfoMessage({
+    language: "zh",
+    projectName: "项目 & One",
+    relativeFilePath: "项目根/build/output.bin",
+    fileName: "output.bin",
+    sizeLabel: "64 KB",
+    modifiedAtLabel: "2026-03-18T10:00:00.000Z"
+  });
+  assert.match(info, /<b>文件信息<\/b>/u);
+  assert.match(info, /项目 &amp; One/u);
+  assert.match(info, /二进制或暂不支持预览/u);
 });
 
 test("buildRenameTargetPicker includes project alias clear action when needed", () => {
@@ -1014,6 +1088,36 @@ test("parseCallbackData understands compact and legacy v3 interaction callbacks"
   assert.deepEqual(parseCallbackData("v1:rename:project:clear:session-1"), {
     kind: "rename_project_clear",
     sessionId: "session-1"
+  });
+  assert.deepEqual(parseCallbackData("v5:br:o:tok123:7"), {
+    kind: "browse_open",
+    token: "tok123",
+    entryIndex: 7
+  });
+  assert.deepEqual(parseCallbackData("v5:br:p:tok123:2"), {
+    kind: "browse_page",
+    token: "tok123",
+    page: 2
+  });
+  assert.deepEqual(parseCallbackData("v5:br:u:tok123"), {
+    kind: "browse_up",
+    token: "tok123"
+  });
+  assert.deepEqual(parseCallbackData("v5:br:r:tok123"), {
+    kind: "browse_root",
+    token: "tok123"
+  });
+  assert.deepEqual(parseCallbackData("v5:br:f:tok123"), {
+    kind: "browse_refresh",
+    token: "tok123"
+  });
+  assert.deepEqual(parseCallbackData("v5:br:b:tok123"), {
+    kind: "browse_back",
+    token: "tok123"
+  });
+  assert.deepEqual(parseCallbackData("v5:br:c:tok123"), {
+    kind: "browse_close",
+    token: "tok123"
   });
 });
 

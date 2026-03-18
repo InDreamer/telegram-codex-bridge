@@ -5,6 +5,7 @@ export type TelegramCommandHandlerKey =
   | "sendHelp"
   | "sendStatus"
   | "handleNew"
+  | "handleBrowse"
   | "handleCancel"
   | "handleSessions"
   | "handleArchive"
@@ -51,6 +52,7 @@ const TELEGRAM_COMMAND_ENTRIES: LocalizedTelegramCommandEntry[] = [
   { command: "help", aliases: ["start", "commands"], handler: "sendHelp", description: { zh: "查看可用指令", en: "Show available commands" }, helpLines: [{ zh: "/help 查看可用指令", en: "/help Show available commands" }] },
   { command: "status", handler: "sendStatus", description: { zh: "查看服务状态", en: "Show bridge status" }, helpLines: [{ zh: "/status 查看服务状态", en: "/status Show bridge status" }] },
   { command: "new", handler: "handleNew", description: { zh: "选择项目并新建会话", en: "Choose a project and create a session" }, helpLines: [{ zh: "/new 选择项目并新建会话", en: "/new Choose a project and create a session" }] },
+  { command: "browse", handler: "handleBrowse", description: { zh: "浏览当前项目文件", en: "Browse the current project files" }, helpLines: [{ zh: "/browse 浏览当前项目文件", en: "/browse Browse the current project files" }] },
   { command: "sessions", handler: "handleSessions", description: { zh: "查看最近会话", en: "Show recent sessions" }, helpLines: [{ zh: "/sessions 查看最近会话", en: "/sessions Show recent sessions" }, { zh: "/sessions archived 查看已归档会话", en: "/sessions archived Show archived sessions" }] },
   { command: "archive", handler: "handleArchive", description: { zh: "归档当前会话", en: "Archive the current session" }, helpLines: [{ zh: "/archive 归档当前会话", en: "/archive Archive the current session" }] },
   { command: "unarchive", handler: "handleUnarchive", description: { zh: "恢复已归档会话", en: "Restore an archived session" }, helpLines: [{ zh: "/unarchive <序号> 恢复已归档会话", en: "/unarchive <index> Restore an archived session" }] },

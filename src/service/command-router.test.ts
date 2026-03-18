@@ -9,6 +9,7 @@ function createHandlers(calls: string[]) {
     sendHelp: async () => { calls.push("sendHelp"); },
     sendStatus: async () => { calls.push("sendStatus"); },
     handleNew: async () => { calls.push("handleNew"); },
+    handleBrowse: async () => { calls.push("handleBrowse"); },
     handleCancel: async () => { calls.push("handleCancel"); },
     handleSessions: async () => { calls.push("handleSessions"); },
     handleArchive: async () => { calls.push("handleArchive"); },

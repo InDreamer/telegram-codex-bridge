@@ -156,6 +156,25 @@ Rules:
 - `/new` never resumes or switches to an old session
 - if the current active session is still running, reject `/new` with `当前项目仍在执行，请先等待完成或停止当前操作。`
 
+### `/browse`
+
+Behavior:
+- opens a bridge-owned read-only browser for the current active session's project root
+- directory navigation stays inside the active project's root path
+- text files open in a paged inline preview on the same browser message
+- image files send a separate Telegram image preview and keep the browser message in place
+- binary or unsupported files send a compact metadata message instead of raw content
+
+Responses:
+- no active session: `当前没有活动会话，请先发送 /new 或 /use 进入项目。`
+- current project unavailable: `当前项目目录不可用，请重新选择项目后再试。`
+- expired browser button: `这个按钮已过期，请重新发送 /browse。`
+
+Rules:
+- `/browse` is read-only in v1
+- `/browse` does not expose arbitrary server paths; it is limited to the current active project's root tree
+- `/browse` can be used while a turn is running because it does not mutate the project or start a Codex turn
+
 ### `扫描本地项目`
 
 Behavior:

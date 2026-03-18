@@ -6,6 +6,13 @@ export type ParsedCallbackData =
   | { kind: "path_manual" }
   | { kind: "path_back" }
   | { kind: "path_confirm"; projectKey: string }
+  | { kind: "browse_open"; token: string; entryIndex: number }
+  | { kind: "browse_page"; token: string; page: number }
+  | { kind: "browse_up"; token: string }
+  | { kind: "browse_root"; token: string }
+  | { kind: "browse_refresh"; token: string }
+  | { kind: "browse_back"; token: string }
+  | { kind: "browse_close"; token: string }
   | { kind: "rename_session"; sessionId: string }
   | { kind: "rename_project"; sessionId: string }
   | { kind: "rename_project_clear"; sessionId: string }
@@ -17,6 +24,8 @@ export type ParsedCallbackData =
   | { kind: "plan_collapse"; sessionId: string }
   | { kind: "agent_expand"; sessionId: string }
   | { kind: "agent_collapse"; sessionId: string }
+  | { kind: "status_inspect"; sessionId: string }
+  | { kind: "status_interrupt"; sessionId: string }
   | { kind: "final_open"; answerId: string }
   | { kind: "final_close"; answerId: string }
   | { kind: "final_page"; answerId: string; page: number }
@@ -128,6 +137,34 @@ export function encodePathConfirmCallback(projectKey: string): string {
   return `v1:path:confirm:${projectKey}`;
 }
 
+export function encodeBrowseOpenCallback(token: string, entryIndex: number): string {
+  return ensureTelegramCallbackDataLimit(`v5:br:o:${token}:${encodeInteractionIndex(entryIndex)}`);
+}
+
+export function encodeBrowsePageCallback(token: string, page: number): string {
+  return ensureTelegramCallbackDataLimit(`v5:br:p:${token}:${encodeInteractionIndex(page)}`);
+}
+
+export function encodeBrowseUpCallback(token: string): string {
+  return ensureTelegramCallbackDataLimit(`v5:br:u:${token}`);
+}
+
+export function encodeBrowseRootCallback(token: string): string {
+  return ensureTelegramCallbackDataLimit(`v5:br:r:${token}`);
+}
+
+export function encodeBrowseRefreshCallback(token: string): string {
+  return ensureTelegramCallbackDataLimit(`v5:br:f:${token}`);
+}
+
+export function encodeBrowseBackCallback(token: string): string {
+  return ensureTelegramCallbackDataLimit(`v5:br:b:${token}`);
+}
+
+export function encodeBrowseCloseCallback(token: string): string {
+  return ensureTelegramCallbackDataLimit(`v5:br:c:${token}`);
+}
+
 export function encodeRenameSessionCallback(sessionId: string): string {
   return ensureTelegramCallbackDataLimit(`v1:rename:session:${sessionId}`);
 }
@@ -176,6 +213,14 @@ export function encodeAgentExpandCallback(sessionId: string): string {
 
 export function encodeAgentCollapseCallback(sessionId: string): string {
   return `v1:agent:collapse:${sessionId}`;
+}
+
+export function encodeStatusInspectCallback(sessionId: string): string {
+  return ensureTelegramCallbackDataLimit(`v5:st:i:${sessionId}`);
+}
+
+export function encodeStatusInterruptCallback(sessionId: string): string {
+  return ensureTelegramCallbackDataLimit(`v5:st:x:${sessionId}`);
 }
 
 export function encodeFinalAnswerOpenCallback(answerId: string): string {
@@ -288,6 +333,44 @@ export function encodePlanImplementCallback(sessionId: string): string {
 
 export function parseCallbackData(data: string): ParsedCallbackData | null {
   const parts = data.split(":");
+  if (parts[0] === "v5" && parts[1] === "br") {
+    if (parts[2] === "o" && parts[3] && parts[4]) {
+      const entryIndex = decodeInteractionIndex(parts[4]);
+      if (entryIndex !== null) {
+        return { kind: "browse_open", token: parts[3], entryIndex };
+      }
+    }
+
+    if (parts[2] === "p" && parts[3] && parts[4]) {
+      const page = decodeInteractionIndex(parts[4]);
+      if (page !== null) {
+        return { kind: "browse_page", token: parts[3], page };
+      }
+    }
+
+    if (parts[2] === "u" && parts[3]) {
+      return { kind: "browse_up", token: parts[3] };
+    }
+
+    if (parts[2] === "r" && parts[3]) {
+      return { kind: "browse_root", token: parts[3] };
+    }
+
+    if (parts[2] === "f" && parts[3]) {
+      return { kind: "browse_refresh", token: parts[3] };
+    }
+
+    if (parts[2] === "b" && parts[3]) {
+      return { kind: "browse_back", token: parts[3] };
+    }
+
+    if (parts[2] === "c" && parts[3]) {
+      return { kind: "browse_close", token: parts[3] };
+    }
+
+    return null;
+  }
+
   if (parts[0] === "v2" && parts[1] === "model") {
     if (parts[2] === "default" && parts[3]) {
       return { kind: "model_default", sessionId: parts[3] };
@@ -315,6 +398,18 @@ export function parseCallbackData(data: string): ParsedCallbackData | null {
           return { kind: "model_effort", sessionId: parts[3], modelIndex, effort };
         }
       }
+    }
+
+    return null;
+  }
+
+  if (parts[0] === "v5" && parts[1] === "st") {
+    if (parts[2] === "i" && parts[3]) {
+      return { kind: "status_inspect", sessionId: parts[3] };
+    }
+
+    if (parts[2] === "x" && parts[3]) {
+      return { kind: "status_interrupt", sessionId: parts[3] };
     }
 
     return null;

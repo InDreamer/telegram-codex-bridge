@@ -26,6 +26,20 @@ function createHandlers(calls: Call[]) {
     confirmManualProject: async (projectKey: string) => {
       calls.push({ name: "confirmManualProject", args: [projectKey] });
     },
+    handleBrowseAction: async (
+      parsed: Extract<
+        ParsedCallbackData,
+        | { kind: "browse_open" }
+        | { kind: "browse_page" }
+        | { kind: "browse_up" }
+        | { kind: "browse_root" }
+        | { kind: "browse_refresh" }
+        | { kind: "browse_back" }
+        | { kind: "browse_close" }
+      >
+    ) => {
+      calls.push({ name: "handleBrowseAction", args: [parsed] });
+    },
     beginSessionRename: async (sessionId: string) => {
       calls.push({ name: "beginSessionRename", args: [sessionId] });
     },
@@ -139,6 +153,18 @@ test("project picker and rename callbacks acknowledge before delegating", async 
       expected: [
         { name: "answer", args: [undefined] },
         { name: "confirmManualProject", args: ["project-2"] }
+      ]
+    },
+    {
+      parsed: { kind: "browse_open", token: "tok", entryIndex: 1 },
+      expected: [
+        { name: "handleBrowseAction", args: [{ kind: "browse_open", token: "tok", entryIndex: 1 }] }
+      ]
+    },
+    {
+      parsed: { kind: "browse_close", token: "tok" },
+      expected: [
+        { name: "handleBrowseAction", args: [{ kind: "browse_close", token: "tok" }] }
       ]
     },
     {

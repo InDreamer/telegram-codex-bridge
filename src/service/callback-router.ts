@@ -8,6 +8,16 @@ export interface BridgeCallbackRouterHandlers {
   enterManualPathMode(): Promise<void>;
   returnToProjectPicker(): Promise<void>;
   confirmManualProject(projectKey: string): Promise<void>;
+  handleBrowseAction(parsed: Extract<
+    ParsedCallbackData,
+    | { kind: "browse_open" }
+    | { kind: "browse_page" }
+    | { kind: "browse_up" }
+    | { kind: "browse_root" }
+    | { kind: "browse_refresh" }
+    | { kind: "browse_back" }
+    | { kind: "browse_close" }
+  >): Promise<void>;
   beginSessionRename(sessionId: string): Promise<void>;
   beginProjectRename(sessionId: string): Promise<void>;
   clearProjectAlias(sessionId: string): Promise<void>;
@@ -16,6 +26,8 @@ export interface BridgeCallbackRouterHandlers {
   handleModelPick(sessionId: string, modelIndex: number): Promise<void>;
   handleModelEffort(sessionId: string, modelIndex: number, effort: ReasoningEffort | null): Promise<void>;
   toggleStatusCardSection(sessionId: string, expanded: boolean, section: "plan" | "agents"): Promise<void>;
+  handleStatusCardInspect(sessionId: string): Promise<void>;
+  handleStatusCardInterrupt(sessionId: string): Promise<void>;
   renderPersistedFinalAnswer(answerId: string, mode: { expanded: boolean; page?: number }): Promise<void>;
   renderPersistedPlanResult(answerId: string, mode: { expanded: boolean; page?: number }): Promise<void>;
   handleRuntimePreferencesPage(token: string, page: number): Promise<void>;
@@ -60,6 +72,15 @@ export async function routeBridgeCallback(
       await handlers.answer();
       await handlers.confirmManualProject(parsed.projectKey);
       return;
+    case "browse_open":
+    case "browse_page":
+    case "browse_up":
+    case "browse_root":
+    case "browse_refresh":
+    case "browse_back":
+    case "browse_close":
+      await handlers.handleBrowseAction(parsed);
+      return;
     case "rename_session":
       await handlers.answer();
       await handlers.beginSessionRename(parsed.sessionId);
@@ -95,6 +116,12 @@ export async function routeBridgeCallback(
       return;
     case "agent_collapse":
       await handlers.toggleStatusCardSection(parsed.sessionId, false, "agents");
+      return;
+    case "status_inspect":
+      await handlers.handleStatusCardInspect(parsed.sessionId);
+      return;
+    case "status_interrupt":
+      await handlers.handleStatusCardInterrupt(parsed.sessionId);
       return;
     case "final_open":
       await handlers.renderPersistedFinalAnswer(parsed.answerId, { expanded: true, page: 1 });

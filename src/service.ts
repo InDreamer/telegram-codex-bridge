@@ -14,6 +14,7 @@ import {
   type PendingInteractionTerminalState
 } from "./service/interaction-broker.js";
 import { RichInputAdapter } from "./service/rich-input-adapter.js";
+import { ProjectBrowserCoordinator } from "./service/project-browser-coordinator.js";
 import { RuntimeNoticeBroadcaster } from "./service/runtime-notice-broadcaster.js";
 import { RuntimeSurfaceController } from "./service/runtime-surface-controller.js";
 import { RuntimeSurfaceTraceSink } from "./service/runtime-surface-trace-sink.js";
@@ -53,6 +54,7 @@ import {
   buildUnsupportedCommandText,
   encodeLanguageSetCallback,
   formatSessionModelReasoningConfig,
+  type ParsedCallbackData,
   parseCallbackData,
   parseCommand,
   type RuntimeCommandEntryView
@@ -151,6 +153,7 @@ export class BridgeService {
   private readonly codexCommandCoordinator: CodexCommandCoordinator;
   private readonly interactionBroker: InteractionBroker;
   private readonly richInputAdapter: RichInputAdapter;
+  private readonly projectBrowserCoordinator: ProjectBrowserCoordinator;
   private readonly runtimeNoticeBroadcaster: RuntimeNoticeBroadcaster;
   private readonly runtimeSurfaceController: RuntimeSurfaceController;
   private readonly runtimeSurfaceTraceSink: RuntimeSurfaceTraceSink;
@@ -247,6 +250,18 @@ export class BridgeService {
       },
       safeSendMessage: async (chatId, text, replyMarkup) => this.safeSendMessage(chatId, text, replyMarkup),
       safeSendHtmlMessage: async (chatId, text, replyMarkup) => this.safeSendHtmlMessage(chatId, text, replyMarkup)
+    });
+    this.projectBrowserCoordinator = new ProjectBrowserCoordinator({
+      getStore: () => this.store,
+      safeSendMessage: async (chatId, text, replyMarkup) => this.safeSendMessage(chatId, text, replyMarkup),
+      safeSendHtmlMessage: async (chatId, html, replyMarkup) => this.safeSendHtmlMessage(chatId, html, replyMarkup),
+      safeSendHtmlMessageResult: async (chatId, html, replyMarkup) => this.safeSendHtmlMessageResult(chatId, html, replyMarkup),
+      safeEditHtmlMessageText: async (chatId, messageId, html, replyMarkup) =>
+        this.safeEditHtmlMessageText(chatId, messageId, html, replyMarkup),
+      safeDeleteMessage: async (chatId, messageId) => this.safeDeleteMessage(chatId, messageId),
+      safeAnswerCallbackQuery: async (callbackQueryId, text) => this.safeAnswerCallbackQuery(callbackQueryId, text),
+      safeSendPhoto: async (chatId, photoPath, options) => this.safeSendPhoto(chatId, photoPath, options),
+      getUiLanguage: () => this.getUiLanguage()
     });
     this.runtimeSurfaceController = new RuntimeSurfaceController({
       logger: this.logger,
@@ -599,6 +614,12 @@ export class BridgeService {
       enterManualPathMode: async () => this.enterManualPathMode(chatId),
       returnToProjectPicker: async () => this.returnToProjectPicker(chatId),
       confirmManualProject: async (projectKey) => this.confirmManualProject(chatId, projectKey),
+      handleBrowseAction: async (nextParsed) => this.handleBrowseCallback(
+        callbackQuery.id,
+        chatId,
+        message.message_id,
+        nextParsed
+      ),
       beginSessionRename: async (sessionId) => this.beginSessionRename(chatId, sessionId),
       beginProjectRename: async (sessionId) => this.beginProjectRename(chatId, sessionId),
       clearProjectAlias: async (sessionId) => this.clearProjectAlias(chatId, sessionId),
@@ -743,6 +764,28 @@ export class BridgeService {
 
   private async handleRuntime(chatId: string): Promise<void> {
     await this.runtimeSurfaceController.handleRuntime(chatId);
+  }
+
+  private async handleBrowse(chatId: string): Promise<void> {
+    await this.projectBrowserCoordinator.handleBrowse(chatId);
+  }
+
+  private async handleBrowseCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    parsed: Extract<
+      ParsedCallbackData,
+      | { kind: "browse_open" }
+      | { kind: "browse_page" }
+      | { kind: "browse_up" }
+      | { kind: "browse_root" }
+      | { kind: "browse_refresh" }
+      | { kind: "browse_back" }
+      | { kind: "browse_close" }
+    >
+  ): Promise<void> {
+    await this.projectBrowserCoordinator.handleBrowseCallback(callbackQueryId, chatId, messageId, parsed);
   }
 
   private async handleRuntimePreferencesPageCallback(
@@ -980,6 +1023,9 @@ export class BridgeService {
       },
       handleNew: async () => {
         await this.sessionProjectCoordinator.handleNew(chatId);
+      },
+      handleBrowse: async () => {
+        await this.handleBrowse(chatId);
       },
       handleCancel: async () => {
         await this.handleCancelCommand(chatId);
@@ -1841,6 +1887,7 @@ export class BridgeService {
     }
   }
 
+
   private formatContextRemainingPercent(inspect: InspectSnapshot): number | null {
     const contextWindow = inspect.tokenUsage?.modelContextWindow;
     const lastTotalTokens = inspect.tokenUsage?.lastTotalTokens;
@@ -1935,6 +1982,68 @@ export class BridgeService {
       failureMessage: "telegram HTML message delivery failed",
       ...(replyMarkup ? { replyMarkup } : {})
     });
+  }
+
+  private async safeSendPhoto(
+    chatId: string,
+    photoPath: string,
+    options?: {
+      caption?: string;
+      parseMode?: "HTML";
+    }
+  ): Promise<boolean> {
+    return (await this.safeSendPhotoResult(chatId, photoPath, options)) !== null;
+  }
+
+  private async safeSendPhotoResult(
+    chatId: string,
+    photoPath: string,
+    options?: {
+      caption?: string;
+      parseMode?: "HTML";
+    }
+  ): Promise<TelegramMessage | null> {
+    if (!this.api?.sendPhoto) {
+      return null;
+    }
+
+    let lastError: unknown = null;
+
+    for (let attempt = 0; attempt <= TELEGRAM_SEND_RETRY_DELAYS_MS.length; attempt += 1) {
+      try {
+        const sent = await this.api.sendPhoto(chatId, photoPath, options);
+        await this.logger.info("telegram photo sent", {
+          chatId,
+          messageId: sent.message_id,
+          path: photoPath,
+          preview: summarizeTextPreview(options?.caption),
+          attempts: attempt + 1
+        });
+        return sent;
+      } catch (error) {
+        lastError = error;
+        const retryDelayMs = getTelegramSendRetryDelayMs(error, attempt);
+        if (retryDelayMs === null) {
+          break;
+        }
+
+        await this.logger.warn("telegram photo delivery retry scheduled", {
+          chatId,
+          path: photoPath,
+          attempt: attempt + 1,
+          retryDelayMs,
+          error: `${error}`
+        });
+        await this.sleep(retryDelayMs);
+      }
+    }
+
+    await this.logger.error("telegram photo delivery failed", {
+      chatId,
+      path: photoPath,
+      error: `${lastError}`
+    });
+    return null;
   }
 
   private async safeSendTelegramMessageResult(

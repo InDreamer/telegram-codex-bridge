@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname } from "node:path";
 
 export interface TelegramUser {
   id: number;
@@ -138,6 +138,47 @@ export class TelegramApi {
       reply_markup: options?.replyMarkup,
       parse_mode: options?.parseMode
     }, 20_000);
+  }
+
+  async sendPhoto(
+    chatId: string,
+    photoPath: string,
+    options?: {
+      caption?: string;
+      parseMode?: "HTML";
+    }
+  ): Promise<TelegramMessage> {
+    const url = `${this.baseUrl}/bot${this.token}/sendPhoto`;
+    if (shouldPreferCurl()) {
+      return await this.sendPhotoWithCurl(chatId, photoPath, options, 20_000, "proxy-environment");
+    }
+
+    try {
+      const photoBytes = await readFile(photoPath);
+      const formData = new FormData();
+      formData.set("chat_id", chatId);
+      if (options?.caption) {
+        formData.set("caption", options.caption);
+      }
+      if (options?.parseMode) {
+        formData.set("parse_mode", options.parseMode);
+      }
+      formData.set("photo", new Blob([photoBytes]), basename(photoPath));
+
+      const response = await fetch(url, {
+        method: "POST",
+        body: formData,
+        signal: AbortSignal.timeout(20_000)
+      });
+      const payload = (await response.json()) as TelegramResponse<TelegramMessage>;
+      if (!response.ok || !payload.ok || payload.result === undefined) {
+        throw new TelegramApiError("sendPhoto", payload);
+      }
+
+      return payload.result;
+    } catch (error) {
+      return await this.sendPhotoWithCurl(chatId, photoPath, options, 20_000, error);
+    }
   }
 
   async getFile(fileId: string): Promise<TelegramFile> {
@@ -366,6 +407,62 @@ export class TelegramApi {
         `Telegram file download failed via fetch and curl: ${String(originalError)} | ${String(curlError)}`
       );
     });
+  }
+
+  private async sendPhotoWithCurl(
+    chatId: string,
+    photoPath: string,
+    options: {
+      caption?: string;
+      parseMode?: "HTML";
+    } | undefined,
+    timeoutMs: number,
+    originalError: unknown
+  ): Promise<TelegramMessage> {
+    const url = `${this.baseUrl}/bot${this.token}/sendPhoto`;
+    const args = [
+      "--silent",
+      "--show-error",
+      "--max-time",
+      `${Math.ceil(timeoutMs / 1000)}`,
+      "--form",
+      `chat_id=${chatId}`,
+      "--form",
+      `photo=@${photoPath}`
+    ];
+
+    if (options?.caption) {
+      args.push("--form", `caption=${options.caption}`);
+    }
+    if (options?.parseMode) {
+      args.push("--form", `parse_mode=${options.parseMode}`);
+    }
+
+    args.push(url);
+
+    const result = await new Promise<{ stdout: string }>((resolve, reject) => {
+      const child = execFile("curl", args, (error, stdout) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve({ stdout });
+      });
+
+      child.on("error", reject);
+    }).catch((curlError) => {
+      throw new Error(
+        `Telegram photo upload failed via fetch and curl: ${String(originalError)} | ${String(curlError)}`
+      );
+    });
+
+    const payload = JSON.parse(result.stdout) as TelegramResponse<TelegramMessage>;
+    if (!payload.ok || payload.result === undefined) {
+      throw new TelegramApiError("sendPhoto", payload);
+    }
+
+    return payload.result;
   }
 }
 

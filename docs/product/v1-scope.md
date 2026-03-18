@@ -15,6 +15,7 @@ The bridge is not a second Codex environment, not a provider-management layer, a
 - one bridge service per server
 - reuse the server's existing Codex environment
 - project-aware session startup
+- read-only project file browsing for the active session, including directory navigation plus text and image preview inside the current project root
 - compact structured runtime visibility in Telegram
 - separate final-answer delivery
 - on-demand `/inspect` task snapshots and `/where` session locators
@@ -45,6 +46,7 @@ The bridge is not a second Codex environment, not a provider-management layer, a
 - general collaboration-mode discovery or preset selection beyond the existing `/plan` toggle
 - direct Telegram command support for schema-level remote URL `image` input
 - raw-terminal emulation or fake terminal widgets
+- project-file write, rename, or delete operations from Telegram
 - client-managed dynamic tool execution via `item/tool/call`, because the live schema exposes only generic tool name plus arguments and does not give the bridge a stable Telegram-safe tool registry
 - client-managed ChatGPT token refresh via `account/chatgptAuthTokens/refresh`, because the bridge does not own ChatGPT access tokens or workspace ids and Telegram is not the provider-setup UX
 - `command/exec*`, `feedback/upload`, `fuzzyFileSearch*`, and `externalAgentConfig/*`
