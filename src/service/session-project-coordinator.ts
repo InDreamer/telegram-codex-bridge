@@ -96,6 +96,7 @@ interface SessionProjectCoordinatorDeps {
     replyMarkup?: TelegramInlineKeyboardMarkup
   ) => Promise<TelegramEditResult>;
   safeDeleteMessage: (chatId: string, messageId: number) => Promise<boolean>;
+  reanchorRuntimeAfterBridgeReply: (chatId: string, sessionId: string, reason: string) => Promise<void>;
 }
 
 export class SessionProjectCoordinator {
@@ -432,7 +433,8 @@ export class SessionProjectCoordinator {
     }
 
     store.setActiveSession(chatId, target.sessionId);
-    await this.deps.safeSendHtmlMessage(chatId, buildSessionSwitchedText(this.projectDisplayName(target)));
+    const delivered = await this.deps.safeSendHtmlMessage(chatId, buildSessionSwitchedText(this.projectDisplayName(target)));
+    await this.reanchorRuntimeAfterBridgeReply(chatId, target.sessionId, delivered, "session_switched");
   }
 
   async handleArchive(chatId: string): Promise<void> {
@@ -597,15 +599,17 @@ export class SessionProjectCoordinator {
     this.pendingRenameStates.delete(chatId);
     this.renameSurfaceMessageIds.delete(chatId);
     if (pendingRename?.sourceMessageId) {
-      await this.consumeEphemeralMessage(
+      const delivered = await this.consumeEphemeralMessage(
         chatId,
         pendingRename.sourceMessageId,
         buildSessionRenamedText(name),
         { html: true }
       );
+      await this.reanchorRuntimeAfterBridgeReply(chatId, activeSession.sessionId, delivered, "session_renamed");
       return;
     }
-    await this.deps.safeSendHtmlMessage(chatId, buildSessionRenamedText(name));
+    const delivered = await this.deps.safeSendHtmlMessage(chatId, buildSessionRenamedText(name));
+    await this.reanchorRuntimeAfterBridgeReply(chatId, activeSession.sessionId, delivered, "session_renamed");
   }
 
   async beginSessionRename(chatId: string, messageId: number, sessionId: string): Promise<void> {
@@ -672,12 +676,13 @@ export class SessionProjectCoordinator {
     store.clearProjectAlias(activeSession.projectPath);
     this.pendingRenameStates.delete(chatId);
     this.renameSurfaceMessageIds.delete(chatId);
-    await this.consumeEphemeralMessage(
+    const delivered = await this.consumeEphemeralMessage(
       chatId,
       messageId,
       buildProjectAliasClearedText(activeSession.projectName),
       { html: true }
     );
+    await this.reanchorRuntimeAfterBridgeReply(chatId, activeSession.sessionId, delivered, "project_alias_cleared");
   }
 
   async handleRenameInput(chatId: string, text: string): Promise<void> {
@@ -721,15 +726,17 @@ export class SessionProjectCoordinator {
       this.pendingRenameStates.delete(chatId);
       this.renameSurfaceMessageIds.delete(chatId);
       if (pendingRename.sourceMessageId) {
-        await this.consumeEphemeralMessage(
+        const delivered = await this.consumeEphemeralMessage(
           chatId,
           pendingRename.sourceMessageId,
           buildProjectAliasRenamedText(name),
           { html: true }
         );
+        await this.reanchorRuntimeAfterBridgeReply(chatId, session.sessionId, delivered, "project_alias_renamed");
         return;
       }
-      await this.deps.safeSendHtmlMessage(chatId, buildProjectAliasRenamedText(name));
+      const delivered = await this.deps.safeSendHtmlMessage(chatId, buildProjectAliasRenamedText(name));
+      await this.reanchorRuntimeAfterBridgeReply(chatId, session.sessionId, delivered, "project_alias_renamed");
       return;
     }
 
@@ -737,15 +744,17 @@ export class SessionProjectCoordinator {
     this.pendingRenameStates.delete(chatId);
     this.renameSurfaceMessageIds.delete(chatId);
     if (pendingRename.sourceMessageId) {
-      await this.consumeEphemeralMessage(
+      const delivered = await this.consumeEphemeralMessage(
         chatId,
         pendingRename.sourceMessageId,
         buildSessionRenamedText(name),
         { html: true }
       );
+      await this.reanchorRuntimeAfterBridgeReply(chatId, session.sessionId, delivered, "session_renamed");
       return;
     }
-    await this.deps.safeSendHtmlMessage(chatId, buildSessionRenamedText(name));
+    const delivered = await this.deps.safeSendHtmlMessage(chatId, buildSessionRenamedText(name));
+    await this.reanchorRuntimeAfterBridgeReply(chatId, session.sessionId, delivered, "session_renamed");
   }
 
   async handlePin(chatId: string): Promise<void> {
@@ -770,7 +779,8 @@ export class SessionProjectCoordinator {
       projectName: activeSession.projectName,
       sessionId: activeSession.sessionId
     });
-    await this.deps.safeSendHtmlMessage(chatId, buildProjectPinnedText(this.projectDisplayName(activeSession)));
+    const delivered = await this.deps.safeSendHtmlMessage(chatId, buildProjectPinnedText(this.projectDisplayName(activeSession)));
+    await this.reanchorRuntimeAfterBridgeReply(chatId, activeSession.sessionId, delivered, "project_pinned");
   }
 
   async handlePlan(chatId: string): Promise<void> {
@@ -792,7 +802,8 @@ export class SessionProjectCoordinator {
     const suffix = activeSession.status === "running"
       ? "当前任务不受影响，下次任务开始时生效。"
       : "下次任务开始时生效。";
-    await this.deps.safeSendMessage(chatId, `已为当前会话${verb} Plan mode。${suffix}`);
+    const delivered = await this.deps.safeSendMessage(chatId, `已为当前会话${verb} Plan mode。${suffix}`);
+    await this.reanchorRuntimeAfterBridgeReply(chatId, activeSession.sessionId, delivered, "plan_mode_toggled");
   }
 
   private async requireActivePickerState(chatId: string, messageId: number): Promise<PickerState | null> {
@@ -835,6 +846,19 @@ export class SessionProjectCoordinator {
     } else {
       return await this.deps.safeSendMessage(chatId, text);
     }
+  }
+
+  private async reanchorRuntimeAfterBridgeReply(
+    chatId: string,
+    sessionId: string,
+    delivered: boolean,
+    reason: string
+  ): Promise<void> {
+    if (!delivered) {
+      return;
+    }
+
+    await this.deps.reanchorRuntimeAfterBridgeReply(chatId, sessionId, reason);
   }
 
   private getRenamePromptText(kind: PendingRenameState["kind"]): string {

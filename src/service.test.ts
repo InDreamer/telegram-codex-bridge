@@ -4205,6 +4205,189 @@ test("use command can switch away from a running session so another session beco
   }
 });
 
+test("use command reanchors a background running session after it becomes foreground", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; parseMode?: string }> = [];
+  const deleted: number[] = [];
+
+  try {
+    authorizeChat(store, "chat-1");
+    const runningSession = await withMockedNow("2026-03-10T09:00:00.000Z", async () => createSession(store, "chat-1"));
+    const idleSession = await withMockedNow("2026-03-10T09:05:00.000Z", async () => store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project Idle",
+      projectPath: "/tmp/project-idle"
+    }));
+    store.setActiveSession("chat-1", runningSession.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const messageId = 960 + sent.length;
+        sent.push({ messageId, text, parseMode: options?.parseMode });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string) =>
+        createFakeTelegramMessage(messageId, text),
+      deleteMessage: async (_chatId: string, messageId: number) => {
+        deleted.push(messageId);
+        return true;
+      }
+    };
+
+    installRunningAppServer(service, "thread-running", "turn-running");
+    await (service as any).startRealTurn("chat-1", runningSession, "Do the work");
+    await (service as any).handleAppServerNotification("turn/started", {
+      threadId: "thread-running",
+      turnId: "turn-running"
+    });
+
+    const initialStatusMessageId = sent[0]?.messageId;
+    assert.ok(initialStatusMessageId);
+
+    store.setActiveSession("chat-1", idleSession.sessionId);
+    const runningSessionIndex = store.listSessions("chat-1").findIndex((entry) => entry.sessionId === runningSession.sessionId) + 1;
+    await (service as any).routeCommand("chat-1", "use", `${runningSessionIndex}`);
+
+    assert.equal(sent[1]?.parseMode, "HTML");
+    assert.equal(sent[1]?.text, "<b>已切换到项目：</b> Project One");
+    assert.equal(isRuntimeStatusText(sent[2]?.text ?? ""), true);
+    assert.deepEqual(deleted, [initialStatusMessageId]);
+    assert.equal(store.getActiveSession("chat-1")?.sessionId, runningSession.sessionId);
+    assert.equal(
+      (service as any).turnCoordinator.getActiveTurnBySessionId(runningSession.sessionId)?.statusCard.messageId,
+      sent[2]?.messageId
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("runtime and language pickers keep focus while a turn is active", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const deleted: number[] = [];
+  const callbackAnswers: Array<string | undefined> = [];
+
+  try {
+    const session = authorizeChatWithSession(store, "chat-1");
+    store.setActiveSession("chat-1", session.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const messageId = 980 + sent.length;
+        sent.push({ messageId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      deleteMessage: async (_chatId: string, messageId: number) => {
+        deleted.push(messageId);
+        return true;
+      },
+      answerCallbackQuery: async (_callbackQueryId: string, text?: string) => {
+        callbackAnswers.push(text);
+      }
+    };
+
+    installRunningAppServer(service, "thread-1", "turn-1");
+    await (service as any).startRealTurn("chat-1", session, "Do the work");
+    await (service as any).handleAppServerNotification("turn/started", {
+      threadId: "thread-1",
+      turnId: "turn-1"
+    });
+
+    const initialStatusMessageId = sent[0]?.messageId;
+    assert.ok(initialStatusMessageId);
+
+    await (service as any).routeCommand("chat-1", "runtime", "");
+    assert.equal(sent.length, 2);
+    assert.equal(deleted.length, 0);
+    assert.equal((service as any).activeTurn?.statusCard.messageId, initialStatusMessageId);
+
+    await (service as any).routeCommand("chat-1", "language", "");
+    assert.equal(sent.length, 3);
+    assert.equal(deleted.length, 0);
+    assert.equal((service as any).activeTurn?.statusCard.messageId, initialStatusMessageId);
+
+    await (service as any).handleLanguageSetCallback("cb-1", "chat-1", sent[2]!.messageId, "en");
+    assert.equal(callbackAnswers.at(-1), "Saved.");
+    const languageClosedMessage = [...edited].reverse().find((entry) => entry.messageId === sent[2]?.messageId);
+    assert.equal(languageClosedMessage?.messageId, sent[2]?.messageId);
+    assert.match(languageClosedMessage?.text ?? "", /Language Picker Closed/u);
+    assert.equal(sent.length, 4);
+    assert.deepEqual(deleted, [initialStatusMessageId]);
+    assert.notEqual((service as any).activeTurn?.statusCard.messageId, initialStatusMessageId);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("rename, pin, and plan replies reanchor the active running session", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const deleted: number[] = [];
+
+  try {
+    const session = authorizeChatWithSession(store, "chat-1");
+    store.setActiveSession("chat-1", session.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const messageId = 1000 + sent.length;
+        sent.push({ messageId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      deleteMessage: async (_chatId: string, messageId: number) => {
+        deleted.push(messageId);
+        return true;
+      }
+    };
+
+    installRunningAppServer(service, "thread-1", "turn-1");
+    await (service as any).startRealTurn("chat-1", session, "Do the work");
+    await (service as any).handleAppServerNotification("turn/started", {
+      threadId: "thread-1",
+      turnId: "turn-1"
+    });
+
+    let currentStatusMessageId = sent[0]?.messageId;
+    assert.ok(currentStatusMessageId);
+
+    await (service as any).routeCommand("chat-1", "rename", "");
+    const renameSurfaceMessageId = sent.at(-1)?.messageId;
+    assert.ok(renameSurfaceMessageId);
+    await (service as any).beginProjectRename("chat-1", renameSurfaceMessageId!, session.sessionId);
+    assert.equal(edited.at(-1)?.text, "请输入新的项目别名。\n发送 /cancel 取消。");
+    await (service as any).handleRenameInput("chat-1", "Alias <One>");
+    assert.equal(sent.at(-2)?.text, "<b>当前项目别名已更新为：</b> Alias &lt;One&gt;");
+    assert.equal(isRuntimeStatusText(sent.at(-1)?.text ?? ""), true);
+    assert.deepEqual(deleted, [renameSurfaceMessageId!, currentStatusMessageId]);
+    currentStatusMessageId = sent.at(-1)?.messageId;
+
+    await (service as any).routeCommand("chat-1", "pin", "");
+    assert.equal(sent.at(-2)?.text, "<b>已收藏项目：</b> Alias &lt;One&gt;");
+    assert.equal(isRuntimeStatusText(sent.at(-1)?.text ?? ""), true);
+    assert.deepEqual(deleted, [renameSurfaceMessageId!, sent[0]!.messageId, currentStatusMessageId!]);
+    currentStatusMessageId = sent.at(-1)?.messageId;
+
+    await (service as any).routeCommand("chat-1", "plan", "");
+    assert.equal(sent.at(-2)?.text, "已为当前会话开启 Plan mode。当前任务不受影响，下次任务开始时生效。");
+    assert.equal(isRuntimeStatusText(sent.at(-1)?.text ?? ""), true);
+    assert.deepEqual(deleted, [renameSurfaceMessageId!, sent[0]!.messageId, sent[3]!.messageId, currentStatusMessageId!]);
+    assert.equal((service as any).activeTurn?.statusCard.messageId, sent.at(-1)?.messageId);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("manual path confirmation accepts readable directories and preserves inline buttons", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];

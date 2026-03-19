@@ -261,7 +261,9 @@ export class BridgeService {
         this.safeEditMessageText(chatId, messageId, text, replyMarkup),
       safeEditHtmlMessageText: async (chatId, messageId, text, replyMarkup) =>
         this.safeEditHtmlMessageText(chatId, messageId, text, replyMarkup),
-      safeDeleteMessage: async (chatId, messageId) => this.safeDeleteMessage(chatId, messageId)
+      safeDeleteMessage: async (chatId, messageId) => this.safeDeleteMessage(chatId, messageId),
+      reanchorRuntimeAfterBridgeReply: async (chatId, sessionId, reason) =>
+        this.reanchorRuntimeAfterBridgeReply(chatId, reason, sessionId)
     });
     this.projectBrowserCoordinator = new ProjectBrowserCoordinator({
       getStore: () => this.store,
@@ -1202,11 +1204,9 @@ export class BridgeService {
       },
       handleRuntime: async () => {
         await this.handleRuntime(chatId);
-        await this.reanchorRuntimeAfterBridgeReply(chatId, "runtime_sent");
       },
       handleLanguage: async () => {
         await this.handleLanguage(chatId);
-        await this.reanchorRuntimeAfterBridgeReply(chatId, "language_sent");
       },
       handleUse: async () => {
         await this.handleUse(chatId, args);
@@ -2446,6 +2446,7 @@ export class BridgeService {
     await this.replaceBridgeOwnedMessage(chatId, messageId, this.buildLanguageClosedMessage(nextLanguage), {
       html: true
     });
+    await this.reanchorRuntimeAfterBridgeReply(chatId, "language_changed");
   }
 
   private async handleLanguageCloseCallback(
@@ -2466,8 +2467,13 @@ export class BridgeService {
       : "暂时无法关闭这条消息，请稍后再试。");
   }
 
-  private async reanchorRuntimeAfterBridgeReply(chatId: string, reason: string): Promise<void> {
-    await this.runtimeSurfaceController.reanchorRuntimeAfterBridgeReply(this.getActiveTurnForChat(chatId), chatId, reason);
+  private async reanchorRuntimeAfterBridgeReply(
+    chatId: string,
+    reason: string,
+    sessionId?: string
+  ): Promise<void> {
+    const activeTurn = sessionId ? this.getActiveTurnForSession(sessionId) : this.getActiveTurnForChat(chatId);
+    await this.runtimeSurfaceController.reanchorRuntimeAfterBridgeReply(activeTurn, chatId, reason);
   }
 
   private async safeDeleteMessage(chatId: string, messageId: number): Promise<boolean> {
