@@ -142,6 +142,7 @@ Responses:
 Rules:
 - no active session is required
 - this changes bridge-owned UI copy only; it does not reconfigure Codex itself
+- after selection or explicit close, the picker should end as a non-interactive summary instead of staying open
 
 ### `/new`
 

@@ -552,6 +552,7 @@ export class BridgeStateStore {
     turnId: string;
     previewHtml: string;
     pages: string[];
+    primaryActionConsumed?: boolean;
   }): FinalAnswerViewRow {
     return this.runtimeArtifacts.saveFinalAnswerView(options);
   }
@@ -566,6 +567,10 @@ export class BridgeStateStore {
 
   setFinalAnswerMessageId(answerId: string, telegramMessageId: number): void {
     this.runtimeArtifacts.setFinalAnswerMessageId(answerId, telegramMessageId);
+  }
+
+  setFinalAnswerPrimaryActionConsumed(answerId: string, consumed: boolean): void {
+    this.runtimeArtifacts.setFinalAnswerPrimaryActionConsumed(answerId, consumed);
   }
 
   deleteFinalAnswerView(answerId: string): void {

@@ -194,6 +194,7 @@ export interface FinalAnswerViewRow {
   turnId: string;
   previewHtml: string;
   pages: string[];
+  primaryActionConsumed: boolean;
   createdAt: string;
 }
 

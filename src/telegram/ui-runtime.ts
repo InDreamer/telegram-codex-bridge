@@ -12,6 +12,7 @@ import {
   encodeAgentCollapseCallback,
   encodeAgentExpandCallback,
   encodeInspectCollapseCallback,
+  encodeInspectCloseCallback,
   encodeInspectExpandCallback,
   encodeInspectPageCallback,
   encodeInteractionAnswerCollapseCallback,
@@ -23,9 +24,11 @@ import {
   encodePlanCollapseCallback,
   encodePlanExpandCallback,
   encodeRollbackBackCallback,
+  encodeRollbackCloseCallback,
   encodeRollbackConfirmCallback,
   encodeRollbackPageCallback,
   encodeRollbackPickCallback,
+  encodeRuntimeCloseCallback,
   encodeRuntimePageCallback,
   encodeRuntimeResetCallback,
   encodeRuntimeSaveCallback,
@@ -256,6 +259,17 @@ export function buildRuntimePreferencesAppliedMessage(fields: RuntimeStatusField
   ].join("\n");
 }
 
+export function buildRuntimePreferencesClosedMessage(fields: RuntimeStatusField[]): string {
+  const summary = fields.length > 0
+    ? fields.map((field) => buildRuntimeStatusFieldLabel(field)).join("、")
+    : "无";
+
+  return [
+    formatHtmlHeading("已关闭 Runtime 卡片字段选择"),
+    formatHtmlField("当前字段：", summary)
+  ].join("\n");
+}
+
 export function buildRuntimePreferencesMessage(options: {
   token: string;
   fields: RuntimeStatusField[];
@@ -298,6 +312,7 @@ export function buildRuntimePreferencesMessage(options: {
 
   rows.push([{ text: "保存并应用", callback_data: encodeRuntimeSaveCallback(options.token) }]);
   rows.push([{ text: "恢复默认", callback_data: encodeRuntimeResetCallback(options.token) }]);
+  rows.push([{ text: "关闭", callback_data: encodeRuntimeCloseCallback(options.token) }]);
 
   return {
     text: [
@@ -335,10 +350,16 @@ export function buildInspectViewMessage(options: {
     return {
       text: buildCollapsedInspectText(options.html),
       replyMarkup: {
-        inline_keyboard: [[{
-          text: "展开详情",
-          callback_data: encodeInspectExpandCallback(options.sessionId, safePage)
-        }]]
+        inline_keyboard: [[
+          {
+            text: "展开详情",
+            callback_data: encodeInspectExpandCallback(options.sessionId, safePage)
+          },
+          {
+            text: "关闭",
+            callback_data: encodeInspectCloseCallback(options.sessionId)
+          }
+        ]]
       },
       totalPages: pages.length
     };
@@ -356,7 +377,10 @@ export function buildInspectViewMessage(options: {
   if (buttons.length > 0) {
     rows.push(buttons);
   }
-  rows.push([{ text: "收起详情", callback_data: encodeInspectCollapseCallback(options.sessionId) }]);
+  rows.push([
+    { text: "收起详情", callback_data: encodeInspectCollapseCallback(options.sessionId) },
+    { text: "关闭", callback_data: encodeInspectCloseCallback(options.sessionId) }
+  ]);
 
   return {
     text: `${pages[safePage]}\n\n${formatHtmlField("详情页：", `${safePage + 1}/${pages.length}`)}`,
@@ -394,6 +418,7 @@ export function buildRollbackPickerMessage(options: {
   if (navigation.length > 0) {
     rows.push(navigation);
   }
+  rows.push([{ text: "关闭", callback_data: encodeRollbackCloseCallback(options.sessionId) }]);
 
   const lines = [
     formatHtmlHeading("选择回滚目标"),
@@ -432,10 +457,25 @@ export function buildRollbackConfirmMessage(options: {
     replyMarkup: {
       inline_keyboard: [
         [{ text: "确认回滚", callback_data: encodeRollbackConfirmCallback(options.sessionId, options.target.index) }],
-        [{ text: "返回列表", callback_data: encodeRollbackBackCallback(options.sessionId, options.page) }]
+        [{ text: "返回列表", callback_data: encodeRollbackBackCallback(options.sessionId, options.page) }],
+        [{ text: "关闭", callback_data: encodeRollbackCloseCallback(options.sessionId) }]
       ]
     }
   };
+}
+
+export function buildRollbackClosedMessage(): string {
+  return [
+    formatHtmlHeading("已关闭回滚目标选择"),
+    "未执行回滚。"
+  ].join("\n");
+}
+
+export function buildInspectClosedMessage(): string {
+  return [
+    formatHtmlHeading("已关闭活动详情"),
+    "重新发送 /inspect 可再次打开。"
+  ].join("\n");
 }
 
 export function buildRuntimeErrorCard(
@@ -507,6 +547,7 @@ export function buildInteractionQuestionCard(options: {
   options: Array<{ label: string; description: string }> | null;
   isOther: boolean;
   isSecret: boolean;
+  awaitingText?: boolean;
 }): {
   text: string;
   replyMarkup: TelegramInlineKeyboardMarkup;
@@ -520,6 +561,16 @@ export function buildInteractionQuestionCard(options: {
 
   if (options.isSecret) {
     lines.push("<i>这条回答会按敏感输入处理，不会进入可见摘要。</i>");
+  }
+
+  if (options.awaitingText) {
+    lines.push("<i>当前正在等待你直接发送这条问题的文字回答。</i>");
+    return {
+      text: lines.join("\n"),
+      replyMarkup: {
+        inline_keyboard: [[{ text: "取消本次交互", callback_data: encodeInteractionCancelCallback(options.interactionId) }]]
+      }
+    };
   }
 
   if (!options.options || options.options.length === 0) {

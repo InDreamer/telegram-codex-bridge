@@ -22,6 +22,7 @@ export interface BridgeCallbackRouterHandlers {
   beginProjectRename(sessionId: string): Promise<void>;
   clearProjectAlias(sessionId: string): Promise<void>;
   handleModelDefault(sessionId: string): Promise<void>;
+  handleModelClose(sessionId: string): Promise<void>;
   handleModelPage(sessionId: string, page: number): Promise<void>;
   handleModelPick(sessionId: string, modelIndex: number): Promise<void>;
   handleModelEffort(sessionId: string, modelIndex: number, effort: ReasoningEffort | null): Promise<void>;
@@ -34,12 +35,16 @@ export interface BridgeCallbackRouterHandlers {
   handleRuntimePreferencesToggle(token: string, field: RuntimeStatusField): Promise<void>;
   handleRuntimePreferencesSave(token: string): Promise<void>;
   handleRuntimePreferencesReset(token: string): Promise<void>;
+  handleRuntimePreferencesClose(token: string): Promise<void>;
   handleLanguageSet(language: UiLanguage): Promise<void>;
+  handleLanguageClose(): Promise<void>;
   handleInspectView(sessionId: string, options: { collapsed: boolean; page: number }): Promise<void>;
-  handlePlanImplement(sessionId: string): Promise<void>;
+  handleInspectClose(sessionId: string): Promise<void>;
+  handlePlanImplement(answerId: string): Promise<void>;
   handleRollbackList(sessionId: string, page: number): Promise<void>;
   handleRollbackPick(sessionId: string, page: number, targetIndex: number): Promise<void>;
   handleRollbackConfirm(sessionId: string, targetIndex: number): Promise<void>;
+  handleRollbackClose(sessionId: string): Promise<void>;
   handleInteractionDecision(parsed: Extract<ParsedCallbackData, { kind: "interaction_decision" }>): Promise<void>;
   handleInteractionQuestion(parsed: Extract<ParsedCallbackData, { kind: "interaction_question" }>): Promise<void>;
   handleInteractionText(parsed: Extract<ParsedCallbackData, { kind: "interaction_text" }>): Promise<void>;
@@ -95,6 +100,9 @@ export async function routeBridgeCallback(
       return;
     case "model_default":
       await handlers.handleModelDefault(parsed.sessionId);
+      return;
+    case "model_close":
+      await handlers.handleModelClose(parsed.sessionId);
       return;
     case "model_page":
       await handlers.handleModelPage(parsed.sessionId, parsed.page);
@@ -153,8 +161,14 @@ export async function routeBridgeCallback(
     case "runtime_reset":
       await handlers.handleRuntimePreferencesReset(parsed.token);
       return;
+    case "runtime_close":
+      await handlers.handleRuntimePreferencesClose(parsed.token);
+      return;
     case "language_set":
       await handlers.handleLanguageSet(parsed.language);
+      return;
+    case "language_close":
+      await handlers.handleLanguageClose();
       return;
     case "inspect_expand":
     case "inspect_page":
@@ -163,8 +177,11 @@ export async function routeBridgeCallback(
     case "inspect_collapse":
       await handlers.handleInspectView(parsed.sessionId, { collapsed: true, page: 0 });
       return;
+    case "inspect_close":
+      await handlers.handleInspectClose(parsed.sessionId);
+      return;
     case "plan_implement":
-      await handlers.handlePlanImplement(parsed.sessionId);
+      await handlers.handlePlanImplement(parsed.answerId);
       return;
     case "rollback_page":
     case "rollback_back":
@@ -175,6 +192,9 @@ export async function routeBridgeCallback(
       return;
     case "rollback_confirm":
       await handlers.handleRollbackConfirm(parsed.sessionId, parsed.targetIndex);
+      return;
+    case "rollback_close":
+      await handlers.handleRollbackClose(parsed.sessionId);
       return;
     case "interaction_decision":
       await handlers.handleInteractionDecision(parsed);

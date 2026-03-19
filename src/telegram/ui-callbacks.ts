@@ -17,6 +17,7 @@ export type ParsedCallbackData =
   | { kind: "rename_project"; sessionId: string }
   | { kind: "rename_project_clear"; sessionId: string }
   | { kind: "model_default"; sessionId: string }
+  | { kind: "model_close"; sessionId: string }
   | { kind: "model_page"; sessionId: string; page: number }
   | { kind: "model_pick"; sessionId: string; modelIndex: number }
   | { kind: "model_effort"; sessionId: string; modelIndex: number; effort: ReasoningEffort | null }
@@ -36,15 +37,19 @@ export type ParsedCallbackData =
   | { kind: "runtime_toggle"; token: string; field: RuntimeStatusField }
   | { kind: "runtime_save"; token: string }
   | { kind: "runtime_reset"; token: string }
+  | { kind: "runtime_close"; token: string }
   | { kind: "language_set"; language: UiLanguage }
+  | { kind: "language_close" }
   | { kind: "inspect_expand"; sessionId: string; page: number }
   | { kind: "inspect_collapse"; sessionId: string }
   | { kind: "inspect_page"; sessionId: string; page: number }
-  | { kind: "plan_implement"; sessionId: string }
+  | { kind: "inspect_close"; sessionId: string }
+  | { kind: "plan_implement"; answerId: string }
   | { kind: "rollback_page"; sessionId: string; page: number }
   | { kind: "rollback_pick"; sessionId: string; page: number; targetIndex: number }
   | { kind: "rollback_confirm"; sessionId: string; targetIndex: number }
   | { kind: "rollback_back"; sessionId: string; page: number }
+  | { kind: "rollback_close"; sessionId: string }
   | { kind: "interaction_decision"; interactionId: string; decisionKey: string | null; decisionIndex: number | null }
   | {
       kind: "interaction_question";
@@ -181,6 +186,10 @@ export function encodeModelDefaultCallback(sessionId: string): string {
   return ensureTelegramCallbackDataLimit(`v2:model:default:${sessionId}`);
 }
 
+export function encodeModelCloseCallback(sessionId: string): string {
+  return ensureTelegramCallbackDataLimit(`v2:model:close:${sessionId}`);
+}
+
 export function encodeModelPageCallback(sessionId: string, page: number): string {
   return ensureTelegramCallbackDataLimit(`v2:model:page:${sessionId}:${encodeInteractionIndex(page)}`);
 }
@@ -263,8 +272,16 @@ export function encodeRuntimeResetCallback(token: string): string {
   return ensureTelegramCallbackDataLimit(`v4:rt:r:${token}`);
 }
 
+export function encodeRuntimeCloseCallback(token: string): string {
+  return ensureTelegramCallbackDataLimit(`v4:rt:c:${token}`);
+}
+
 export function encodeLanguageSetCallback(language: UiLanguage): string {
   return ensureTelegramCallbackDataLimit(`v4:lg:s:${language}`);
+}
+
+export function encodeLanguageCloseCallback(): string {
+  return ensureTelegramCallbackDataLimit("v4:lg:c");
 }
 
 export function encodeInspectExpandCallback(sessionId: string, page = 0): string {
@@ -277,6 +294,10 @@ export function encodeInspectCollapseCallback(sessionId: string): string {
 
 export function encodeInspectPageCallback(sessionId: string, page: number): string {
   return ensureTelegramCallbackDataLimit(`v4:in:p:${sessionId}:${encodeInteractionIndex(page)}`);
+}
+
+export function encodeInspectCloseCallback(sessionId: string): string {
+  return ensureTelegramCallbackDataLimit(`v4:in:x:${sessionId}`);
 }
 
 export function encodeRollbackPageCallback(sessionId: string, page: number): string {
@@ -295,6 +316,10 @@ export function encodeRollbackConfirmCallback(sessionId: string, targetIndex: nu
 
 export function encodeRollbackBackCallback(sessionId: string, page: number): string {
   return ensureTelegramCallbackDataLimit(`v4:rb:b:${sessionId}:${encodeInteractionIndex(page)}`);
+}
+
+export function encodeRollbackCloseCallback(sessionId: string): string {
+  return ensureTelegramCallbackDataLimit(`v4:rb:x:${sessionId}`);
 }
 
 export function encodeInteractionDecisionCallback(interactionId: string, decisionIndex: number): string {
@@ -327,8 +352,8 @@ export function encodeInteractionAnswerCollapseCallback(interactionId: string): 
   return ensureTelegramCallbackDataLimit(`v3:ix:a:${encodeInteractionToken(interactionId)}:close`);
 }
 
-export function encodePlanImplementCallback(sessionId: string): string {
-  return ensureTelegramCallbackDataLimit(`v4:pr:i:${sessionId}`);
+export function encodePlanImplementCallback(answerId: string): string {
+  return ensureTelegramCallbackDataLimit(`v4:pr:i:${answerId}`);
 }
 
 export function parseCallbackData(data: string): ParsedCallbackData | null {
@@ -374,6 +399,10 @@ export function parseCallbackData(data: string): ParsedCallbackData | null {
   if (parts[0] === "v2" && parts[1] === "model") {
     if (parts[2] === "default" && parts[3]) {
       return { kind: "model_default", sessionId: parts[3] };
+    }
+
+    if (parts[2] === "close" && parts[3]) {
+      return { kind: "model_close", sessionId: parts[3] };
     }
 
     if (parts[2] === "page" && parts[3] && parts[4]) {
@@ -438,12 +467,20 @@ export function parseCallbackData(data: string): ParsedCallbackData | null {
       return { kind: "runtime_reset", token: parts[3] };
     }
 
+    if (parts[2] === "c" && parts[3]) {
+      return { kind: "runtime_close", token: parts[3] };
+    }
+
     return null;
   }
 
   if (parts[0] === "v4" && parts[1] === "lg") {
     if (parts[2] === "s" && (parts[3] === "zh" || parts[3] === "en")) {
       return { kind: "language_set", language: parts[3] };
+    }
+
+    if (parts[2] === "c") {
+      return { kind: "language_close" };
     }
 
     return null;
@@ -466,6 +503,10 @@ export function parseCallbackData(data: string): ParsedCallbackData | null {
       if (page !== null) {
         return { kind: "inspect_page", sessionId: parts[3], page };
       }
+    }
+
+    if (parts[2] === "x" && parts[3]) {
+      return { kind: "inspect_close", sessionId: parts[3] };
     }
 
     return null;
@@ -501,6 +542,10 @@ export function parseCallbackData(data: string): ParsedCallbackData | null {
       }
     }
 
+    if (parts[2] === "x" && parts[3]) {
+      return { kind: "rollback_close", sessionId: parts[3] };
+    }
+
     return null;
   }
 
@@ -521,7 +566,7 @@ export function parseCallbackData(data: string): ParsedCallbackData | null {
     }
 
     if (parts[0] === "v4" && parts[1] === "pr" && parts[2] === "i" && parts[3]) {
-      return { kind: "plan_implement", sessionId: parts[3] };
+      return { kind: "plan_implement", answerId: parts[3] };
     }
 
     if (parts[0] === "v3" && parts[1] === "ix") {

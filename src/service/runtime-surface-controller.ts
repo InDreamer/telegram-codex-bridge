@@ -6,10 +6,13 @@ import type { BridgeStateStore } from "../state/store.js";
 import type { TelegramInlineKeyboardMarkup, TelegramMessage } from "../telegram/api.js";
 import {
   buildFinalAnswerReplyMarkup,
+  buildInspectClosedMessage,
   buildInspectText,
   buildInspectViewMessage,
+  buildPlanResultConsumedNotice,
   buildPlanResultReplyMarkup,
   buildRuntimePreferencesAppliedMessage,
+  buildRuntimePreferencesClosedMessage,
   buildRuntimePreferencesMessage,
   buildRuntimeErrorCard,
   buildRuntimeStatusCard,
@@ -263,6 +266,33 @@ export class RuntimeSurfaceController {
     draft.page = 0;
     await this.deps.safeAnswerCallbackQuery(callbackQueryId, "已恢复默认，记得保存。");
     await this.renderRuntimePreferencesDraft(token, draft);
+  }
+
+  async handleRuntimePreferencesCloseCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    token: string
+  ): Promise<void> {
+    const draft = this.getRuntimePreferencesDraft(token, chatId, messageId);
+    if (!draft) {
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新发送 /runtime。");
+      return;
+    }
+
+    const fields = this.deps.getStore()?.getRuntimeCardPreferences().fields ?? draft.fields;
+    this.runtimePreferenceDrafts.delete(token);
+    const result = await this.deps.safeEditHtmlMessageText(
+      chatId,
+      messageId,
+      buildRuntimePreferencesClosedMessage(fields)
+    );
+    if (result.outcome === "edited") {
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId);
+      return;
+    }
+
+    await this.deps.safeAnswerCallbackQuery(callbackQueryId, "暂时无法关闭这条消息，请稍后再试。");
   }
 
   buildStatusCardRenderPayload(
@@ -905,12 +935,12 @@ export class RuntimeSurfaceController {
       const result = await this.deps.safeEditHtmlMessageText(
         chatId,
         messageId,
-        view.previewHtml,
+        this.buildPlanResultHtml(view.previewHtml, view.primaryActionConsumed),
         buildPlanResultReplyMarkup({
           answerId,
-          sessionId: view.sessionId,
           totalPages: view.pages.length,
-          expanded: false
+          expanded: false,
+          primaryActionConsumed: view.primaryActionConsumed
         })
       );
       await this.finishPersistedFinalAnswerRender(callbackQueryId, answerId, messageId, result);
@@ -927,13 +957,13 @@ export class RuntimeSurfaceController {
     const result = await this.deps.safeEditHtmlMessageText(
       chatId,
       messageId,
-      pageHtml,
+      this.buildPlanResultHtml(pageHtml, view.primaryActionConsumed),
       buildPlanResultReplyMarkup({
         answerId,
-        sessionId: view.sessionId,
         totalPages: view.pages.length,
         expanded: true,
-        currentPage: page
+        currentPage: page,
+        primaryActionConsumed: view.primaryActionConsumed
       })
     );
     await this.finishPersistedFinalAnswerRender(callbackQueryId, answerId, messageId, result);
@@ -1015,6 +1045,27 @@ export class RuntimeSurfaceController {
     );
   }
 
+  async handleInspectCloseCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    sessionId: string
+  ): Promise<void> {
+    const session = this.getInspectableSession(chatId, sessionId);
+    if (!session) {
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新发送 /inspect。");
+      return;
+    }
+
+    const result = await this.deps.safeEditHtmlMessageText(chatId, messageId, buildInspectClosedMessage());
+    if (result.outcome === "edited") {
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId);
+      return;
+    }
+
+    await this.deps.safeAnswerCallbackQuery(callbackQueryId, "暂时无法关闭这条消息，请稍后再试。");
+  }
+
   private scheduleRuntimeCardRetry(
     activeTurn: RuntimeSurfaceActiveTurn,
     surface: RuntimeCardMessageState,
@@ -1074,6 +1125,10 @@ export class RuntimeSurfaceController {
       page: draft.page
     });
     await this.deps.safeEditHtmlMessageText(draft.chatId, draft.messageId, rendered.text, rendered.replyMarkup);
+  }
+
+  private buildPlanResultHtml(html: string, primaryActionConsumed: boolean): string {
+    return primaryActionConsumed ? `${buildPlanResultConsumedNotice()}\n\n${html}` : html;
   }
 
   private async finishPersistedFinalAnswerRender(

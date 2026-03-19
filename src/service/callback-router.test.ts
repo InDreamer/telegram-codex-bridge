@@ -52,6 +52,9 @@ function createHandlers(calls: Call[]) {
     handleModelDefault: async (sessionId: string) => {
       calls.push({ name: "handleModelDefault", args: [sessionId] });
     },
+    handleModelClose: async (sessionId: string) => {
+      calls.push({ name: "handleModelClose", args: [sessionId] });
+    },
     handleModelPage: async (sessionId: string, page: number) => {
       calls.push({ name: "handleModelPage", args: [sessionId, page] });
     },
@@ -88,14 +91,23 @@ function createHandlers(calls: Call[]) {
     handleRuntimePreferencesReset: async (token: string) => {
       calls.push({ name: "handleRuntimePreferencesReset", args: [token] });
     },
+    handleRuntimePreferencesClose: async (token: string) => {
+      calls.push({ name: "handleRuntimePreferencesClose", args: [token] });
+    },
     handleLanguageSet: async (language: string) => {
       calls.push({ name: "handleLanguageSet", args: [language] });
+    },
+    handleLanguageClose: async () => {
+      calls.push({ name: "handleLanguageClose", args: [] });
     },
     handleInspectView: async (sessionId: string, options: { collapsed: boolean; page: number }) => {
       calls.push({ name: "handleInspectView", args: [sessionId, options] });
     },
-    handlePlanImplement: async (sessionId: string) => {
-      calls.push({ name: "handlePlanImplement", args: [sessionId] });
+    handleInspectClose: async (sessionId: string) => {
+      calls.push({ name: "handleInspectClose", args: [sessionId] });
+    },
+    handlePlanImplement: async (answerId: string) => {
+      calls.push({ name: "handlePlanImplement", args: [answerId] });
     },
     handleRollbackList: async (sessionId: string, page: number) => {
       calls.push({ name: "handleRollbackList", args: [sessionId, page] });
@@ -105,6 +117,9 @@ function createHandlers(calls: Call[]) {
     },
     handleRollbackConfirm: async (sessionId: string, targetIndex: number) => {
       calls.push({ name: "handleRollbackConfirm", args: [sessionId, targetIndex] });
+    },
+    handleRollbackClose: async (sessionId: string) => {
+      calls.push({ name: "handleRollbackClose", args: [sessionId] });
     },
     handleInteractionDecision: async (parsed: Extract<ParsedCallbackData, { kind: "interaction_decision" }>) => {
       calls.push({ name: "handleInteractionDecision", args: [parsed] });
@@ -206,6 +221,7 @@ test("project picker and rename callbacks acknowledge before delegating", async 
 test("model, runtime, and language callbacks delegate to specialized handlers", async () => {
   const cases: Array<{ parsed: ParsedCallbackData; expected: Call[] }> = [
     { parsed: { kind: "model_default", sessionId: "session-1" }, expected: [{ name: "handleModelDefault", args: ["session-1"] }] },
+    { parsed: { kind: "model_close", sessionId: "session-1b" }, expected: [{ name: "handleModelClose", args: ["session-1b"] }] },
     { parsed: { kind: "model_page", sessionId: "session-2", page: 3 }, expected: [{ name: "handleModelPage", args: ["session-2", 3] }] },
     { parsed: { kind: "model_pick", sessionId: "session-3", modelIndex: 4 }, expected: [{ name: "handleModelPick", args: ["session-3", 4] }] },
     { parsed: { kind: "model_effort", sessionId: "session-4", modelIndex: 1, effort: "high" }, expected: [{ name: "handleModelEffort", args: ["session-4", 1, "high"] }] },
@@ -213,7 +229,9 @@ test("model, runtime, and language callbacks delegate to specialized handlers", 
     { parsed: { kind: "runtime_toggle", token: "tok", field: "plan_mode" }, expected: [{ name: "handleRuntimePreferencesToggle", args: ["tok", "plan_mode"] }] },
     { parsed: { kind: "runtime_save", token: "tok" }, expected: [{ name: "handleRuntimePreferencesSave", args: ["tok"] }] },
     { parsed: { kind: "runtime_reset", token: "tok" }, expected: [{ name: "handleRuntimePreferencesReset", args: ["tok"] }] },
-    { parsed: { kind: "language_set", language: "en" }, expected: [{ name: "handleLanguageSet", args: ["en"] }] }
+    { parsed: { kind: "runtime_close", token: "tok" }, expected: [{ name: "handleRuntimePreferencesClose", args: ["tok"] }] },
+    { parsed: { kind: "language_set", language: "en" }, expected: [{ name: "handleLanguageSet", args: ["en"] }] },
+    { parsed: { kind: "language_close" }, expected: [{ name: "handleLanguageClose", args: [] }] }
   ];
 
   for (const { parsed, expected } of cases) {
@@ -234,7 +252,8 @@ test("status-card, inspect, and persisted-result callbacks preserve their routin
     { parsed: { kind: "plan_result_close", answerId: "answer-3" }, expected: [{ name: "renderPersistedPlanResult", args: ["answer-3", { expanded: false }] }] },
     { parsed: { kind: "inspect_expand", sessionId: "session-3", page: 1 }, expected: [{ name: "handleInspectView", args: ["session-3", { collapsed: false, page: 1 }] }] },
     { parsed: { kind: "inspect_collapse", sessionId: "session-4" }, expected: [{ name: "handleInspectView", args: ["session-4", { collapsed: true, page: 0 }] }] },
-    { parsed: { kind: "plan_implement", sessionId: "session-5" }, expected: [{ name: "handlePlanImplement", args: ["session-5"] }] }
+    { parsed: { kind: "inspect_close", sessionId: "session-4b" }, expected: [{ name: "handleInspectClose", args: ["session-4b"] }] },
+    { parsed: { kind: "plan_implement", answerId: "answer-5" }, expected: [{ name: "handlePlanImplement", args: ["answer-5"] }] }
   ];
 
   for (const { parsed, expected } of cases) {
@@ -249,6 +268,7 @@ test("rollback and interaction callbacks keep their parsed payloads intact", asy
     { parsed: { kind: "rollback_back", sessionId: "session-1", page: 2 }, expected: [{ name: "handleRollbackList", args: ["session-1", 2] }] },
     { parsed: { kind: "rollback_pick", sessionId: "session-2", page: 1, targetIndex: 3 }, expected: [{ name: "handleRollbackPick", args: ["session-2", 1, 3] }] },
     { parsed: { kind: "rollback_confirm", sessionId: "session-3", targetIndex: 4 }, expected: [{ name: "handleRollbackConfirm", args: ["session-3", 4] }] },
+    { parsed: { kind: "rollback_close", sessionId: "session-3b" }, expected: [{ name: "handleRollbackClose", args: ["session-3b"] }] },
     { parsed: { kind: "interaction_decision", interactionId: "ix-1", decisionKey: "accept", decisionIndex: 0 }, expected: [{ name: "handleInteractionDecision", args: [{ kind: "interaction_decision", interactionId: "ix-1", decisionKey: "accept", decisionIndex: 0 }] }] },
     { parsed: { kind: "interaction_question", interactionId: "ix-2", questionId: "q-1", questionIndex: 0, optionIndex: 2 }, expected: [{ name: "handleInteractionQuestion", args: [{ kind: "interaction_question", interactionId: "ix-2", questionId: "q-1", questionIndex: 0, optionIndex: 2 }] }] },
     { parsed: { kind: "interaction_text", interactionId: "ix-3", questionId: "q-2", questionIndex: 1 }, expected: [{ name: "handleInteractionText", args: [{ kind: "interaction_text", interactionId: "ix-3", questionId: "q-2", questionIndex: 1 }] }] },

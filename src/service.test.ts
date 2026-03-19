@@ -4357,7 +4357,8 @@ test("scan more no-results flow replaces stale cards and returns to the picker c
 
 test("rename command can set and clear the current project alias", async () => {
   const { service, store, cleanup } = await createServiceContext();
-  const sent: Array<{ text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
 
   try {
     const session = authorizeChatWithSession(store, "chat-1");
@@ -4365,17 +4366,24 @@ test("rename command can set and clear the current project alias", async () => {
 
     (service as any).api = {
       sendMessage: async (_chatId: string, text: string, options?: any) => {
-        sent.push({ text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
-        return createFakeTelegramMessage(980 + sent.length, text);
-      }
+        const message = createFakeTelegramMessage(980 + sent.length, text);
+        sent.push({ messageId: message.message_id, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return message;
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      deleteMessage: async () => true
     };
 
     await (service as any).routeCommand("chat-1", "rename", "");
     assert.equal(sent.at(-1)?.parseMode, "HTML");
     assert.equal(sent.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "重命名会话");
-    assert.equal(sent.at(-1)?.replyMarkup?.inline_keyboard?.[1]?.[0]?.text, "设置项目别名");
+    assert.equal(sent.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[1]?.text, "设置项目别名");
 
-    await (service as any).beginProjectRename("chat-1", session.sessionId);
+    await (service as any).beginProjectRename("chat-1", sent[0]!.messageId, session.sessionId);
+    assert.equal(edited.at(-1)?.text, "请输入新的项目别名。\n发送 /cancel 取消。");
     await (service as any).handleRenameInput("chat-1", "Alias <One>");
     assert.equal(sent.at(-1)?.parseMode, "HTML");
     assert.equal(sent.at(-1)?.text, "<b>当前项目别名已更新为：</b> Alias &lt;One&gt;");
@@ -4384,7 +4392,8 @@ test("rename command can set and clear the current project alias", async () => {
     await (service as any).routeCommand("chat-1", "pin", "");
     assert.equal(sent.at(-1)?.text, "<b>已收藏项目：</b> Alias &lt;One&gt;");
 
-    await (service as any).clearProjectAlias("chat-1", session.sessionId);
+    await (service as any).routeCommand("chat-1", "rename", "");
+    await (service as any).clearProjectAlias("chat-1", sent.at(-1)!.messageId, session.sessionId);
     assert.equal(sent.at(-1)?.text, "<b>已清除项目别名：</b> Project One");
     assert.equal(store.getActiveSession("chat-1")?.projectAlias, null);
   } finally {
@@ -5596,7 +5605,8 @@ test("questionnaire interactions advance through options and pending text answer
     });
 
     assert.equal(store.getPendingInteraction(pending?.interactionId ?? "", "1")?.state, "awaiting_text");
-    assert.match(sent.at(-1)?.text ?? "", /敏感回答/u);
+    assert.match(edited.at(-1)?.text ?? "", /等待你直接发送/u);
+    assert.match(edited.at(-1)?.text ?? "", /敏感/u);
 
     await (service as any).handleMessage(createIncomingUserMessage(1, 1, 999, "deploy after backups finish"));
 
@@ -6362,7 +6372,7 @@ test("model command opens a paginated picker and supports two-step model plus re
     await (service as any).routeCommand("1", "model", "");
     assert.match(sent[0]?.text ?? "", /选择模型/u);
     assert.match(sent[0]?.text ?? "", /当前配置：gpt-5 \+ 中/u);
-    assert.equal(sent[0]?.options?.replyMarkup?.inline_keyboard?.length, 7);
+    assert.equal(sent[0]?.options?.replyMarkup?.inline_keyboard?.length, 8);
     assert.equal(sent[0]?.options?.replyMarkup?.inline_keyboard?.[1]?.[0]?.text, "GPT-5 [当前/默认]");
     assert.equal(sent[0]?.options?.replyMarkup?.inline_keyboard?.[6]?.[0]?.text, "下一页");
 
@@ -7588,7 +7598,7 @@ test("runtime command persists edited status-line fields through callbacks", asy
       data: toggleCallback
     });
 
-    const saveCallback = edited.at(-1)?.options?.replyMarkup?.inline_keyboard?.at(-2)?.[0]?.callback_data;
+    const saveCallback = edited.at(-1)?.options?.replyMarkup?.inline_keyboard?.at(-3)?.[0]?.callback_data;
     assert.equal(typeof saveCallback, "string");
 
     await (service as any).handleCallback({
@@ -7656,7 +7666,7 @@ test("runtime reset only updates the draft until save is clicked", async () => {
       data: toggleCallback
     });
 
-    const resetCallback = edited.at(-1)?.options?.replyMarkup?.inline_keyboard?.at(-1)?.[0]?.callback_data;
+    const resetCallback = edited.at(-1)?.options?.replyMarkup?.inline_keyboard?.at(-2)?.[0]?.callback_data;
     assert.equal(typeof resetCallback, "string");
 
     await (service as any).handleCallback({
@@ -7719,7 +7729,7 @@ test("runtime callbacks expire after save closes the picker", async () => {
       data: originalToggleCallback
     });
 
-    const saveCallback = edited.at(-1)?.options?.replyMarkup?.inline_keyboard?.at(-2)?.[0]?.callback_data;
+    const saveCallback = edited.at(-1)?.options?.replyMarkup?.inline_keyboard?.at(-3)?.[0]?.callback_data;
     assert.equal(typeof saveCallback, "string");
 
     await (service as any).handleCallback({
@@ -7799,7 +7809,7 @@ test("language command shows a picker and callback persists the global language"
 
     assert.equal(store.getUiLanguage(), "en");
     assert.equal(callbackAnswers.at(-1), "Saved.");
-    assert.match(edited.at(-1)?.text ?? "", /<b>Bridge Language<\/b>/u);
+    assert.match(edited.at(-1)?.text ?? "", /<b>Language Picker Closed<\/b>/u);
     assert.equal(commandSyncs.at(-1)?.some((entry) => entry.command === "language"), true);
     assert.equal(commandSyncs.at(-1)?.find((entry) => entry.command === "help")?.description, "Show available commands");
   } finally {

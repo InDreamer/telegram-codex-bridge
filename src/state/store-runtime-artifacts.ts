@@ -37,6 +37,7 @@ interface FinalAnswerViewRecord {
   turn_id: string;
   preview_html: string;
   pages_json: string;
+  primary_action_consumed: number;
   created_at: string;
 }
 
@@ -87,6 +88,7 @@ function mapFinalAnswerView(record: FinalAnswerViewRecord): FinalAnswerViewRow {
     turnId: record.turn_id,
     previewHtml: record.preview_html,
     pages: JSON.parse(record.pages_json) as string[],
+    primaryActionConsumed: record.primary_action_consumed === 1,
     createdAt: record.created_at
   };
 }
@@ -143,11 +145,13 @@ export interface StoreRuntimeArtifacts {
     turnId: string;
     previewHtml: string;
     pages: string[];
+    primaryActionConsumed?: boolean;
   }): FinalAnswerViewRow;
   getFinalAnswerView(answerId: string, telegramChatId: string): FinalAnswerViewRow | null;
   listFinalAnswerViews(telegramChatId: string): FinalAnswerViewRow[];
   rebindFinalAnswerViewsChatIds(telegramChatId: string, previousChatIds: string[]): void;
   setFinalAnswerMessageId(answerId: string, telegramMessageId: number): void;
+  setFinalAnswerPrimaryActionConsumed(answerId: string, consumed: boolean): void;
   deleteFinalAnswerView(answerId: string): void;
   clearAllFinalAnswerViews(): void;
   saveTurnInputSource(options: {
@@ -374,9 +378,10 @@ export function createStoreRuntimeArtifacts(db: DatabaseSync): StoreRuntimeArtif
                 turn_id,
                 preview_html,
                 pages_json,
+                primary_action_consumed,
                 created_at
               )
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `
           )
           .run(
@@ -388,6 +393,7 @@ export function createStoreRuntimeArtifacts(db: DatabaseSync): StoreRuntimeArtif
             options.turnId,
             options.previewHtml,
             JSON.stringify(options.pages),
+            options.primaryActionConsumed ? 1 : 0,
             createdAt
           );
 
@@ -464,6 +470,18 @@ export function createStoreRuntimeArtifacts(db: DatabaseSync): StoreRuntimeArtif
           `
         )
         .run(telegramMessageId, answerId);
+    },
+
+    setFinalAnswerPrimaryActionConsumed(answerId, consumed) {
+      db
+        .prepare(
+          `
+            UPDATE final_answer_view
+            SET primary_action_consumed = ?
+            WHERE answer_id = ?
+          `
+        )
+        .run(consumed ? 1 : 0, answerId);
     },
 
     deleteFinalAnswerView(answerId) {

@@ -177,20 +177,20 @@ export function buildFinalAnswerReplyMarkup(options: {
   };
 }
 
-export function buildPlanResultActionRows(sessionId: string): Array<Array<{ text: string; callback_data: string }>> {
+export function buildPlanResultActionRows(answerId: string): Array<Array<{ text: string; callback_data: string }>> {
   return [[
-    { text: "实施这个计划", callback_data: encodePlanImplementCallback(sessionId) }
+    { text: "实施这个计划", callback_data: encodePlanImplementCallback(answerId) }
   ]];
 }
 
 export function buildPlanResultReplyMarkup(options: {
   answerId: string;
-  sessionId: string;
   totalPages: number;
   expanded: boolean;
   currentPage?: number;
+  primaryActionConsumed?: boolean;
 }): TelegramInlineKeyboardMarkup {
-  const actionRows = buildPlanResultActionRows(options.sessionId);
+  const actionRows = options.primaryActionConsumed ? [] : buildPlanResultActionRows(options.answerId);
   if (!options.expanded) {
     return {
       inline_keyboard: [
@@ -227,6 +227,10 @@ export function buildPlanResultReplyMarkup(options: {
       buttons
     ]
   };
+}
+
+export function buildPlanResultConsumedNotice(): string {
+  return "<i>已开始实施。</i>";
 }
 
 export function renderStreamBlock(block: StreamBlock): string {

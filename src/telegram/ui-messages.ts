@@ -8,6 +8,7 @@ import type {
 import { truncateText } from "../util/text.js";
 import type { TelegramInlineKeyboardMarkup } from "./api.js";
 import {
+  encodeModelCloseCallback,
   encodeModelDefaultCallback,
   encodeModelEffortCallback,
   encodeModelPageCallback,
@@ -198,6 +199,7 @@ export function buildModelPickerMessage(options: {
   if (navigation.length > 0) {
     rows.push(navigation);
   }
+  rows.push([{ text: "关闭", callback_data: encodeModelCloseCallback(options.session.sessionId) }]);
 
   return {
     text: [
@@ -231,7 +233,8 @@ export function buildReasoningEffortPickerMessage(options: {
       text: buildDefaultEffortButtonLabel(options.model.defaultReasoningEffort, options.session, isCurrentModel),
       callback_data: encodeModelEffortCallback(options.session.sessionId, options.modelIndex, null)
     }],
-    ...chunkButtons(effortButtons, 2)
+    ...chunkButtons(effortButtons, 2),
+    [{ text: "关闭", callback_data: encodeModelCloseCallback(options.session.sessionId) }]
   ];
 
   return {
@@ -389,6 +392,13 @@ export function buildProjectPinnedText(projectName: string): string {
   return formatHtmlField("已收藏项目：", projectName);
 }
 
+export function buildModelPickerClosedText(session: SessionRow): string {
+  return [
+    formatHtmlHeading("已关闭模型选择"),
+    formatHtmlField("当前配置：", formatSessionModelReasoningConfig(session))
+  ].join("\n");
+}
+
 export function buildRenameTargetPicker(options: {
   sessionId: string;
   projectName: string;
@@ -398,8 +408,10 @@ export function buildRenameTargetPicker(options: {
   replyMarkup: TelegramInlineKeyboardMarkup;
 } {
   const rows: TelegramInlineKeyboardMarkup["inline_keyboard"] = [
-    [{ text: "重命名会话", callback_data: encodeRenameSessionCallback(options.sessionId) }],
-    [{ text: "设置项目别名", callback_data: encodeRenameProjectCallback(options.sessionId) }]
+    [
+      { text: "重命名会话", callback_data: encodeRenameSessionCallback(options.sessionId) },
+      { text: "设置项目别名", callback_data: encodeRenameProjectCallback(options.sessionId) }
+    ]
   ];
 
   if (options.hasProjectAlias) {

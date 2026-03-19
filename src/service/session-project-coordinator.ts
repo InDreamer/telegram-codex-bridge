@@ -40,6 +40,7 @@ interface PendingRenameState {
   kind: "session" | "project";
   sessionId: string;
   projectPath: string;
+  sourceMessageId: number | null;
 }
 
 interface SessionProjectArchiveAppServer {
@@ -100,6 +101,7 @@ interface SessionProjectCoordinatorDeps {
 export class SessionProjectCoordinator {
   private readonly pickerStates = new Map<string, PickerState>();
   private readonly pendingRenameStates = new Map<string, PendingRenameState>();
+  private readonly renameSurfaceMessageIds = new Map<string, number>();
 
   constructor(private readonly deps: SessionProjectCoordinatorDeps) {}
 
@@ -116,10 +118,19 @@ export class SessionProjectCoordinator {
     if (this.pendingRenameStates.has(chatId)) {
       const pendingRename = this.pendingRenameStates.get(chatId);
       this.pendingRenameStates.delete(chatId);
-      await this.deps.safeSendMessage(
-        chatId,
-        pendingRename?.kind === "project" ? "已取消项目别名修改。" : "已取消会话重命名。"
-      );
+      this.renameSurfaceMessageIds.delete(chatId);
+      if (pendingRename?.sourceMessageId) {
+        await this.consumeEphemeralMessage(
+          chatId,
+          pendingRename.sourceMessageId,
+          pendingRename.kind === "project" ? "已取消项目别名修改。" : "已取消会话重命名。"
+        );
+      } else {
+        await this.deps.safeSendMessage(
+          chatId,
+          pendingRename?.kind === "project" ? "已取消项目别名修改。" : "已取消会话重命名。"
+        );
+      }
       return true;
     }
 
@@ -574,63 +585,81 @@ export class SessionProjectCoordinator {
         projectName: this.projectDisplayName(activeSession),
         hasProjectAlias: Boolean(activeSession.projectAlias?.trim())
       });
-      await this.deps.safeSendHtmlMessage(chatId, picker.text, picker.replyMarkup);
+      const sent = await this.deps.safeSendHtmlMessageResult(chatId, picker.text, picker.replyMarkup);
+      if (sent) {
+        this.renameSurfaceMessageIds.set(chatId, sent.message_id);
+      }
       return;
     }
 
+    const pendingRename = this.pendingRenameStates.get(chatId);
     store.renameSession(activeSession.sessionId, name);
     this.pendingRenameStates.delete(chatId);
+    this.renameSurfaceMessageIds.delete(chatId);
+    if (pendingRename?.sourceMessageId) {
+      await this.consumeEphemeralMessage(
+        chatId,
+        pendingRename.sourceMessageId,
+        buildSessionRenamedText(name),
+        { html: true }
+      );
+      return;
+    }
     await this.deps.safeSendHtmlMessage(chatId, buildSessionRenamedText(name));
   }
 
-  async beginSessionRename(chatId: string, sessionId: string): Promise<void> {
+  async beginSessionRename(chatId: string, messageId: number, sessionId: string): Promise<void> {
     const store = this.deps.getStore();
     if (!store) {
       return;
     }
 
     const activeSession = store.getActiveSession(chatId);
-    if (!activeSession || activeSession.sessionId !== sessionId) {
+    if (!activeSession || activeSession.sessionId !== sessionId || this.renameSurfaceMessageIds.get(chatId) !== messageId) {
       await this.deps.safeSendMessage(chatId, "这个按钮已过期，请重新操作。");
       return;
     }
 
+    const promptMessageId = await this.editOrSendRenamePrompt(chatId, messageId, this.getRenamePromptText("session"));
+    this.renameSurfaceMessageIds.set(chatId, promptMessageId);
     this.pendingRenameStates.set(chatId, {
       kind: "session",
       sessionId: activeSession.sessionId,
-      projectPath: activeSession.projectPath
+      projectPath: activeSession.projectPath,
+      sourceMessageId: promptMessageId
     });
-    await this.deps.safeSendMessage(chatId, "请输入新的会话名称。\n发送 /cancel 取消。");
   }
 
-  async beginProjectRename(chatId: string, sessionId: string): Promise<void> {
+  async beginProjectRename(chatId: string, messageId: number, sessionId: string): Promise<void> {
     const store = this.deps.getStore();
     if (!store) {
       return;
     }
 
     const activeSession = store.getActiveSession(chatId);
-    if (!activeSession || activeSession.sessionId !== sessionId) {
+    if (!activeSession || activeSession.sessionId !== sessionId || this.renameSurfaceMessageIds.get(chatId) !== messageId) {
       await this.deps.safeSendMessage(chatId, "这个按钮已过期，请重新操作。");
       return;
     }
 
+    const promptMessageId = await this.editOrSendRenamePrompt(chatId, messageId, this.getRenamePromptText("project"));
+    this.renameSurfaceMessageIds.set(chatId, promptMessageId);
     this.pendingRenameStates.set(chatId, {
       kind: "project",
       sessionId: activeSession.sessionId,
-      projectPath: activeSession.projectPath
+      projectPath: activeSession.projectPath,
+      sourceMessageId: promptMessageId
     });
-    await this.deps.safeSendMessage(chatId, "请输入新的项目别名。\n发送 /cancel 取消。");
   }
 
-  async clearProjectAlias(chatId: string, sessionId: string): Promise<void> {
+  async clearProjectAlias(chatId: string, messageId: number, sessionId: string): Promise<void> {
     const store = this.deps.getStore();
     if (!store) {
       return;
     }
 
     const activeSession = store.getActiveSession(chatId);
-    if (!activeSession || activeSession.sessionId !== sessionId) {
+    if (!activeSession || activeSession.sessionId !== sessionId || this.renameSurfaceMessageIds.get(chatId) !== messageId) {
       await this.deps.safeSendMessage(chatId, "这个按钮已过期，请重新操作。");
       return;
     }
@@ -642,7 +671,13 @@ export class SessionProjectCoordinator {
 
     store.clearProjectAlias(activeSession.projectPath);
     this.pendingRenameStates.delete(chatId);
-    await this.deps.safeSendHtmlMessage(chatId, buildProjectAliasClearedText(activeSession.projectName));
+    this.renameSurfaceMessageIds.delete(chatId);
+    await this.consumeEphemeralMessage(
+      chatId,
+      messageId,
+      buildProjectAliasClearedText(activeSession.projectName),
+      { html: true }
+    );
   }
 
   async handleRenameInput(chatId: string, text: string): Promise<void> {
@@ -658,16 +693,20 @@ export class SessionProjectCoordinator {
 
     const name = text.trim();
     if (!name) {
-      await this.deps.safeSendMessage(
-        chatId,
-        pendingRename.kind === "project" ? "请输入新的项目别名。\n发送 /cancel 取消。" : "请输入新的会话名称。\n发送 /cancel 取消。"
-      );
+      if (pendingRename.sourceMessageId) {
+        const result = await this.deps.safeEditMessageText(chatId, pendingRename.sourceMessageId, this.getRenamePromptText(pendingRename.kind));
+        if (result.outcome === "edited") {
+          return;
+        }
+      }
+      await this.deps.safeSendMessage(chatId, this.getRenamePromptText(pendingRename.kind));
       return;
     }
 
     const session = store.getSessionById(pendingRename.sessionId);
     if (!session) {
       this.pendingRenameStates.delete(chatId);
+      this.renameSurfaceMessageIds.delete(chatId);
       await this.deps.safeSendMessage(chatId, "当前没有活动会话。");
       return;
     }
@@ -680,12 +719,32 @@ export class SessionProjectCoordinator {
         sessionId: session.sessionId
       });
       this.pendingRenameStates.delete(chatId);
+      this.renameSurfaceMessageIds.delete(chatId);
+      if (pendingRename.sourceMessageId) {
+        await this.consumeEphemeralMessage(
+          chatId,
+          pendingRename.sourceMessageId,
+          buildProjectAliasRenamedText(name),
+          { html: true }
+        );
+        return;
+      }
       await this.deps.safeSendHtmlMessage(chatId, buildProjectAliasRenamedText(name));
       return;
     }
 
     store.renameSession(session.sessionId, name);
     this.pendingRenameStates.delete(chatId);
+    this.renameSurfaceMessageIds.delete(chatId);
+    if (pendingRename.sourceMessageId) {
+      await this.consumeEphemeralMessage(
+        chatId,
+        pendingRename.sourceMessageId,
+        buildSessionRenamedText(name),
+        { html: true }
+      );
+      return;
+    }
     await this.deps.safeSendHtmlMessage(chatId, buildSessionRenamedText(name));
   }
 
@@ -734,5 +793,142 @@ export class SessionProjectCoordinator {
       ? "当前任务不受影响，下次任务开始时生效。"
       : "下次任务开始时生效。";
     await this.deps.safeSendMessage(chatId, `已为当前会话${verb} Plan mode。${suffix}`);
+  }
+
+  private async requireActivePickerState(chatId: string, messageId: number): Promise<PickerState | null> {
+    const pickerState = this.pickerStates.get(chatId);
+    if (!pickerState || pickerState.interactiveMessageId !== messageId) {
+      await this.deps.safeSendMessage(chatId, "这个按钮已过期，请重新操作。");
+      return null;
+    }
+
+    return pickerState;
+  }
+
+  private async consumeEphemeralMessage(
+    chatId: string,
+    messageId: number,
+    text: string,
+    options?: {
+      html?: boolean;
+    }
+  ): Promise<boolean> {
+    if (messageId > 0 && await this.deps.safeDeleteMessage(chatId, messageId)) {
+      if (options?.html) {
+        return await this.deps.safeSendHtmlMessage(chatId, text);
+      } else {
+        return await this.deps.safeSendMessage(chatId, text);
+      }
+    }
+
+    if (messageId > 0) {
+      const result = options?.html
+        ? await this.deps.safeEditHtmlMessageText(chatId, messageId, text)
+        : await this.deps.safeEditMessageText(chatId, messageId, text);
+      if (result.outcome === "edited") {
+        return true;
+      }
+    }
+
+    if (options?.html) {
+      return await this.deps.safeSendHtmlMessage(chatId, text);
+    } else {
+      return await this.deps.safeSendMessage(chatId, text);
+    }
+  }
+
+  private getRenamePromptText(kind: PendingRenameState["kind"]): string {
+    return kind === "project" ? "请输入新的项目别名。\n发送 /cancel 取消。" : "请输入新的会话名称。\n发送 /cancel 取消。";
+  }
+
+  private async editOrSendRenamePrompt(chatId: string, messageId: number, promptText: string): Promise<number> {
+    const result = await this.deps.safeEditMessageText(chatId, messageId, promptText);
+    if (result.outcome === "edited") {
+      return messageId;
+    }
+
+    const sent = await this.deps.safeSendMessageResult(chatId, promptText);
+    if (sent) {
+      await this.cleanupSupersededInteractiveMessage(chatId, messageId, sent.message_id);
+      return sent.message_id;
+    }
+
+    return messageId;
+  }
+
+  private async replaceInteractivePickerMessage(
+    chatId: string,
+    pickerState: PickerState,
+    message: {
+      text: string;
+      replyMarkup?: TelegramInlineKeyboardMarkup;
+      html?: boolean;
+    }
+  ): Promise<number | null> {
+    const previousMessageId = pickerState.interactiveMessageId;
+    if (previousMessageId && previousMessageId > 0) {
+      const result = message.html
+        ? await this.deps.safeEditHtmlMessageText(chatId, previousMessageId, message.text, message.replyMarkup)
+        : await this.deps.safeEditMessageText(chatId, previousMessageId, message.text, message.replyMarkup);
+      if (result.outcome === "edited") {
+        pickerState.interactiveMessageId = previousMessageId;
+        return previousMessageId;
+      }
+    }
+
+    const sent = message.html
+      ? await this.deps.safeSendHtmlMessageResult(chatId, message.text, message.replyMarkup)
+      : await this.deps.safeSendMessageResult(chatId, message.text, message.replyMarkup);
+    if (!sent) {
+      return previousMessageId ?? null;
+    }
+
+    pickerState.interactiveMessageId = sent.message_id;
+    await this.cleanupSupersededInteractiveMessage(chatId, previousMessageId, sent.message_id);
+    return sent.message_id;
+  }
+
+  private async sendNewestInteractivePickerMessage(
+    chatId: string,
+    pickerState: PickerState,
+    message: {
+      text: string;
+      replyMarkup?: TelegramInlineKeyboardMarkup;
+      html?: boolean;
+    }
+  ): Promise<number | null> {
+    const previousMessageId = pickerState.interactiveMessageId;
+    const sent = message.html
+      ? await this.deps.safeSendHtmlMessageResult(chatId, message.text, message.replyMarkup)
+      : await this.deps.safeSendMessageResult(chatId, message.text, message.replyMarkup);
+    if (sent) {
+      pickerState.interactiveMessageId = sent.message_id;
+      await this.cleanupSupersededInteractiveMessage(chatId, previousMessageId, sent.message_id);
+      return sent.message_id;
+    }
+
+    if (previousMessageId && previousMessageId > 0) {
+      const result = message.html
+        ? await this.deps.safeEditHtmlMessageText(chatId, previousMessageId, message.text, message.replyMarkup)
+        : await this.deps.safeEditMessageText(chatId, previousMessageId, message.text, message.replyMarkup);
+      if (result.outcome === "edited") {
+        pickerState.interactiveMessageId = previousMessageId;
+        return previousMessageId;
+      }
+    }
+
+    return previousMessageId ?? null;
+  }
+
+  private async cleanupSupersededInteractiveMessage(
+    chatId: string,
+    previousMessageId: number | null,
+    replacementMessageId: number
+  ): Promise<void> {
+    if (!previousMessageId || previousMessageId <= 0 || previousMessageId === replacementMessageId) {
+      return;
+    }
+
+    await this.deps.safeDeleteMessage(chatId, previousMessageId);
   }
 }

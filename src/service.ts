@@ -52,6 +52,7 @@ import {
   buildRuntimeStatusReplyMarkup,
   buildRuntimeStatusCard,
   buildUnsupportedCommandText,
+  encodeLanguageCloseCallback,
   encodeLanguageSetCallback,
   formatReasoningEffortLabel,
   type ParsedCallbackData,
@@ -651,10 +652,16 @@ export class BridgeService {
         message.message_id,
         nextParsed
       ),
-      beginSessionRename: async (sessionId) => this.beginSessionRename(chatId, sessionId),
-      beginProjectRename: async (sessionId) => this.beginProjectRename(chatId, sessionId),
-      clearProjectAlias: async (sessionId) => this.clearProjectAlias(chatId, sessionId),
+      beginSessionRename: async (sessionId) => this.beginSessionRename(chatId, message.message_id, sessionId),
+      beginProjectRename: async (sessionId) => this.beginProjectRename(chatId, message.message_id, sessionId),
+      clearProjectAlias: async (sessionId) => this.clearProjectAlias(chatId, message.message_id, sessionId),
       handleModelDefault: async (sessionId) => this.codexCommandCoordinator.handleModelDefaultCallback(
+        callbackQuery.id,
+        chatId,
+        message.message_id,
+        sessionId
+      ),
+      handleModelClose: async (sessionId) => this.codexCommandCoordinator.handleModelCloseCallback(
         callbackQuery.id,
         chatId,
         message.message_id,
@@ -741,7 +748,14 @@ export class BridgeService {
         message.message_id,
         token
       ),
+      handleRuntimePreferencesClose: async (token) => this.handleRuntimePreferencesCloseCallback(
+        callbackQuery.id,
+        chatId,
+        message.message_id,
+        token
+      ),
       handleLanguageSet: async (language) => this.handleLanguageSetCallback(callbackQuery.id, chatId, message.message_id, language),
+      handleLanguageClose: async () => this.handleLanguageCloseCallback(callbackQuery.id, chatId, message.message_id),
       handleInspectView: async (sessionId, options) => this.handleInspectViewCallback(
         callbackQuery.id,
         chatId,
@@ -749,7 +763,19 @@ export class BridgeService {
         sessionId,
         options
       ),
-      handlePlanImplement: async (sessionId) => this.handlePlanResultActionCallback(callbackQuery.id, chatId, sessionId, "implement"),
+      handleInspectClose: async (sessionId) => this.handleInspectCloseCallback(
+        callbackQuery.id,
+        chatId,
+        message.message_id,
+        sessionId
+      ),
+      handlePlanImplement: async (answerId) => this.handlePlanResultActionCallback(
+        callbackQuery.id,
+        chatId,
+        message.message_id,
+        answerId,
+        "implement"
+      ),
       handleRollbackList: async (sessionId, page) => this.handleRollbackPickerCallback(
         callbackQuery.id,
         chatId,
@@ -770,6 +796,12 @@ export class BridgeService {
         message.message_id,
         sessionId,
         targetIndex
+      ),
+      handleRollbackClose: async (sessionId) => this.handleRollbackCloseCallback(
+        callbackQuery.id,
+        chatId,
+        message.message_id,
+        sessionId
       ),
       handleInteractionDecision: async (nextParsed) => this.interactionBroker.handleInteractionDecisionCallback(
         callbackQuery.id,
@@ -891,6 +923,20 @@ export class BridgeService {
     );
   }
 
+  private async handleRuntimePreferencesCloseCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    token: string
+  ): Promise<void> {
+    await this.runtimeSurfaceController.handleRuntimePreferencesCloseCallback(
+      callbackQueryId,
+      chatId,
+      messageId,
+      token
+    );
+  }
+
   private async refreshActiveRuntimeStatusCard(chatId: string, reason: string): Promise<void> {
     await this.runtimeSurfaceController.refreshActiveRuntimeStatusCard(this.getActiveTurnForChat(chatId), chatId, reason);
   }
@@ -985,7 +1031,8 @@ export class BridgeService {
   private async handlePlanResultActionCallback(
     callbackQueryId: string,
     chatId: string,
-    sessionId: string,
+    messageId: number,
+    answerId: string,
     action: "implement"
   ): Promise<void> {
     if (!this.store) {
@@ -993,6 +1040,24 @@ export class BridgeService {
       return;
     }
 
+    const view = this.store.getFinalAnswerView(answerId, chatId);
+    if (!view || (view.telegramMessageId !== null && view.telegramMessageId !== messageId)) {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    if (view.primaryActionConsumed) {
+      await this.runtimeSurfaceController.renderPersistedPlanResult(
+        callbackQueryId,
+        chatId,
+        messageId,
+        answerId,
+        { expanded: true, page: 1 }
+      );
+      return;
+    }
+
+    const sessionId = view.sessionId;
     const session = this.store.getSessionById(sessionId);
     if (!session || session.telegramChatId !== chatId) {
       await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
@@ -1012,8 +1077,21 @@ export class BridgeService {
       return;
     }
 
-    await this.startRealTurn(chatId, updatedSession, "Implement the plan.");
-    await this.safeAnswerCallbackQuery(callbackQueryId);
+    try {
+      await this.startRealTurn(chatId, updatedSession, "Implement the plan.");
+    } catch {
+      await this.safeAnswerCallbackQuery(callbackQueryId, "当前无法开始实施，请稍后重试。");
+      return;
+    }
+
+    this.store.setFinalAnswerPrimaryActionConsumed(answerId, true);
+    await this.runtimeSurfaceController.renderPersistedPlanResult(
+      callbackQueryId,
+      chatId,
+      messageId,
+      answerId,
+      { expanded: true, page: 1 }
+    );
   }
 
   private async authorizeMessageSender(
@@ -1381,16 +1459,16 @@ export class BridgeService {
     await this.sessionProjectCoordinator.handleRename(chatId, args);
   }
 
-  private async beginSessionRename(chatId: string, sessionId: string): Promise<void> {
-    await this.sessionProjectCoordinator.beginSessionRename(chatId, sessionId);
+  private async beginSessionRename(chatId: string, messageId: number, sessionId: string): Promise<void> {
+    await this.sessionProjectCoordinator.beginSessionRename(chatId, messageId, sessionId);
   }
 
-  private async beginProjectRename(chatId: string, sessionId: string): Promise<void> {
-    await this.sessionProjectCoordinator.beginProjectRename(chatId, sessionId);
+  private async beginProjectRename(chatId: string, messageId: number, sessionId: string): Promise<void> {
+    await this.sessionProjectCoordinator.beginProjectRename(chatId, messageId, sessionId);
   }
 
-  private async clearProjectAlias(chatId: string, sessionId: string): Promise<void> {
-    await this.sessionProjectCoordinator.clearProjectAlias(chatId, sessionId);
+  private async clearProjectAlias(chatId: string, messageId: number, sessionId: string): Promise<void> {
+    await this.sessionProjectCoordinator.clearProjectAlias(chatId, messageId, sessionId);
   }
 
   private async handleRenameInput(chatId: string, text: string): Promise<void> {
@@ -1483,6 +1561,20 @@ export class BridgeService {
       messageId,
       sessionId,
       targetIndex
+    );
+  }
+
+  private async handleRollbackCloseCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    sessionId: string
+  ): Promise<void> {
+    await this.codexCommandCoordinator.handleRollbackCloseCallback(
+      callbackQueryId,
+      chatId,
+      messageId,
+      sessionId
     );
   }
 
@@ -1633,6 +1725,20 @@ export class BridgeService {
       messageId,
       sessionId,
       options
+    );
+  }
+
+  private async handleInspectCloseCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    sessionId: string
+  ): Promise<void> {
+    await this.runtimeSurfaceController.handleInspectCloseCallback(
+      callbackQueryId,
+      chatId,
+      messageId,
+      sessionId
     );
   }
 
@@ -2240,6 +2346,38 @@ export class BridgeService {
     }
   }
 
+  private async replaceBridgeOwnedMessage(
+    chatId: string,
+    messageId: number,
+    text: string,
+    options?: {
+      html?: boolean;
+      replyMarkup?: TelegramInlineKeyboardMarkup;
+    }
+  ): Promise<boolean> {
+    if (messageId > 0) {
+      const result = options?.html
+        ? await this.safeEditHtmlMessageText(chatId, messageId, text, options.replyMarkup)
+        : await this.safeEditMessageText(chatId, messageId, text, options?.replyMarkup);
+      if (result.outcome === "edited") {
+        return true;
+      }
+    }
+
+    const sent = options?.html
+      ? await this.safeSendHtmlMessageResult(chatId, text, options?.replyMarkup)
+      : await this.safeSendMessageResult(chatId, text, options?.replyMarkup);
+    if (!sent) {
+      return false;
+    }
+
+    if (messageId > 0 && sent.message_id !== messageId) {
+      await this.safeDeleteMessage(chatId, messageId);
+    }
+
+    return true;
+  }
+
   private async safeAnswerCallbackQuery(callbackQueryId: string, text?: string): Promise<void> {
     if (!this.api) {
       return;
@@ -2273,10 +2411,17 @@ export class BridgeService {
       replyMarkup: {
         inline_keyboard: [
           [{ text: `中文${chineseCurrent}`, callback_data: encodeLanguageSetCallback("zh") }],
-          [{ text: `English${englishCurrent}`, callback_data: encodeLanguageSetCallback("en") }]
+          [{ text: `English${englishCurrent}`, callback_data: encodeLanguageSetCallback("en") }],
+          [{ text: language === "en" ? "Close" : "关闭", callback_data: encodeLanguageCloseCallback() }]
         ]
       }
     };
+  }
+
+  private buildLanguageClosedMessage(language: UiLanguage): string {
+    return language === "en"
+      ? "<b>Language Picker Closed</b>\n<b>Current</b> English"
+      : "<b>已关闭语言选择</b>\n<b>当前语言：</b> 中文";
   }
 
   private async handleLanguage(chatId: string): Promise<void> {
@@ -2298,9 +2443,27 @@ export class BridgeService {
     const nextLanguage = this.store.setUiLanguage(language);
     await this.safeAnswerCallbackQuery(callbackQueryId, nextLanguage === "en" ? "Saved." : "已保存。");
     await this.syncTelegramCommands();
-    const rendered = this.buildLanguagePickerMessage(nextLanguage);
-    await this.safeEditHtmlMessageText(chatId, messageId, rendered.text, rendered.replyMarkup);
-    await this.reanchorRuntimeAfterBridgeReply(chatId, "language_changed");
+    await this.replaceBridgeOwnedMessage(chatId, messageId, this.buildLanguageClosedMessage(nextLanguage), {
+      html: true
+    });
+  }
+
+  private async handleLanguageCloseCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number
+  ): Promise<void> {
+    const delivered = await this.replaceBridgeOwnedMessage(chatId, messageId, this.buildLanguageClosedMessage(this.getUiLanguage()), {
+      html: true
+    });
+    if (delivered) {
+      await this.safeAnswerCallbackQuery(callbackQueryId);
+      return;
+    }
+
+    await this.safeAnswerCallbackQuery(callbackQueryId, this.getUiLanguage() === "en"
+      ? "Unable to close this message right now."
+      : "暂时无法关闭这条消息，请稍后再试。");
   }
 
   private async reanchorRuntimeAfterBridgeReply(chatId: string, reason: string): Promise<void> {

@@ -422,13 +422,12 @@ export class InteractionBroker {
       interactionId: row.interactionId,
       questionId: currentQuestion.id
     });
+    await this.renderStoredPendingInteraction(chatId, {
+      ...row,
+      state: "awaiting_text",
+      responseJson: JSON.stringify(draft)
+    }, interaction);
     await this.deps.safeAnswerCallbackQuery(callbackQueryId);
-    await this.deps.safeSendMessage(
-      chatId,
-      currentQuestion.isSecret
-        ? "请直接发送这条敏感回答。桥不会把它回显到可见摘要里。"
-        : "请直接发送这条问题的文字回答。发送 /cancel 可以取消。"
-    );
   }
 
   async handleInteractionCancelCallback(
@@ -987,7 +986,8 @@ function buildPendingInteractionSurface(
         totalQuestions: interaction.questions.length,
         options: currentQuestion.options,
         isOther: currentQuestion.isOther,
-        isSecret: currentQuestion.isSecret
+        isSecret: currentQuestion.isSecret,
+        awaitingText: row.state === "awaiting_text"
       });
     }
   }

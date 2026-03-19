@@ -25,7 +25,7 @@ const LEGACY_RUNTIME_STATUS_FIELD_MIGRATIONS: ReadonlyMap<string, RuntimeStatusF
   ["thread_id", "session-id"]
 ]);
 const RUNTIME_STATUS_FIELD_V4_MIGRATION_CUTOFF = "2026-03-17T00:00:00.000Z";
-const CURRENT_SCHEMA_VERSION = 12;
+const CURRENT_SCHEMA_VERSION = 13;
 
 export function parseRuntimeStatusFields(fieldsJson: string): RuntimeStatusField[] {
   try {
@@ -179,6 +179,7 @@ function initialSchema(): string {
       turn_id TEXT NOT NULL,
       preview_html TEXT NOT NULL,
       pages_json TEXT NOT NULL,
+      primary_action_consumed INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL
     );
 
@@ -309,6 +310,7 @@ function applyMigrations(db: DatabaseSync): void {
           turn_id TEXT NOT NULL,
           preview_html TEXT NOT NULL,
           pages_json TEXT NOT NULL,
+          primary_action_consumed INTEGER NOT NULL DEFAULT 0,
           created_at TEXT NOT NULL
         )
       `
@@ -486,6 +488,14 @@ function applyMigrations(db: DatabaseSync): void {
     );
 
     recordMigration(db, 12);
+  }
+
+  if (!applied.has(13)) {
+    if (!hasColumn(db, "final_answer_view", "primary_action_consumed")) {
+      db.exec("ALTER TABLE final_answer_view ADD COLUMN primary_action_consumed INTEGER NOT NULL DEFAULT 0");
+    }
+
+    recordMigration(db, 13);
   }
 }
 

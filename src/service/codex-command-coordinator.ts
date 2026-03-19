@@ -2,8 +2,10 @@ import type { CodexAppServerClient, UserInput } from "../codex/app-server.js";
 import type { BridgeStateStore } from "../state/store.js";
 import type { TelegramInlineKeyboardMarkup } from "../telegram/api.js";
 import {
+  buildModelPickerClosedText,
   buildModelPickerMessage,
   buildReasoningEffortPickerMessage,
+  buildRollbackClosedMessage,
   buildRollbackConfirmMessage,
   buildRollbackPickerMessage,
   formatSessionModelReasoningConfig,
@@ -163,6 +165,22 @@ export class CodexCommandCoordinator {
       messageId,
       "已设置当前会话模型：默认模型 + 默认\n下次任务开始时生效。"
     );
+  }
+
+  async handleModelCloseCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    sessionId: string
+  ): Promise<void> {
+    const session = this.getActiveSessionForModelCallback(chatId, sessionId);
+    if (!session) {
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+
+    await this.deps.safeAnswerCallbackQuery(callbackQueryId);
+    await this.deps.safeEditHtmlMessageText(chatId, messageId, buildModelPickerClosedText(session));
   }
 
   async handleModelPageCallback(
@@ -750,6 +768,22 @@ export class CodexCommandCoordinator {
       messageId,
       `已回滚到：${target.sequenceNumber}. ${target.label}\n${buildRollbackSuccessText(target.rollbackCount)}`
     );
+  }
+
+  async handleRollbackCloseCallback(
+    callbackQueryId: string,
+    chatId: string,
+    messageId: number,
+    sessionId: string
+  ): Promise<void> {
+    const session = this.getRollbackSessionForCallback(chatId, sessionId);
+    if (!session) {
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新发送 /rollback。");
+      return;
+    }
+
+    await this.deps.safeAnswerCallbackQuery(callbackQueryId);
+    await this.deps.safeEditHtmlMessageText(chatId, messageId, buildRollbackClosedMessage());
   }
 
   async handleCompact(chatId: string): Promise<void> {

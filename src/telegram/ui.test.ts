@@ -511,8 +511,8 @@ test("buildRenameTargetPicker includes project alias clear action when needed", 
 
   assert.match(rendered.text, /<b>当前项目：<\/b> Alias One/u);
   assert.equal(rendered.replyMarkup.inline_keyboard[0]?.[0]?.text, "重命名会话");
-  assert.equal(rendered.replyMarkup.inline_keyboard[1]?.[0]?.text, "设置项目别名");
-  assert.equal(rendered.replyMarkup.inline_keyboard[2]?.[0]?.text, "清除项目别名");
+  assert.equal(rendered.replyMarkup.inline_keyboard[0]?.[1]?.text, "设置项目别名");
+  assert.equal(rendered.replyMarkup.inline_keyboard[1]?.[0]?.text, "清除项目别名");
 });
 
 test("buildRuntimeStatusCard keeps only fixed runtime fields and renders progress on a new line", () => {
@@ -684,7 +684,7 @@ test("buildRuntimePreferencesMessage renders v4 callbacks for toggle and save ac
     token: "token123",
     field: "model-name"
   });
-  assert.deepEqual(parseCallbackData(rendered.replyMarkup.inline_keyboard.at(-2)?.[0]?.callback_data ?? ""), {
+  assert.deepEqual(parseCallbackData(rendered.replyMarkup.inline_keyboard.at(-3)?.[0]?.callback_data ?? ""), {
     kind: "runtime_save",
     token: "token123"
   });
@@ -992,6 +992,10 @@ test("rollback picker and confirm messages use v4 callbacks", () => {
     targetIndex: 5
   });
   assert.deepEqual(parseCallbackData(picker.replyMarkup.inline_keyboard.at(-1)?.[0]?.callback_data ?? ""), {
+    kind: "rollback_close",
+    sessionId: "session-rb"
+  });
+  assert.deepEqual(parseCallbackData(picker.replyMarkup.inline_keyboard.at(-2)?.[0]?.callback_data ?? ""), {
     kind: "rollback_page",
     sessionId: "session-rb",
     page: 1

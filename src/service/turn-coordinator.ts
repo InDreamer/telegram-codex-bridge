@@ -835,12 +835,12 @@ export class TurnCoordinator {
       const markup = rendered.truncated
         ? buildPlanResultReplyMarkup({
           answerId: saved.answerId,
-          sessionId: activeTurn.sessionId,
           totalPages: saved.pages.length,
-          expanded: false
+          expanded: false,
+          primaryActionConsumed: false
         })
         : {
-          inline_keyboard: buildPlanResultActionRows(activeTurn.sessionId)
+          inline_keyboard: buildPlanResultActionRows(saved.answerId)
         };
 
       const sent = await this.deps.safeSendHtmlMessageResult(
