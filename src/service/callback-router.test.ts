@@ -135,6 +135,9 @@ function createHandlers(calls: Call[]) {
     },
     handleInteractionAnswerToggle: async (interactionId: string, expanded: boolean) => {
       calls.push({ name: "handleInteractionAnswerToggle", args: [interactionId, expanded] });
+    },
+    handleHubSelect: async (token: string, version: number, slot: number) => {
+      calls.push({ name: "handleHubSelect", args: [token, version, slot] });
     }
   };
 }

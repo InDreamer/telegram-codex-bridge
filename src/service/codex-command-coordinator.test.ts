@@ -134,6 +134,11 @@ async function createCoordinatorContext(options: {
         promptLabel
       });
     },
+    getRunningTurnCapacity: () => ({
+      allowed: true,
+      runningCount: 0,
+      limit: 10
+    }),
     clearRecentActivity: (sessionId) => {
       clearedRecentActivity.push(sessionId);
     },

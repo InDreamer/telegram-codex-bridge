@@ -59,6 +59,11 @@ interface CodexCommandCoordinatorDeps {
     prompt: string | null,
     promptLabel: string
   ) => Promise<void>;
+  getRunningTurnCapacity: (chatId: string) => {
+    allowed: boolean;
+    runningCount: number;
+    limit: number;
+  };
   clearRecentActivity: (sessionId: string) => void;
   safeSendMessage: (
     chatId: string,
@@ -575,6 +580,15 @@ export class CodexCommandCoordinator {
 
     if (activeSession.status === "running") {
       await this.deps.safeSendMessage(chatId, "当前项目仍在执行，请先等待完成或停止当前操作。");
+      return;
+    }
+
+    const capacity = this.deps.getRunningTurnCapacity(chatId);
+    if (!capacity.allowed) {
+      await this.deps.safeSendMessage(
+        chatId,
+        `当前最多只能并行运行 ${capacity.limit} 个会话，请先等待完成或停止部分任务。`
+      );
       return;
     }
 

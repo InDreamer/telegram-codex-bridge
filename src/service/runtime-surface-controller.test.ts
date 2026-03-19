@@ -150,6 +150,7 @@ async function createControllerContext(options: {
     replyMarkup?: TelegramInlineKeyboardMarkup
   ) => Promise<{ outcome: "edited" } | { outcome: "rate_limited"; retryAfterMs: number } | { outcome: "failed" }>;
   backfillSubagentIdentities?: (activeTurn: unknown, agentEntries: unknown[]) => Promise<boolean>;
+  listActiveTurns?: () => unknown[];
   initialSentMessageId?: number;
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "ctb-runtime-surface-test-"));
@@ -173,6 +174,7 @@ async function createControllerContext(options: {
   const controller = new RuntimeSurfaceController({
     logger: testLogger,
     getStore: () => store,
+    listActiveTurns: () => (options.listActiveTurns?.() ?? []) as never[],
     getActiveInspectActivity: () => null,
     getRecentActivity: () => null,
     getHistoricalInspectPayload: async () => null,
@@ -360,7 +362,9 @@ test("RuntimeSurfaceController retries failed edits on the same status message i
 });
 
 test("RuntimeSurfaceController reanchors the status card after blocked work resumes active", async () => {
+  const activeTurns: unknown[] = [];
   const { controller, sentHtml, deletedMessages, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns,
     initialSentMessageId: 1001
   });
 
@@ -387,6 +391,7 @@ test("RuntimeSurfaceController reanchors the status card after blocked work resu
       nextErrorCardId: 1,
       surfaceQueue: Promise.resolve()
     };
+    activeTurns.push(activeTurn);
 
     await controller.syncRuntimeCards(
       activeTurn as never,

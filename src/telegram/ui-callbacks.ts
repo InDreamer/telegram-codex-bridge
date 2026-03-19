@@ -61,7 +61,8 @@ export type ParsedCallbackData =
   | { kind: "interaction_text"; interactionId: string; questionId: string | null; questionIndex: number | null }
   | { kind: "interaction_cancel"; interactionId: string }
   | { kind: "interaction_answer_expand"; interactionId: string }
-  | { kind: "interaction_answer_collapse"; interactionId: string };
+  | { kind: "interaction_answer_collapse"; interactionId: string }
+  | { kind: "hub_select"; token: string; version: number; slot: number };
 
 const TELEGRAM_CALLBACK_DATA_LIMIT_BYTES = 64;
 
@@ -356,8 +357,31 @@ export function encodePlanImplementCallback(answerId: string): string {
   return ensureTelegramCallbackDataLimit(`v4:pr:i:${answerId}`);
 }
 
+export function encodeHubSelectCallback(token: string, version: number, slot: number): string {
+  return ensureTelegramCallbackDataLimit(
+    `v6:hb:s:${token}:${encodeInteractionIndex(version)}:${encodeInteractionIndex(slot)}`
+  );
+}
+
 export function parseCallbackData(data: string): ParsedCallbackData | null {
   const parts = data.split(":");
+  if (parts[0] === "v6" && parts[1] === "hb") {
+    if (parts[2] === "s" && parts[3] && parts[4] && parts[5]) {
+      const version = decodeInteractionIndex(parts[4]);
+      const slot = decodeInteractionIndex(parts[5]);
+      if (version !== null && slot !== null) {
+        return {
+          kind: "hub_select",
+          token: parts[3],
+          version,
+          slot
+        };
+      }
+    }
+
+    return null;
+  }
+
   if (parts[0] === "v5" && parts[1] === "br") {
     if (parts[2] === "o" && parts[3] && parts[4]) {
       const entryIndex = decodeInteractionIndex(parts[4]);

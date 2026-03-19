@@ -11,6 +11,7 @@ import type { TelegramInlineKeyboardMarkup } from "./api.js";
 import {
   encodeAgentCollapseCallback,
   encodeAgentExpandCallback,
+  encodeHubSelectCallback,
   encodeInspectCollapseCallback,
   encodeInspectCloseCallback,
   encodeInspectExpandCallback,
@@ -70,6 +71,22 @@ export interface RollbackTargetView {
   sequenceNumber: number;
   label: string;
   rollbackCount: number;
+}
+
+export interface RuntimeHubSessionView {
+  sessionId: string;
+  sessionName: string;
+  projectName?: string | null;
+  state: string;
+  progressText?: string | null;
+  isFocused: boolean;
+  isActiveInputTarget: boolean;
+}
+
+export interface RuntimeHubTerminalSummaryView {
+  sessionName: string;
+  projectName?: string | null;
+  state: string;
 }
 
 const RUNTIME_FIELD_PAGE_SIZE = 4;
@@ -181,6 +198,137 @@ export function buildRuntimeStatusReplyMarkup(options: {
       callback_data: encodeStatusInterruptCallback(options.sessionId)
     }
   ]);
+
+  return {
+    inline_keyboard: rows
+  };
+}
+
+export function buildRuntimeHubMessage(options: {
+  language?: UiLanguage;
+  windowIndex: number;
+  totalWindows: number;
+  sessions: RuntimeHubSessionView[];
+  focusedSessionText: string;
+  activeInputTargetName?: string | null;
+  activeInputTargetInWindow: boolean;
+  terminalSummaries?: RuntimeHubTerminalSummaryView[];
+  isMainHub: boolean;
+}): string {
+  const language = options.language ?? "zh";
+  const lines: string[] = [
+    formatHtmlHeading(language === "en" ? "Runtime Status" : "运行状态"),
+    formatHtmlField(
+      language === "en" ? "Hub:" : "Hub：",
+      `${options.windowIndex + 1}/${Math.max(1, options.totalWindows)}`
+    )
+  ];
+
+  if (options.activeInputTargetName) {
+    const suffix = options.activeInputTargetInWindow
+      ? ""
+      : language === "en"
+        ? " (outside this hub)"
+        : "（不在当前 Hub）";
+    lines.push(formatHtmlField(
+      language === "en" ? "Input target:" : "输入目标：",
+      `${options.activeInputTargetName}${suffix}`
+    ));
+  }
+
+  lines.push("", `<b>${language === "en" ? "Running sessions" : "运行中的会话"}</b>`);
+
+  for (const [index, session] of options.sessions.entries()) {
+    const markers = [
+      session.isFocused ? (language === "en" ? "viewing" : "查看中") : null,
+      session.isActiveInputTarget ? (language === "en" ? "current input" : "当前输入") : null
+    ].filter((value): value is string => Boolean(value));
+    const markerText = markers.length > 0 ? ` [${markers.join(" / ")}]` : "";
+    const projectName = session.projectName?.trim() ? ` / ${escapeHtml(session.projectName.trim())}` : "";
+    lines.push(
+      `${index + 1}. <b>${escapeHtml(session.sessionName)}</b>${projectName}${markerText} · ${escapeHtml(session.state)}`
+    );
+
+    if (session.progressText) {
+      lines.push(`   ${renderInlineMarkdown(truncateText(session.progressText, 120))}`);
+    }
+  }
+
+  if (options.isMainHub && (options.terminalSummaries?.length ?? 0) > 0) {
+    lines.push("", `<b>${language === "en" ? "Recent terminal sessions" : "最近结束的会话"}</b>`);
+
+    for (const [index, summary] of (options.terminalSummaries ?? []).entries()) {
+      const projectName = summary.projectName?.trim() ? ` / ${escapeHtml(summary.projectName.trim())}` : "";
+      lines.push(`${index + 1}. <b>${escapeHtml(summary.sessionName)}</b>${projectName} · ${escapeHtml(summary.state)}`);
+    }
+  }
+
+  lines.push("", options.focusedSessionText);
+  return lines.join("\n");
+}
+
+export function buildRuntimeHubReplyMarkup(options: {
+  token: string;
+  callbackVersion: number;
+  language?: UiLanguage;
+  sessions: RuntimeHubSessionView[];
+  focusedSessionId: string | null;
+  planEntries?: string[];
+  planExpanded?: boolean;
+  agentEntries?: CollabAgentStateSnapshot[];
+  agentsExpanded?: boolean;
+  interruptEnabled: boolean;
+  inspectEnabled: boolean;
+}): TelegramInlineKeyboardMarkup {
+  const language = options.language ?? "zh";
+  const rows: TelegramInlineKeyboardMarkup["inline_keyboard"] = [];
+
+  if (options.sessions.length > 1) {
+    const sessionButtons = options.sessions.map((session, index) => ({
+      text: session.isFocused
+        ? `${language === "en" ? "Viewing" : "查看中"} · ${truncateText(session.sessionName, 18)}`
+        : session.isActiveInputTarget
+          ? `${language === "en" ? "Current" : "当前"} · ${truncateText(session.sessionName, 18)}`
+          : truncateText(session.sessionName, 18),
+      callback_data: encodeHubSelectCallback(options.token, options.callbackVersion, index)
+    }));
+    rows.push(...chunkButtons(sessionButtons, 2));
+  }
+
+  if (options.focusedSessionId && (options.planEntries?.length ?? 0) > 0) {
+    rows.push([{
+      text: options.planExpanded ? "收起计划清单" : buildCollapsedPlanButtonLabel(options.planEntries ?? []),
+      callback_data: options.planExpanded
+        ? encodePlanCollapseCallback(options.focusedSessionId)
+        : encodePlanExpandCallback(options.focusedSessionId)
+    }]);
+  }
+
+  if (options.focusedSessionId && (options.agentEntries?.length ?? 0) > 0) {
+    rows.push([{
+      text: options.agentsExpanded ? "收起 Agent" : buildCollapsedAgentButtonLabel(options.agentEntries ?? []),
+      callback_data: options.agentsExpanded
+        ? encodeAgentCollapseCallback(options.focusedSessionId)
+        : encodeAgentExpandCallback(options.focusedSessionId)
+    }]);
+  }
+
+  const actionButtons: Array<{ text: string; callback_data: string }> = [];
+  if (options.focusedSessionId && options.inspectEnabled) {
+    actionButtons.push({
+      text: language === "en" ? "Inspect" : "查看详情",
+      callback_data: encodeStatusInspectCallback(options.focusedSessionId)
+    });
+  }
+  if (options.focusedSessionId && options.interruptEnabled) {
+    actionButtons.push({
+      text: language === "en" ? "Interrupt" : "中断操作",
+      callback_data: encodeStatusInterruptCallback(options.focusedSessionId)
+    });
+  }
+  if (actionButtons.length > 0) {
+    rows.push(actionButtons);
+  }
 
   return {
     inline_keyboard: rows

@@ -280,6 +280,7 @@ export class BridgeService {
     this.runtimeSurfaceController = new RuntimeSurfaceController({
       logger: this.logger,
       getStore: () => this.store,
+      listActiveTurns: () => this.listActiveTurns() as never,
       getActiveInspectActivity: (sessionId) => this.turnCoordinator.getActiveInspectActivity(sessionId) as never,
       getRecentActivity: (sessionId) => this.turnCoordinator.getRecentActivity(sessionId) as never,
       getHistoricalInspectPayload: async (activeSession) => this.buildHistoricalInspectRenderPayload(activeSession),
@@ -406,6 +407,7 @@ export class BridgeService {
         this.turnCoordinator.beginActiveTurn(chatId, session, threadId, turnId, turnStatus),
       submitOrQueueRichInput: async (chatId, session, inputs, prompt, promptLabel) =>
         this.richInputAdapter.submitOrQueueRichInput(chatId, session, inputs, prompt, promptLabel),
+      getRunningTurnCapacity: (chatId) => this.turnCoordinator.getRunningTurnCapacity(chatId),
       clearRecentActivity: (sessionId) => this.turnCoordinator.clearRecentActivity(sessionId),
       safeSendMessage: async (chatId, text, replyMarkup) => this.safeSendMessage(chatId, text, replyMarkup),
       safeSendHtmlMessage: async (chatId, text, replyMarkup) => this.safeSendHtmlMessage(chatId, text, replyMarkup),
@@ -462,6 +464,7 @@ export class BridgeService {
       throw error;
     }
     const recovered = this.store.recoveredFromCorruption;
+    const recoverySessions = this.store.listRunningSessions();
     const recoveryInteractions = this.store.listPendingInteractionsForRunningSessions();
     const recoveryNotices = this.store.markRunningSessionsFailedWithNotices("bridge_restart");
     const failedSessions = recoveryNotices.length;
@@ -513,6 +516,18 @@ export class BridgeService {
 
     await this.syncTelegramCommands();
     await this.logger.info("bridge service started", { readiness: snapshot.state });
+    if (recoverySessions.length > 0) {
+      const recoveryChatId = recoverySessions[0]?.telegramChatId;
+      if (recoveryChatId) {
+        await this.runtimeSurfaceController.sendRecoveryHub(
+          recoveryChatId,
+          recoverySessions.map((session) => session.sessionId)
+        );
+        for (const notice of recoveryNotices) {
+          this.store.clearRuntimeNotice(notice.key);
+        }
+      }
+    }
     await this.flushRuntimeNotices();
     await this.poller.run();
   }
@@ -521,6 +536,7 @@ export class BridgeService {
     this.stopping = true;
     this.poller?.stop();
     this.threadArchiveReconciler.clear();
+    this.runtimeSurfaceController.disposeAllRuntimeHubs();
     for (const activeTurn of this.listActiveTurns()) {
       this.runtimeSurfaceController.disposeRuntimeCards(activeTurn);
     }
@@ -693,6 +709,7 @@ export class BridgeService {
       ),
       toggleStatusCardSection: async (sessionId, expanded, section) => this.handleStatusCardSectionToggle(
         callbackQuery.id,
+        chatId,
         message.message_id,
         sessionId,
         expanded,
@@ -835,6 +852,14 @@ export class BridgeService {
         message.message_id,
         interactionId,
         expanded
+      ),
+      handleHubSelect: async (token, version, slot) => this.runtimeSurfaceController.handleHubSelectCallback(
+        callbackQuery.id,
+        chatId,
+        message.message_id,
+        token,
+        version,
+        slot
       )
     });
   }
@@ -945,14 +970,15 @@ export class BridgeService {
 
   private async handleStatusCardSectionToggle(
     callbackQueryId: string,
+    chatId: string,
     messageId: number,
     sessionId: string,
     expanded: boolean,
     section: "plan" | "agents"
   ): Promise<void> {
     await this.runtimeSurfaceController.handleStatusCardSectionToggle(
-      this.getActiveTurnForSession(sessionId),
       callbackQueryId,
+      chatId,
       messageId,
       sessionId,
       expanded,
@@ -966,6 +992,13 @@ export class BridgeService {
     messageId: number,
     sessionId: string
   ): Promise<void> {
+    const hubState = this.runtimeSurfaceController.resolveFocusedRuntimeHubSession(chatId, messageId, sessionId);
+    if (hubState) {
+      await this.safeAnswerCallbackQuery(callbackQueryId);
+      await this.runtimeSurfaceController.handleInspect(hubState.chatId, sessionId);
+      return;
+    }
+
     const activeTurn = this.getActiveTurnForSession(sessionId);
     if (!activeTurn || activeTurn.chatId !== chatId || activeTurn.statusCard.messageId !== messageId) {
       await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
@@ -982,6 +1015,15 @@ export class BridgeService {
     messageId: number,
     sessionId: string
   ): Promise<void> {
+    const hubState = this.runtimeSurfaceController.resolveFocusedRuntimeHubSession(chatId, messageId, sessionId, {
+      requireLive: true
+    });
+    if (hubState) {
+      const result = await this.turnCoordinator.interruptSession(hubState.chatId, sessionId);
+      await this.safeAnswerCallbackQuery(callbackQueryId, result.message);
+      return;
+    }
+
     const activeTurn = this.getActiveTurnForSession(sessionId);
     if (!activeTurn || activeTurn.chatId !== chatId || activeTurn.statusCard.messageId !== messageId) {
       await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
@@ -1068,6 +1110,15 @@ export class BridgeService {
 
     if (session.status === "running" || this.getActiveTurnForSession(sessionId)) {
       await this.safeAnswerCallbackQuery(callbackQueryId, "当前项目仍在执行，请等待完成或发送 /interrupt。");
+      return;
+    }
+
+    const capacity = this.turnCoordinator.getRunningTurnCapacity(chatId);
+    if (!capacity.allowed) {
+      await this.safeAnswerCallbackQuery(
+        callbackQueryId,
+        `当前最多只能并行运行 ${capacity.limit} 个会话，请先等待完成或停止部分任务。`
+      );
       return;
     }
 

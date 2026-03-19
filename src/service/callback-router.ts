@@ -50,6 +50,7 @@ export interface BridgeCallbackRouterHandlers {
   handleInteractionText(parsed: Extract<ParsedCallbackData, { kind: "interaction_text" }>): Promise<void>;
   handleInteractionCancel(interactionId: string): Promise<void>;
   handleInteractionAnswerToggle(interactionId: string, expanded: boolean): Promise<void>;
+  handleHubSelect(token: string, version: number, slot: number): Promise<void>;
 }
 
 export async function routeBridgeCallback(
@@ -213,6 +214,9 @@ export async function routeBridgeCallback(
       return;
     case "interaction_answer_collapse":
       await handlers.handleInteractionAnswerToggle(parsed.interactionId, false);
+      return;
+    case "hub_select":
+      await handlers.handleHubSelect(parsed.token, parsed.version, parsed.slot);
       return;
   }
 

@@ -30,6 +30,7 @@ import { asRecord, getString } from "../util/untyped.js";
 import { normalizeAndTruncate } from "../util/text.js";
 
 const MAX_RECENT_ACTIVITY_ENTRIES = 20;
+const MAX_RUNNING_SESSIONS_PER_CHAT = 10;
 
 interface ActiveTurnState extends InteractionBrokerActiveTurn {
   startedInPlanMode: boolean;
@@ -202,6 +203,23 @@ export class TurnCoordinator {
     this.recentActivityBySessionId.delete(sessionId);
   }
 
+  getRunningTurnCapacity(chatId: string): {
+    allowed: boolean;
+    runningCount: number;
+    limit: number;
+  } {
+    const store = this.deps.getStore();
+    const runningCount = store
+      ? store.listRunningSessions().filter((session) => session.telegramChatId === chatId).length
+      : 0;
+
+    return {
+      allowed: runningCount < MAX_RUNNING_SESSIONS_PER_CHAT,
+      runningCount,
+      limit: MAX_RUNNING_SESSIONS_PER_CHAT
+    };
+  }
+
   getBlockedTurnSteerAvailability(chatId: string, session: SessionRow): BlockedTurnSteerAvailability {
     return this.deps.interactionBroker.getBlockedTurnSteerAvailability(
       chatId,
@@ -276,6 +294,15 @@ export class TurnCoordinator {
       return;
     }
 
+    const capacity = this.getRunningTurnCapacity(chatId);
+    if (!capacity.allowed) {
+      await this.deps.safeSendMessage(
+        chatId,
+        `当前最多只能并行运行 ${capacity.limit} 个会话，请先等待完成或停止部分任务。`
+      );
+      return;
+    }
+
     try {
       await this.deps.ensureAppServerAvailable();
       const threadState = await this.ensureSessionThreadState(session);
@@ -321,6 +348,15 @@ export class TurnCoordinator {
   async startStructuredTurn(chatId: string, session: SessionRow, input: UserInput[]): Promise<void> {
     const store = this.deps.getStore();
     if (!store) {
+      return;
+    }
+
+    const capacity = this.getRunningTurnCapacity(chatId);
+    if (!capacity.allowed) {
+      await this.deps.safeSendMessage(
+        chatId,
+        `当前最多只能并行运行 ${capacity.limit} 个会话，请先等待完成或停止部分任务。`
+      );
       return;
     }
 

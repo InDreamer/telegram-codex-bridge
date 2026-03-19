@@ -310,6 +310,10 @@ export class BridgeStateStore {
     return this.sessions.markRunningSessionsFailed(reason);
   }
 
+  listRunningSessions(): SessionRow[] {
+    return this.sessions.listRunningSessions();
+  }
+
   markRunningSessionsFailedWithNotices(reason: FailureReason): RuntimeNotice[] {
     const runningSessions = this.sessions.listRunningSessions();
 
