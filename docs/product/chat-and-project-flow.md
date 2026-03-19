@@ -178,9 +178,9 @@ Rules:
 ### `扫描本地项目`
 
 Behavior:
-- send a new message instead of editing the original picker
+- update the current project-picker surface in place when possible
 - show `正在扫描本地项目，请稍候…`
-- after scanning, send a refreshed picker as another new message
+- after scanning, keep a single refreshed picker or no-results surface visible; do not leave older picker cards behind
 
 If no new results are found:
 - show `没有发现新的本地项目。`
@@ -189,15 +189,15 @@ If no new results are found:
 ### `手动输入路径`
 
 Behavior:
-- send a new prompt message
+- replace the current picker surface with the manual-path prompt when possible
 - enter `awaiting_manual_project_path` mode
 - prompt with an example path and `/cancel`
 
 Validation flow:
 1. user sends a plain-text path
 2. bridge validates that the path exists, is readable, and is a directory
-3. if valid, bridge asks for confirmation and shows display name plus path
-4. if confirmed, bridge creates the session
+3. if valid, bridge sends a confirmation card as the newest chat surface and retires the older manual-path prompt
+4. if confirmed, bridge creates the session and consumes the confirmation card into a compact success summary
 
 Invalid path feedback:
 - `这个目录不可用，请重新发送目录路径。`
@@ -545,9 +545,9 @@ Final-answer handling:
 - if no final assistant answer is available after a successful turn, send `本次操作已完成，但没有可返回的最终答复。`
 
 Edit versus new message:
-- edit existing messages for bridge-owned runtime cards and bridge-owned long final-answer views
-- send new messages for initial final answers, status views, refreshed pickers, manual-path flows, and rename prompts
-- send a new message when a new runtime card first appears, including status and error cards
+- edit or replace existing messages for bridge-owned runtime cards, bridge-owned long final-answer views, project pickers, manual-path flows, and rename prompts
+- when a bridge-owned surface must fall back to sending a new message, retire the superseded message instead of leaving duplicate cards behind
+- send new messages for initial final answers, status views, and when a new runtime card first appears
 
 While a turn is running:
 - keep one bridge-owned status card in the chat

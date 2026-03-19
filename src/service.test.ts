@@ -13,7 +13,7 @@ import { CodexAppServerClient } from "./codex/app-server.js";
 import { classifyNotification } from "./codex/notification-classifier.js";
 import { BridgeService } from "./service.js";
 import { BridgeStateStore } from "./state/store.js";
-import { buildTurnStatusCard, encodeModelPickCallback } from "./telegram/ui.js";
+import { buildTurnStatusCard, encodeModelPickCallback, parseCallbackData } from "./telegram/ui.js";
 import type { ReadinessSnapshot } from "./types.js";
 
 const testLogger: Logger = {
@@ -4207,7 +4207,9 @@ test("use command can switch away from a running session so another session beco
 
 test("manual path confirmation accepts readable directories and preserves inline buttons", async () => {
   const { service, store, cleanup } = await createServiceContext();
-  const sent: Array<{ text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const edited: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const deleted: number[] = [];
   const paths = (service as any).paths as BridgePaths;
 
   try {
@@ -4217,19 +4219,137 @@ test("manual path confirmation accepts readable directories and preserves inline
 
     (service as any).api = {
       sendMessage: async (_chatId: string, text: string, options?: any) => {
-        sent.push({ text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
-        return createFakeTelegramMessage(950 + sent.length, text);
+        const message = createFakeTelegramMessage(950 + sent.length, text);
+        sent.push({ messageId: message.message_id, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return message;
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) => {
+        edited.push({ messageId, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      deleteMessage: async (_chatId: string, messageId: number) => {
+        deleted.push(messageId);
+        return true;
       }
     };
 
     await (service as any).showProjectPicker("chat-1");
-    await (service as any).enterManualPathMode("chat-1");
+    await (service as any).enterManualPathMode("chat-1", sent[0]!.messageId);
     await (service as any).handleManualPathInput("chat-1", projectPath);
 
+    assert.equal(edited.at(-1)?.messageId, sent[0]?.messageId);
+    assert.equal(edited.at(-1)?.text, "请发送要开始会话的目录路径，例如：/home/ubuntu/Repo/openclaw\n发送 /cancel 返回项目列表。");
     assert.equal(sent.at(-1)?.parseMode, "HTML");
     assert.match(sent.at(-1)?.text ?? "", /<b>项目：<\/b> manual-project/u);
     assert.match(sent.at(-1)?.text ?? "", /<b>路径：<\/b> /u);
     assert.equal(sent.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "确认新建会话");
+    assert.deepEqual(deleted, [sent[0]!.messageId]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("manual path flow replaces stale picker cards when edits fail", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const deleted: number[] = [];
+  const paths = (service as any).paths as BridgePaths;
+
+  try {
+    authorizeChat(store, "chat-1");
+    const projectPath = join(paths.homeDir, "Repo", "manual-fallback-project");
+    await mkdir(projectPath, { recursive: true });
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const message = createFakeTelegramMessage(1000 + sent.length, text);
+        sent.push({ messageId: message.message_id, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return message;
+      },
+      editMessageText: async () => {
+        throw new Error("edit failed");
+      },
+      deleteMessage: async (_chatId: string, messageId: number) => {
+        deleted.push(messageId);
+        return true;
+      }
+    };
+
+    await (service as any).showProjectPicker("chat-1");
+    const pickerMessageId = sent[0]!.messageId;
+    await (service as any).enterManualPathMode("chat-1", pickerMessageId);
+    assert.equal(sent[1]?.text, "请发送要开始会话的目录路径，例如：/home/ubuntu/Repo/openclaw\n发送 /cancel 返回项目列表。");
+    assert.deepEqual(deleted, [pickerMessageId]);
+
+    await (service as any).handleManualPathInput("chat-1", projectPath);
+    assert.equal(sent[2]?.parseMode, "HTML");
+    assert.match(sent[2]?.text ?? "", /manual-fallback-project/u);
+    assert.deepEqual(deleted, [pickerMessageId, sent[1]!.messageId]);
+
+    const confirmCallback = sent[2]?.replyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data;
+    const parsedConfirm = typeof confirmCallback === "string" ? parseCallbackData(confirmCallback) : null;
+    assert.equal(parsedConfirm?.kind, "path_confirm");
+
+    await (service as any).confirmManualProject("chat-1", sent[2]!.messageId, parsedConfirm!.projectKey);
+
+    assert.deepEqual(deleted, [pickerMessageId, sent[1]!.messageId, sent[2]!.messageId]);
+    assert.equal(sent[3]?.parseMode, "HTML");
+    assert.match(sent[3]?.text ?? "", /<b>已新建会话<\/b>/u);
+    assert.match(sent[3]?.text ?? "", /manual-fallback-project/u);
+    assert.equal(store.getActiveSession("chat-1")?.projectPath, projectPath);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("scan more no-results flow replaces stale cards and returns to the picker cleanly", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const deleted: number[] = [];
+  const paths = (service as any).paths as BridgePaths;
+
+  try {
+    authorizeChat(store, "chat-1");
+    const projectPath = join(paths.homeDir, "Repo", "scan-existing-project");
+    await mkdir(projectPath, { recursive: true });
+    await writeFile(join(projectPath, "package.json"), "{}\n", "utf8");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const message = createFakeTelegramMessage(1100 + sent.length, text);
+        sent.push({ messageId: message.message_id, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return message;
+      },
+      editMessageText: async () => {
+        throw new Error("edit failed");
+      },
+      deleteMessage: async (_chatId: string, messageId: number) => {
+        deleted.push(messageId);
+        return true;
+      }
+    };
+
+    await (service as any).showProjectPicker("chat-1");
+    const pickerMessageId = sent[0]!.messageId;
+
+    await (service as any).handleScanMore("chat-1", pickerMessageId);
+    assert.equal(sent[1]?.text, "没有发现新的本地项目。");
+    assert.deepEqual(deleted, [pickerMessageId]);
+
+    await (service as any).returnToProjectPicker("chat-1", sent[1]!.messageId);
+    assert.match(sent[2]?.text ?? "", /选择要新建会话的项目/u);
+    assert.deepEqual(deleted, [pickerMessageId, sent[1]!.messageId]);
+
+    const pickCallback = sent[2]?.replyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data;
+    const parsedPick = typeof pickCallback === "string" ? parseCallbackData(pickCallback) : null;
+    assert.equal(parsedPick?.kind, "pick");
+
+    await (service as any).handleProjectPick("chat-1", sent[2]!.messageId, parsedPick!.projectKey);
+
+    assert.deepEqual(deleted, [pickerMessageId, sent[1]!.messageId, sent[2]!.messageId]);
+    assert.equal(sent[3]?.parseMode, "HTML");
+    assert.match(sent[3]?.text ?? "", /<b>已新建会话<\/b>/u);
+    assert.equal(store.getActiveSession("chat-1")?.projectPath, projectPath);
   } finally {
     await cleanup();
   }

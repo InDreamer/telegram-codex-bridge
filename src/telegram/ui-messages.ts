@@ -333,8 +333,12 @@ export function buildProjectSelectedText(projectName: string): string {
   return formatHtmlField("当前项目：", projectName);
 }
 
-export function buildSessionCreatedText(projectName: string): string {
-  return formatHtmlField("已新建会话：", projectName);
+export function buildSessionCreatedText(sessionName: string, projectPath: string): string {
+  return [
+    formatHtmlHeading("已新建会话"),
+    formatHtmlField("会话名：", sessionName),
+    formatHtmlField("路径：", projectPath)
+  ].join("\n");
 }
 
 export function buildSessionSwitchedText(projectName: string): string {

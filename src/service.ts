@@ -253,7 +253,14 @@ export class BridgeService {
         this.threadArchiveReconciler.dropPendingOp(threadId, opId);
       },
       safeSendMessage: async (chatId, text, replyMarkup) => this.safeSendMessage(chatId, text, replyMarkup),
-      safeSendHtmlMessage: async (chatId, text, replyMarkup) => this.safeSendHtmlMessage(chatId, text, replyMarkup)
+      safeSendMessageResult: async (chatId, text, replyMarkup) => this.safeSendMessageResult(chatId, text, replyMarkup),
+      safeSendHtmlMessage: async (chatId, text, replyMarkup) => this.safeSendHtmlMessage(chatId, text, replyMarkup),
+      safeSendHtmlMessageResult: async (chatId, text, replyMarkup) => this.safeSendHtmlMessageResult(chatId, text, replyMarkup),
+      safeEditMessageText: async (chatId, messageId, text, replyMarkup) =>
+        this.safeEditMessageText(chatId, messageId, text, replyMarkup),
+      safeEditHtmlMessageText: async (chatId, messageId, text, replyMarkup) =>
+        this.safeEditHtmlMessageText(chatId, messageId, text, replyMarkup),
+      safeDeleteMessage: async (chatId, messageId) => this.safeDeleteMessage(chatId, messageId)
     });
     this.projectBrowserCoordinator = new ProjectBrowserCoordinator({
       getStore: () => this.store,
@@ -633,11 +640,11 @@ export class BridgeService {
 
     await routeBridgeCallback(parsed, {
       answer: async (text) => this.safeAnswerCallbackQuery(callbackQuery.id, text),
-      handleProjectPick: async (projectKey) => this.handleProjectPick(chatId, projectKey),
-      handleScanMore: async () => this.handleScanMore(chatId),
-      enterManualPathMode: async () => this.enterManualPathMode(chatId),
-      returnToProjectPicker: async () => this.returnToProjectPicker(chatId),
-      confirmManualProject: async (projectKey) => this.confirmManualProject(chatId, projectKey),
+      handleProjectPick: async (projectKey) => this.handleProjectPick(chatId, message.message_id, projectKey),
+      handleScanMore: async () => this.handleScanMore(chatId, message.message_id),
+      enterManualPathMode: async () => this.enterManualPathMode(chatId, message.message_id),
+      returnToProjectPicker: async () => this.returnToProjectPicker(chatId, message.message_id),
+      confirmManualProject: async (projectKey) => this.confirmManualProject(chatId, message.message_id, projectKey),
       handleBrowseAction: async (nextParsed) => this.handleBrowseCallback(
         callbackQuery.id,
         chatId,
@@ -1322,28 +1329,28 @@ export class BridgeService {
     await this.sessionProjectCoordinator.showProjectPicker(chatId);
   }
 
-  private async handleProjectPick(chatId: string, projectKey: string): Promise<void> {
-    await this.sessionProjectCoordinator.handleProjectPick(chatId, projectKey);
+  private async handleProjectPick(chatId: string, messageId: number, projectKey: string): Promise<void> {
+    await this.sessionProjectCoordinator.handleProjectPick(chatId, messageId, projectKey);
   }
 
-  private async handleScanMore(chatId: string): Promise<void> {
-    await this.sessionProjectCoordinator.handleScanMore(chatId);
+  private async handleScanMore(chatId: string, messageId: number): Promise<void> {
+    await this.sessionProjectCoordinator.handleScanMore(chatId, messageId);
   }
 
-  private async enterManualPathMode(chatId: string): Promise<void> {
-    await this.sessionProjectCoordinator.enterManualPathMode(chatId);
+  private async enterManualPathMode(chatId: string, messageId: number): Promise<void> {
+    await this.sessionProjectCoordinator.enterManualPathMode(chatId, messageId);
   }
 
   private async handleManualPathInput(chatId: string, text: string): Promise<void> {
     await this.sessionProjectCoordinator.handleManualPathInput(chatId, text);
   }
 
-  private async confirmManualProject(chatId: string, projectKey: string): Promise<void> {
-    await this.sessionProjectCoordinator.confirmManualProject(chatId, projectKey);
+  private async confirmManualProject(chatId: string, messageId: number, projectKey: string): Promise<void> {
+    await this.sessionProjectCoordinator.confirmManualProject(chatId, messageId, projectKey);
   }
 
-  private async returnToProjectPicker(chatId: string): Promise<void> {
-    await this.sessionProjectCoordinator.returnToProjectPicker(chatId);
+  private async returnToProjectPicker(chatId: string, messageId?: number): Promise<void> {
+    await this.sessionProjectCoordinator.returnToProjectPicker(chatId, messageId);
   }
 
   private isAwaitingManualProjectPath(chatId: string): boolean {

@@ -2,6 +2,7 @@ import type { BridgeConfig } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { BridgePaths } from "../paths.js";
 import { buildProjectPicker, refreshProjectPicker, validateManualProjectPath } from "../project/discovery.js";
+import type { TelegramEditResult } from "./runtime-surface-state.js";
 import type { BridgeStateStore } from "../state/store.js";
 import {
   buildArchiveSuccessText,
@@ -12,7 +13,6 @@ import {
   buildProjectAliasRenamedText,
   buildProjectPickerMessage,
   buildProjectPinnedText,
-  buildProjectSelectedText,
   buildRenameTargetPicker,
   buildSessionCreatedText,
   buildSessionRenamedText,
@@ -25,7 +25,6 @@ import {
 import type {
   ProjectPickerResult,
   ReadinessSnapshot,
-  RuntimeStatusField,
   SessionRow
 } from "../types.js";
 import type { TelegramInlineKeyboardMarkup } from "../telegram/api.js";
@@ -34,6 +33,7 @@ interface PickerState {
   picker: ProjectPickerResult;
   awaitingManualProjectPath: boolean;
   resolved: boolean;
+  interactiveMessageId: number | null;
 }
 
 interface PendingRenameState {
@@ -66,12 +66,35 @@ interface SessionProjectCoordinatorDeps {
     chatId: string,
     text: string,
     replyMarkup?: TelegramInlineKeyboardMarkup
-  ) => Promise<unknown>;
+  ) => Promise<boolean>;
+  safeSendMessageResult: (
+    chatId: string,
+    text: string,
+    replyMarkup?: TelegramInlineKeyboardMarkup
+  ) => Promise<{ message_id: number } | null>;
   safeSendHtmlMessage: (
     chatId: string,
     text: string,
     replyMarkup?: TelegramInlineKeyboardMarkup
-  ) => Promise<unknown>;
+  ) => Promise<boolean>;
+  safeSendHtmlMessageResult: (
+    chatId: string,
+    text: string,
+    replyMarkup?: TelegramInlineKeyboardMarkup
+  ) => Promise<{ message_id: number } | null>;
+  safeEditMessageText: (
+    chatId: string,
+    messageId: number,
+    text: string,
+    replyMarkup?: TelegramInlineKeyboardMarkup
+  ) => Promise<TelegramEditResult>;
+  safeEditHtmlMessageText: (
+    chatId: string,
+    messageId: number,
+    text: string,
+    replyMarkup?: TelegramInlineKeyboardMarkup
+  ) => Promise<TelegramEditResult>;
+  safeDeleteMessage: (chatId: string, messageId: number) => Promise<boolean>;
 }
 
 export class SessionProjectCoordinator {
@@ -115,25 +138,29 @@ export class SessionProjectCoordinator {
     }
 
     const picker = await buildProjectPicker(this.deps.paths.homeDir, this.deps.config.projectScanRoots, store);
-    this.pickerStates.set(chatId, {
+    const pickerState: PickerState = {
       picker,
       awaitingManualProjectPath: false,
-      resolved: false
-    });
+      resolved: false,
+      interactiveMessageId: this.pickerStates.get(chatId)?.interactiveMessageId ?? null
+    };
+    this.pickerStates.set(chatId, pickerState);
 
     const rendered = buildProjectPickerMessage(picker);
-    await this.deps.safeSendMessage(chatId, rendered.text, rendered.replyMarkup);
+    await this.replaceInteractivePickerMessage(chatId, pickerState, {
+      text: rendered.text,
+      replyMarkup: rendered.replyMarkup
+    });
   }
 
-  async handleProjectPick(chatId: string, projectKey: string): Promise<void> {
+  async handleProjectPick(chatId: string, messageId: number, projectKey: string): Promise<void> {
     const store = this.deps.getStore();
     if (!store) {
       return;
     }
 
-    const pickerState = this.pickerStates.get(chatId);
+    const pickerState = await this.requireActivePickerState(chatId, messageId);
     if (!pickerState) {
-      await this.deps.safeSendMessage(chatId, "这个按钮已过期，请重新操作。");
       return;
     }
 
@@ -157,22 +184,27 @@ export class SessionProjectCoordinator {
 
     pickerState.resolved = true;
     pickerState.awaitingManualProjectPath = false;
-    await this.deps.safeSendHtmlMessage(chatId, buildSessionCreatedText(candidate.displayName));
+    this.pickerStates.delete(chatId);
+    await this.consumeEphemeralMessage(
+      chatId,
+      messageId,
+      buildSessionCreatedText(candidate.displayName, candidate.projectPath),
+      { html: true }
+    );
   }
 
-  async handleScanMore(chatId: string): Promise<void> {
+  async handleScanMore(chatId: string, messageId: number): Promise<void> {
     const store = this.deps.getStore();
     if (!store) {
       return;
     }
 
-    const pickerState = this.pickerStates.get(chatId);
+    const pickerState = await this.requireActivePickerState(chatId, messageId);
     if (!pickerState) {
-      await this.deps.safeSendMessage(chatId, "这个按钮已过期，请重新操作。");
       return;
     }
 
-    await this.deps.safeSendMessage(chatId, "正在扫描本地项目，请稍候…");
+    await this.deps.safeEditMessageText(chatId, messageId, "正在扫描本地项目，请稍候…");
     const previousKeys = new Set([...pickerState.picker.projectMap.keys()]);
     const refreshed = await refreshProjectPicker(
       this.deps.paths.homeDir,
@@ -181,32 +213,46 @@ export class SessionProjectCoordinator {
       previousKeys
     );
 
-    this.pickerStates.set(chatId, {
-      picker: refreshed.picker,
-      awaitingManualProjectPath: false,
-      resolved: false
-    });
-
     if (!refreshed.hasNewResults) {
       const noNewProjects = buildNoNewProjectsMessage();
-      await this.deps.safeSendMessage(chatId, noNewProjects.text, noNewProjects.replyMarkup);
+      await this.replaceInteractivePickerMessage(chatId, pickerState, {
+        text: noNewProjects.text,
+        replyMarkup: noNewProjects.replyMarkup
+      });
+      this.pickerStates.set(chatId, {
+        picker: refreshed.picker,
+        awaitingManualProjectPath: false,
+        resolved: false,
+        interactiveMessageId: pickerState.interactiveMessageId
+      });
       return;
     }
 
     const rendered = buildProjectPickerMessage(refreshed.picker);
-    await this.deps.safeSendMessage(chatId, rendered.text, rendered.replyMarkup);
+    await this.replaceInteractivePickerMessage(chatId, pickerState, {
+      text: rendered.text,
+      replyMarkup: rendered.replyMarkup
+    });
+    this.pickerStates.set(chatId, {
+      picker: refreshed.picker,
+      awaitingManualProjectPath: false,
+      resolved: false,
+      interactiveMessageId: pickerState.interactiveMessageId
+    });
   }
 
-  async enterManualPathMode(chatId: string): Promise<void> {
-    const pickerState = this.pickerStates.get(chatId);
+  async enterManualPathMode(chatId: string, messageId: number): Promise<void> {
+    const pickerState = await this.requireActivePickerState(chatId, messageId);
     if (!pickerState) {
-      await this.deps.safeSendMessage(chatId, "这个按钮已过期，请重新操作。");
       return;
     }
 
     pickerState.awaitingManualProjectPath = true;
     const prompt = buildManualPathPrompt();
-    await this.deps.safeSendMessage(chatId, prompt.text, prompt.replyMarkup);
+    await this.replaceInteractivePickerMessage(chatId, pickerState, {
+      text: prompt.text,
+      replyMarkup: prompt.replyMarkup
+    });
   }
 
   async handleManualPathInput(chatId: string, text: string): Promise<void> {
@@ -232,18 +278,21 @@ export class SessionProjectCoordinator {
 
     pickerState.picker.projectMap.set(candidate.projectKey, candidate);
     const confirmation = buildManualPathConfirmMessage(candidate);
-    await this.deps.safeSendHtmlMessage(chatId, confirmation.text, confirmation.replyMarkup);
+    await this.sendNewestInteractivePickerMessage(chatId, pickerState, {
+      text: confirmation.text,
+      replyMarkup: confirmation.replyMarkup,
+      html: true
+    });
   }
 
-  async confirmManualProject(chatId: string, projectKey: string): Promise<void> {
+  async confirmManualProject(chatId: string, messageId: number, projectKey: string): Promise<void> {
     const store = this.deps.getStore();
     if (!store) {
       return;
     }
 
-    const pickerState = this.pickerStates.get(chatId);
+    const pickerState = await this.requireActivePickerState(chatId, messageId);
     if (!pickerState) {
-      await this.deps.safeSendMessage(chatId, "这个按钮已过期，请重新操作。");
       return;
     }
 
@@ -267,19 +316,33 @@ export class SessionProjectCoordinator {
 
     pickerState.resolved = true;
     pickerState.awaitingManualProjectPath = false;
-    await this.deps.safeSendHtmlMessage(chatId, buildSessionCreatedText(candidate.displayName));
+    this.pickerStates.delete(chatId);
+    await this.consumeEphemeralMessage(
+      chatId,
+      messageId,
+      buildSessionCreatedText(candidate.displayName, candidate.projectPath),
+      { html: true }
+    );
   }
 
-  async returnToProjectPicker(chatId: string): Promise<void> {
-    const pickerState = this.pickerStates.get(chatId);
+  async returnToProjectPicker(chatId: string, messageId?: number): Promise<void> {
+    const pickerState = messageId ? await this.requireActivePickerState(chatId, messageId) : this.pickerStates.get(chatId);
     if (!pickerState) {
-      await this.deps.safeSendMessage(chatId, "这个按钮已过期，请重新操作。");
+      if (!messageId) {
+        await this.deps.safeSendMessage(chatId, "这个按钮已过期，请重新操作。");
+      }
       return;
     }
 
     pickerState.awaitingManualProjectPath = false;
     const rendered = buildProjectPickerMessage(pickerState.picker);
-    await this.deps.safeSendMessage(chatId, rendered.text, rendered.replyMarkup);
+    if (messageId && messageId > 0) {
+      pickerState.interactiveMessageId = messageId;
+    }
+    await this.replaceInteractivePickerMessage(chatId, pickerState, {
+      text: rendered.text,
+      replyMarkup: rendered.replyMarkup
+    });
   }
 
   isAwaitingManualProjectPath(chatId: string): boolean {
