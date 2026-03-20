@@ -1001,14 +1001,11 @@ test("status card removes command toggles and treats old command callbacks as ex
       turn: { id: "turn-expand", status: "completed" }
     });
 
-    const collapsed = edited.at(-1);
+    const collapsed = [...edited].reverse().find((entry) => Array.isArray(entry.replyMarkup?.inline_keyboard));
     assert.doesNotMatch(collapsed?.text ?? "", /Latest command/u);
     assert.doesNotMatch(collapsed?.text ?? "", /Command: \$ pnpm test/u);
     assert.doesNotMatch(collapsed?.text ?? "", /Earlier commands/u);
-    assert.deepEqual(collapsed?.replyMarkup?.inline_keyboard, [[
-      { text: "查看详情", callback_data: `v5:st:i:${session.sessionId}` },
-      { text: "中断操作", callback_data: `v5:st:x:${session.sessionId}` }
-    ]]);
+    assert.deepEqual(collapsed?.replyMarkup?.inline_keyboard, []);
 
     const editCountBeforeCallbacks = edited.length;
 
@@ -1500,10 +1497,7 @@ test("startRealTurn sends an initial runtime status card immediately", async () 
     assert.match(sent[0]?.text ?? "", /<b>状态<\/b> · Starting/u);
     assert.match(sent[0]?.text ?? "", /使用 \/inspect 查看完整详情/u);
     assert.equal(sent[0]?.parseMode, "HTML");
-    assert.deepEqual(sent[0]?.replyMarkup?.inline_keyboard, [[
-      { text: "查看详情", callback_data: `v5:st:i:${session.sessionId}` },
-      { text: "中断操作", callback_data: `v5:st:x:${session.sessionId}` }
-    ]]);
+    assert.deepEqual(sent[0]?.replyMarkup?.inline_keyboard, []);
     assert.equal((service as any).activeTurn.statusCard.messageId, 800);
   } finally {
     await cleanup();
@@ -2110,10 +2104,7 @@ test("status card does not expose proposed-plan drafts through the checklist but
 
     const collapsed = edited.at(-1) ?? sent.at(-1);
     assert.equal(collapsed?.parseMode, "HTML");
-    assert.deepEqual(collapsed?.replyMarkup?.inline_keyboard, [[
-      { text: "查看详情", callback_data: `v5:st:i:${session.sessionId}` },
-      { text: "中断操作", callback_data: `v5:st:x:${session.sessionId}` }
-    ]]);
+    assert.deepEqual(collapsed?.replyMarkup?.inline_keyboard, []);
     assert.doesNotMatch(collapsed?.text ?? "", /Telegram 命令体验优化（轻量一周版）/u);
   } finally {
     await cleanup();

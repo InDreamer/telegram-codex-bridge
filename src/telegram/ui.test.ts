@@ -27,6 +27,7 @@ import {
   buildWhereText,
   buildStatusText,
   buildInspectViewMessage,
+  buildRuntimeHubReplyMarkup,
   buildRuntimeStatusReplyMarkup,
   buildRuntimeStatusCard,
   buildSessionsText,
@@ -561,6 +562,38 @@ test("buildRuntimeStatusReplyMarkup prefers the in-progress step over earlier pe
     kind: "status_interrupt",
     sessionId: "session-1"
   });
+});
+
+test("buildRuntimeHubReplyMarkup omits inspect and interrupt action buttons", () => {
+  const replyMarkup = buildRuntimeHubReplyMarkup({
+    token: "hubtoken",
+    callbackVersion: 2,
+    sessions: [{
+      sessionId: "session-1",
+      sessionName: "Session Alpha",
+      projectName: "Project One",
+      state: "Running",
+      progressText: null,
+      isFocused: true,
+      isActiveInputTarget: true
+    }],
+    focusedSessionId: "session-1",
+    planEntries: ["Collect protocol evidence (pending)"],
+    planExpanded: false,
+    agentEntries: [{
+      threadId: "thread-agent-1",
+      label: "agent-ent42",
+      labelSource: "fallback",
+      status: "running",
+      progress: "Searching docs"
+    }],
+    agentsExpanded: false
+  });
+
+  const buttonLabels = replyMarkup.inline_keyboard.flat().map((button) => button.text);
+  assert.deepEqual(buttonLabels.includes("查看详情"), false);
+  assert.deepEqual(buttonLabels.includes("中断操作"), false);
+  assert.deepEqual(buttonLabels, ["计划清单：Collect protocol evidence", "Agent：1 个运行中"]);
 });
 
 test("buildRuntimeStatusCard renders expanded running agents inline", () => {

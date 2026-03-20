@@ -208,6 +208,7 @@ export function buildRuntimeHubMessage(options: {
   language?: UiLanguage;
   windowIndex: number;
   totalWindows: number;
+  totalSessions: number;
   sessions: RuntimeHubSessionView[];
   focusedSessionText: string;
   activeInputTargetName?: string | null;
@@ -220,7 +221,9 @@ export function buildRuntimeHubMessage(options: {
     formatHtmlHeading(language === "en" ? "Runtime Status" : "运行状态"),
     formatHtmlField(
       language === "en" ? "Hub:" : "Hub：",
-      `${options.windowIndex + 1}/${Math.max(1, options.totalWindows)}`
+      language === "en"
+        ? `${options.windowIndex + 1}/${Math.max(1, options.totalWindows)} · ${options.totalSessions} session${options.totalSessions === 1 ? "" : "s"}`
+        : `${options.windowIndex + 1}/${Math.max(1, options.totalWindows)} · ${options.totalSessions} 个会话`
     )
   ];
 
@@ -277,8 +280,6 @@ export function buildRuntimeHubReplyMarkup(options: {
   planExpanded?: boolean;
   agentEntries?: CollabAgentStateSnapshot[];
   agentsExpanded?: boolean;
-  interruptEnabled: boolean;
-  inspectEnabled: boolean;
 }): TelegramInlineKeyboardMarkup {
   const language = options.language ?? "zh";
   const rows: TelegramInlineKeyboardMarkup["inline_keyboard"] = [];
@@ -313,23 +314,8 @@ export function buildRuntimeHubReplyMarkup(options: {
     }]);
   }
 
-  const actionButtons: Array<{ text: string; callback_data: string }> = [];
-  if (options.focusedSessionId && options.inspectEnabled) {
-    actionButtons.push({
-      text: language === "en" ? "Inspect" : "查看详情",
-      callback_data: encodeStatusInspectCallback(options.focusedSessionId)
-    });
-  }
-  if (options.focusedSessionId && options.interruptEnabled) {
-    actionButtons.push({
-      text: language === "en" ? "Interrupt" : "中断操作",
-      callback_data: encodeStatusInterruptCallback(options.focusedSessionId)
-    });
-  }
-  if (actionButtons.length > 0) {
-    rows.push(actionButtons);
-  }
-
+  // Hubs stay as a compact multi-session navigator. Detailed inspect/interrupt
+  // actions remain on the single-session status card and the command surface.
   return {
     inline_keyboard: rows
   };

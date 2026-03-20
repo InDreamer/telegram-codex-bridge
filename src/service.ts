@@ -340,6 +340,8 @@ export class BridgeService {
         this.runtimeSurfaceController.runRuntimeCardOperation(activeTurn as ActiveTurnState, operation),
       reanchorStatusCardToLatestMessage: async (activeTurn, reason) =>
         this.runtimeSurfaceController.reanchorStatusCardToLatestMessage(activeTurn as ActiveTurnState, reason),
+      reanchorRuntimeAfterBridgeReply: async (chatId, reason) =>
+        this.reanchorRuntimeAfterBridgeReply(chatId, reason),
       disposeRuntimeCards: (activeTurn) =>
         this.runtimeSurfaceController.disposeRuntimeCards(activeTurn as ActiveTurnState),
       safeSendMessage: async (chatId, text) => this.safeSendMessage(chatId, text),

@@ -53,6 +53,7 @@ import {
 
 const INSPECT_PLAIN_TEXT_FALLBACK_LIMIT = 3500;
 const FAILED_EDIT_RETRY_MS = 5000;
+const FAILED_HUB_DELETE_RETRY_MS = 5000;
 const RUNTIME_HUB_WINDOW_SIZE = 5;
 const RUNTIME_HUB_TERMINAL_SUMMARY_LIMIT = 3;
 
@@ -108,6 +109,7 @@ interface RuntimeHubState {
   token: string;
   chatId: string;
   kind: "live" | "recovery";
+  destroyed: boolean;
   windowIndex: number;
   messageId: number;
   callbackVersion: number;
@@ -125,11 +127,19 @@ interface RuntimeHubState {
   timer: ReturnType<typeof setTimeout> | null;
 }
 
+// When Telegram refuses to delete an old hub message, keep the message id around
+// so the next hub can overwrite it in place instead of leaving stale hub cards in chat.
+interface RetainedHubMessage {
+  messageId: number;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
 interface RuntimeHubChatState {
   liveHubs: Map<number, RuntimeHubState>;
   recoveryHub: RuntimeHubState | null;
   runningOrder: string[];
   terminalSummaries: RuntimeHubTerminalSummary[];
+  retainedMessages: RetainedHubMessage[];
 }
 
 interface RuntimeSurfaceControllerDeps {
@@ -211,7 +221,8 @@ export class RuntimeSurfaceController {
         liveHubs: new Map(),
         recoveryHub: null,
         runningOrder: [],
-        terminalSummaries: []
+        terminalSummaries: [],
+        retainedMessages: []
       };
       this.runtimeHubStates.set(chatId, state);
     }
@@ -219,13 +230,19 @@ export class RuntimeSurfaceController {
     return state;
   }
 
-  private createRuntimeHubState(chatId: string, kind: "live" | "recovery", windowIndex: number): RuntimeHubState {
+  private createRuntimeHubState(
+    chatId: string,
+    kind: "live" | "recovery",
+    windowIndex: number,
+    options?: { messageId?: number }
+  ): RuntimeHubState {
     return {
       token: randomUUID().replace(/-/gu, "").slice(0, 8),
       chatId,
       kind,
+      destroyed: false,
       windowIndex,
-      messageId: 0,
+      messageId: options?.messageId ?? 0,
       callbackVersion: 0,
       focusedSessionId: null,
       sessionIds: [],
@@ -240,6 +257,116 @@ export class RuntimeSurfaceController {
       pendingReason: null,
       timer: null
     };
+  }
+
+  private clearRetainedHubTimer(retained: RetainedHubMessage): void {
+    if (!retained.timer) {
+      return;
+    }
+
+    clearTimeout(retained.timer);
+    retained.timer = null;
+  }
+
+  private findRetainedHubMessage(chatState: RuntimeHubChatState, messageId: number): RetainedHubMessage | null {
+    return chatState.retainedMessages.find((entry) => entry.messageId === messageId) ?? null;
+  }
+
+  private removeRetainedHubMessage(chatState: RuntimeHubChatState, messageId: number): void {
+    const index = chatState.retainedMessages.findIndex((entry) => entry.messageId === messageId);
+    if (index < 0) {
+      return;
+    }
+
+    const [retained] = chatState.retainedMessages.splice(index, 1);
+    if (retained) {
+      this.clearRetainedHubTimer(retained);
+    }
+  }
+
+  private scheduleRetainedHubDeleteRetry(
+    chatId: string,
+    retained: RetainedHubMessage,
+    delayMs = FAILED_HUB_DELETE_RETRY_MS
+  ): void {
+    this.clearRetainedHubTimer(retained);
+    retained.timer = setTimeout(() => {
+      retained.timer = null;
+      void this.retryRetainedHubDelete(chatId, retained.messageId);
+    }, delayMs);
+    retained.timer.unref?.();
+  }
+
+  private async retryRetainedHubDelete(chatId: string, messageId: number): Promise<void> {
+    const chatState = this.runtimeHubStates.get(chatId);
+    if (!chatState) {
+      return;
+    }
+
+    const retained = this.findRetainedHubMessage(chatState, messageId);
+    if (!retained) {
+      return;
+    }
+
+    const deleted = await this.deps.safeDeleteMessage(chatId, messageId);
+    const currentChatState = this.runtimeHubStates.get(chatId);
+    if (!currentChatState) {
+      return;
+    }
+
+    const currentRetained = this.findRetainedHubMessage(currentChatState, messageId);
+    if (!currentRetained) {
+      return;
+    }
+
+    if (deleted) {
+      this.removeRetainedHubMessage(currentChatState, messageId);
+      return;
+    }
+
+    this.scheduleRetainedHubDeleteRetry(chatId, currentRetained);
+  }
+
+  private retainHubMessage(chatId: string, messageId: number): void {
+    if (messageId <= 0) {
+      return;
+    }
+
+    const chatState = this.getOrCreateHubChatState(chatId);
+    const existing = this.findRetainedHubMessage(chatState, messageId);
+    if (existing) {
+      this.scheduleRetainedHubDeleteRetry(chatId, existing);
+      return;
+    }
+
+    const retained: RetainedHubMessage = {
+      messageId,
+      timer: null
+    };
+    chatState.retainedMessages.push(retained);
+    this.scheduleRetainedHubDeleteRetry(chatId, retained);
+  }
+
+  private claimRetainedHubMessageId(chatId: string): number {
+    const chatState = this.getOrCreateHubChatState(chatId);
+    const retained = chatState.retainedMessages.pop();
+    if (!retained) {
+      return 0;
+    }
+
+    this.clearRetainedHubTimer(retained);
+    return retained.messageId;
+  }
+
+  private async deleteHubMessage(chatId: string, messageId: number): Promise<void> {
+    if (messageId <= 0) {
+      return;
+    }
+
+    const deleted = await this.deps.safeDeleteMessage(chatId, messageId);
+    if (!deleted) {
+      this.retainHubMessage(chatId, messageId);
+    }
   }
 
   private getLiveHubState(chatId: string, messageId: number): RuntimeHubState | null {
@@ -463,15 +590,22 @@ export class RuntimeSurfaceController {
     hubState: RuntimeHubState,
     sessionIds: string[],
     preferredSessionId: string | null,
-    activeSessionId: string | null
+    activeSessionId: string | null,
+    options?: {
+      forcePreferred?: boolean;
+    }
   ): boolean {
     let nextFocus = hubState.focusedSessionId;
-    if (preferredSessionId && sessionIds.includes(preferredSessionId)) {
+    // Foreground actions may force the requested session into view, but ordinary
+    // background progress should not steal focus from the session the operator is already watching.
+    if (options?.forcePreferred && preferredSessionId && sessionIds.includes(preferredSessionId)) {
       nextFocus = preferredSessionId;
     } else if (!nextFocus || !sessionIds.includes(nextFocus)) {
-      nextFocus = activeSessionId && sessionIds.includes(activeSessionId)
-        ? activeSessionId
-        : (sessionIds[0] ?? null);
+      nextFocus = preferredSessionId && sessionIds.includes(preferredSessionId)
+        ? preferredSessionId
+        : activeSessionId && sessionIds.includes(activeSessionId)
+          ? activeSessionId
+          : (sessionIds[0] ?? null);
     }
 
     const changed = nextFocus !== hubState.focusedSessionId || sessionIds.join("\u0000") !== hubState.sessionIds.join("\u0000");
@@ -527,8 +661,6 @@ export class RuntimeSurfaceController {
     text: string;
     planEntries: string[];
     agentEntries: CollabAgentStateSnapshot[];
-    inspectEnabled: boolean;
-    interruptEnabled: boolean;
   } {
     if (!activeTurn) {
       const context = hubState.focusedSessionId
@@ -542,9 +674,7 @@ export class RuntimeSurfaceController {
           progressText: "当前没有可展示的运行详情。"
         }),
         planEntries: [],
-        agentEntries: [],
-        inspectEnabled: Boolean(hubState.focusedSessionId),
-        interruptEnabled: false
+        agentEntries: []
       };
     }
 
@@ -566,9 +696,7 @@ export class RuntimeSurfaceController {
         agentsExpanded: hubState.agentsExpanded
       }),
       planEntries: inspect.planSnapshot,
-      agentEntries: inspect.agentSnapshot,
-      inspectEnabled: true,
-      interruptEnabled: true
+      agentEntries: inspect.agentSnapshot
     };
   }
 
@@ -626,6 +754,7 @@ export class RuntimeSurfaceController {
       language: this.deps.getUiLanguage(),
       windowIndex: hubState.windowIndex,
       totalWindows,
+      totalSessions: turns.length,
       sessions,
       focusedSessionText: focused.text,
       activeInputTargetName: activeContext.sessionName ?? null,
@@ -645,9 +774,7 @@ export class RuntimeSurfaceController {
         planEntries: focused.planEntries,
         planExpanded: hubState.planExpanded,
         agentEntries: focused.agentEntries,
-        agentsExpanded: hubState.agentsExpanded,
-        inspectEnabled: focused.inspectEnabled,
-        interruptEnabled: focused.interruptEnabled
+        agentsExpanded: hubState.agentsExpanded
       })
     };
   }
@@ -677,6 +804,7 @@ export class RuntimeSurfaceController {
       language: this.deps.getUiLanguage(),
       windowIndex: 0,
       totalWindows: 1,
+      totalSessions: sessions.length,
       sessions,
       focusedSessionText: this.buildRecoveryHubSection(hubState.focusedSessionId),
       activeInputTargetName: activeContext.sessionName ?? null,
@@ -696,17 +824,25 @@ export class RuntimeSurfaceController {
         planEntries: [],
         planExpanded: false,
         agentEntries: [],
-        agentsExpanded: false,
-        inspectEnabled: Boolean(hubState.focusedSessionId),
-        interruptEnabled: false
+        agentsExpanded: false
       })
     };
   }
 
   private async deleteHubState(hubState: RuntimeHubState): Promise<void> {
+    hubState.destroyed = true;
     this.clearHubTimer(hubState);
-    if (hubState.messageId > 0) {
-      await this.deps.safeDeleteMessage(hubState.chatId, hubState.messageId);
+    const messageId = hubState.messageId;
+    hubState.messageId = 0;
+    hubState.lastRenderedText = "";
+    hubState.lastRenderedReplyMarkupKey = null;
+    hubState.lastRenderedAtMs = null;
+    hubState.rateLimitUntilAtMs = null;
+    hubState.pendingText = null;
+    hubState.pendingReplyMarkup = null;
+    hubState.pendingReason = null;
+    if (messageId > 0) {
+      await this.deleteHubMessage(hubState.chatId, messageId);
     }
   }
 
@@ -714,7 +850,10 @@ export class RuntimeSurfaceController {
     chatId: string,
     reason: string,
     preferredSessionId?: string | null,
-    excludedSessionId?: string | null
+    excludedSessionId?: string | null,
+    options?: {
+      forcePreferredFocus?: boolean;
+    }
   ): Promise<void> {
     const chatState = this.getOrCreateHubChatState(chatId);
     const turns = this.getOrderedActiveTurns(chatId, excludedSessionId);
@@ -738,8 +877,13 @@ export class RuntimeSurfaceController {
       const sessionIds = turns
         .slice(windowIndex * RUNTIME_HUB_WINDOW_SIZE, (windowIndex + 1) * RUNTIME_HUB_WINDOW_SIZE)
         .map((activeTurn) => activeTurn.sessionId);
-      const hubState = chatState.liveHubs.get(windowIndex) ?? this.createRuntimeHubState(chatId, "live", windowIndex);
-      this.updateHubFocus(hubState, sessionIds, preferredSessionId ?? null, activeSessionId);
+      const hubState = chatState.liveHubs.get(windowIndex)
+        ?? this.createRuntimeHubState(chatId, "live", windowIndex, {
+          messageId: this.claimRetainedHubMessageId(chatId)
+        });
+      this.updateHubFocus(hubState, sessionIds, preferredSessionId ?? null, activeSessionId, {
+        forcePreferred: options?.forcePreferredFocus ?? false
+      });
       chatState.liveHubs.set(windowIndex, hubState);
       const singleSessionTurn = this.getSingleSessionHubActiveTurn(hubState);
       this.hydrateSingleSessionHubStateFromTurn(hubState, singleSessionTurn);
@@ -779,7 +923,9 @@ export class RuntimeSurfaceController {
 
     const store = this.deps.getStore();
     const activeSessionId = store?.getActiveSession(chatId)?.sessionId ?? null;
-    const hubState = chatState.recoveryHub ?? this.createRuntimeHubState(chatId, "recovery", 0);
+    const hubState = chatState.recoveryHub ?? this.createRuntimeHubState(chatId, "recovery", 0, {
+      messageId: this.claimRetainedHubMessageId(chatId)
+    });
     this.updateHubFocus(hubState, sessionIds, activeSessionId, activeSessionId);
     chatState.recoveryHub = hubState;
     const rendered = this.buildRecoveryHubRenderPayload(chatId, hubState);
@@ -846,6 +992,10 @@ export class RuntimeSurfaceController {
   }
 
   private scheduleHubRetry(hubState: RuntimeHubState, delayMs: number): void {
+    if (hubState.destroyed) {
+      return;
+    }
+
     this.clearHubTimer(hubState);
     hubState.timer = setTimeout(() => {
       hubState.timer = null;
@@ -863,6 +1013,10 @@ export class RuntimeSurfaceController {
       reason: string;
     }
   ): Promise<void> {
+    if (hubState.destroyed) {
+      return;
+    }
+
     const replyMarkupKey = serializeReplyMarkup(replyMarkup);
     const pendingChanged = hubState.pendingText !== text
       || serializeReplyMarkup(hubState.pendingReplyMarkup) !== replyMarkupKey;
@@ -902,6 +1056,10 @@ export class RuntimeSurfaceController {
   }
 
   private async flushHubRender(hubState: RuntimeHubState): Promise<void> {
+    if (hubState.destroyed) {
+      return;
+    }
+
     const text = hubState.pendingText;
     const replyMarkup = hubState.pendingReplyMarkup ?? undefined;
     if (!text || !replyMarkup) {
@@ -923,6 +1081,13 @@ export class RuntimeSurfaceController {
 
     if (hubState.messageId === 0) {
       const sent = await this.deps.safeSendHtmlMessageResult(hubState.chatId, text, replyMarkup);
+      if (hubState.destroyed) {
+        if (sent) {
+          await this.deleteHubMessage(hubState.chatId, sent.message_id);
+        }
+        return;
+      }
+
       if (!sent) {
         hubState.pendingText = text;
         hubState.pendingReplyMarkup = replyMarkup;
@@ -939,7 +1104,13 @@ export class RuntimeSurfaceController {
       return;
     }
 
+    const previousMessageId = hubState.messageId;
     const result = await this.deps.safeEditHtmlMessageText(hubState.chatId, hubState.messageId, text, replyMarkup);
+    if (hubState.destroyed) {
+      await this.deleteHubMessage(hubState.chatId, previousMessageId);
+      return;
+    }
+
     if (result.outcome === "edited") {
       hubState.lastRenderedText = text;
       hubState.lastRenderedReplyMarkupKey = replyMarkupKey;
@@ -971,7 +1142,7 @@ export class RuntimeSurfaceController {
   }
 
   private syncSingleSessionHubState(hubState: RuntimeHubState): void {
-    if (hubState.kind !== "live" || hubState.sessionIds.length !== 1 || hubState.messageId === 0) {
+    if (hubState.destroyed || hubState.kind !== "live" || hubState.sessionIds.length !== 1 || hubState.messageId === 0) {
       return;
     }
 
@@ -1111,7 +1282,9 @@ export class RuntimeSurfaceController {
       && nextStatus.turnStatus === "running";
 
     if (statusChanged) {
-      await this.refreshLiveRuntimeHubs(activeTurn.chatId, options.reason, activeTurn.sessionId);
+      await this.refreshLiveRuntimeHubs(activeTurn.chatId, options.reason, activeTurn.sessionId, undefined, {
+        forcePreferredFocus: previousStatus === null
+      });
     }
 
     if (shouldReanchorOnRecovery) {
@@ -1480,6 +1653,9 @@ export class RuntimeSurfaceController {
       if (chatState.recoveryHub) {
         this.clearHubTimer(chatState.recoveryHub);
       }
+      for (const retained of chatState.retainedMessages) {
+        this.clearRetainedHubTimer(retained);
+      }
     }
   }
 
@@ -1498,6 +1674,8 @@ export class RuntimeSurfaceController {
       : (this.deps.getStore()?.getActiveSession(chatId)?.sessionId ?? null);
 
     const targetSession = targetSessionId ? this.deps.getStore()?.getSessionById(targetSessionId) ?? null : null;
+    // Keep actionable interaction cards at the bottom of the chat; reanchoring the
+    // hub ahead of them would push the pending reply controls away from the operator.
     if (
       activeTurn?.tracker.getStatus().turnStatus === "blocked"
       && targetSession
@@ -1506,7 +1684,9 @@ export class RuntimeSurfaceController {
       return;
     }
 
-    await this.refreshLiveRuntimeHubs(chatId, reason, targetSessionId);
+    await this.refreshLiveRuntimeHubs(chatId, reason, targetSessionId, undefined, {
+      forcePreferredFocus: true
+    });
 
     const targetHub = [...chatState.liveHubs.values()].find((hubState) =>
       targetSessionId ? hubState.sessionIds.includes(targetSessionId) : false
@@ -1520,12 +1700,22 @@ export class RuntimeSurfaceController {
   }
 
   private async reanchorRuntimeHubToLatestMessage(hubState: RuntimeHubState, _reason: string): Promise<void> {
+    if (hubState.destroyed) {
+      return;
+    }
+
+    this.clearHubTimer(hubState);
     const previousMessageId = hubState.messageId;
     const rendered = hubState.kind === "live"
       ? this.buildLiveHubRenderPayload(hubState.chatId, hubState, this.getOrCreateHubChatState(hubState.chatId).liveHubs.size)
       : this.buildRecoveryHubRenderPayload(hubState.chatId, hubState);
     const sent = await this.deps.safeSendHtmlMessageResult(hubState.chatId, rendered.text, rendered.replyMarkup);
     if (!sent) {
+      return;
+    }
+
+    if (hubState.destroyed) {
+      await this.deleteHubMessage(hubState.chatId, sent.message_id);
       return;
     }
 
@@ -1539,7 +1729,7 @@ export class RuntimeSurfaceController {
     hubState.pendingReason = null;
     this.syncSingleSessionHubState(hubState);
     if (previousMessageId > 0 && previousMessageId !== sent.message_id) {
-      await this.deps.safeDeleteMessage(hubState.chatId, previousMessageId);
+      await this.deleteHubMessage(hubState.chatId, previousMessageId);
     }
   }
 

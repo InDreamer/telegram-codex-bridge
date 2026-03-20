@@ -124,6 +124,9 @@ async function createCoordinatorContext(options: {
     reanchorStatusCardToLatestMessage: async (_activeTurn, reason) => {
       reanchorReasons.push(reason);
     },
+    reanchorRuntimeAfterBridgeReply: async (_chatId, reason) => {
+      reanchorReasons.push(reason);
+    },
     disposeRuntimeCards: () => {},
     safeSendMessage: async (_chatId, text) => {
       safeMessages.push(text);
@@ -367,7 +370,7 @@ test("TurnCoordinator recreates missing remote threads before starting a turn", 
 });
 
 test("TurnCoordinator completes a normal turn and delivers the recovered final answer", async () => {
-  const { coordinator, store, sentHtmlMessages, interactionResolutions, cleanup } = await createCoordinatorContext({
+  const { coordinator, store, sentHtmlMessages, interactionResolutions, reanchorReasons, cleanup } = await createCoordinatorContext({
     appServer: {
       resumeThread: async () => ({
         thread: {
@@ -411,6 +414,7 @@ test("TurnCoordinator completes a normal turn and delivers the recovered final a
       state: "expired",
       reason: "turn_completed"
     }]);
+    assert.deepEqual(reanchorReasons, ["final_answer_sent"]);
     assert.equal(store.getSessionById(session.sessionId)?.status, "idle");
     assert.equal(store.getSessionById(session.sessionId)?.lastTurnId, "turn-1");
   } finally {
@@ -419,7 +423,7 @@ test("TurnCoordinator completes a normal turn and delivers the recovered final a
 });
 
 test("TurnCoordinator completes plan-mode turns by sending a plan result with implementation action markup", async () => {
-  const { coordinator, store, sentHtmlMessages, cleanup } = await createCoordinatorContext({
+  const { coordinator, store, sentHtmlMessages, reanchorReasons, cleanup } = await createCoordinatorContext({
     appServer: {
       resumeThread: async () => ({
         thread: {
@@ -459,6 +463,7 @@ test("TurnCoordinator completes plan-mode turns by sending a plan result with im
     const views = store.listFinalAnswerViews("chat-1");
     assert.equal(views.length, 1);
     assert.equal(views[0]?.telegramMessageId, 1);
+    assert.deepEqual(reanchorReasons, ["plan_result_sent"]);
   } finally {
     await cleanup();
   }

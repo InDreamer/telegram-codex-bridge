@@ -122,6 +122,7 @@ interface TurnCoordinatorDeps {
   ) => Promise<void>;
   runRuntimeCardOperation: (activeTurn: ActiveTurnState, operation: () => Promise<void>) => Promise<void>;
   reanchorStatusCardToLatestMessage: (activeTurn: ActiveTurnState, reason: string) => Promise<void>;
+  reanchorRuntimeAfterBridgeReply: (chatId: string, reason: string) => Promise<void>;
   disposeRuntimeCards: (activeTurn: ActiveTurnState) => void;
   safeSendMessage: (chatId: string, text: string) => Promise<boolean>;
   safeSendHtmlMessageResult: (
@@ -693,7 +694,9 @@ export class TurnCoordinator {
       lastTurnStatus: classified.status
     });
     this.deps.disposeRuntimeCards(activeTurn);
-    await this.deps.safeSendMessage(activeTurn.chatId, "这次操作未成功完成，请重试。");
+    if (await this.deps.safeSendMessage(activeTurn.chatId, "这次操作未成功完成，请重试。")) {
+      await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "turn_failed_notice_sent");
+    }
   }
 
   async handleActiveTurnAppServerExit(): Promise<void> {
@@ -803,6 +806,7 @@ export class TurnCoordinator {
     });
 
     const store = this.deps.getStore();
+    let delivered = false;
     if (rendered.truncated && store) {
       let answerId: string | null = null;
 
@@ -829,6 +833,8 @@ export class TurnCoordinator {
 
         if (sent) {
           store.setFinalAnswerMessageId(saved.answerId, sent.message_id);
+          delivered = true;
+          await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "final_answer_sent");
           return;
         }
       } catch (error) {
@@ -845,12 +851,19 @@ export class TurnCoordinator {
     }
 
     if (!rendered.truncated && rendered.pages.length === 1) {
-      await this.deps.safeSendHtmlMessageResult(activeTurn.chatId, rendered.pages[0] ?? "");
+      delivered = (await this.deps.safeSendHtmlMessageResult(activeTurn.chatId, rendered.pages[0] ?? "")) !== null;
+      if (delivered) {
+        await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "final_answer_sent");
+      }
       return;
     }
 
     for (const page of rendered.pages) {
-      await this.deps.safeSendHtmlMessageResult(activeTurn.chatId, page);
+      delivered = (await this.deps.safeSendHtmlMessageResult(activeTurn.chatId, page)) !== null || delivered;
+    }
+
+    if (delivered) {
+      await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "final_answer_sent");
     }
   }
 
@@ -886,13 +899,16 @@ export class TurnCoordinator {
       );
       if (sent) {
         store.setFinalAnswerMessageId(saved.answerId, sent.message_id);
+        await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "plan_result_sent");
         return;
       }
 
       store.deleteFinalAnswerView(saved.answerId);
     }
 
-    await this.deps.safeSendHtmlMessageResult(activeTurn.chatId, rendered.pages[0] ?? "");
+    if (await this.deps.safeSendHtmlMessageResult(activeTurn.chatId, rendered.pages[0] ?? "")) {
+      await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "plan_result_sent");
+    }
   }
 
   private getFinalAnswerRenderContext(sessionId: string): {
