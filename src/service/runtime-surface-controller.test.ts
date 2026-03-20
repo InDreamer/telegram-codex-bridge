@@ -541,6 +541,71 @@ test("RuntimeSurfaceController keeps hub focus stable while background sessions 
   }
 });
 
+test("RuntimeSurfaceController shows a separate current input session when the foreground session is idle", async () => {
+  const activeTurns: unknown[] = [];
+  const { controller, store, sentHtml, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns
+  });
+
+  try {
+    store.upsertPendingAuthorization({
+      telegramUserId: "user-1",
+      telegramChatId: "chat-1",
+      telegramUsername: "tester",
+      displayName: "Tester"
+    });
+    const candidate = store.listPendingAuthorizations()[0];
+    assert.ok(candidate);
+    store.confirmPendingAuthorization(candidate);
+
+    const runningSession = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project Running",
+      projectPath: "/tmp/project-running"
+    });
+    const idleSession = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project Idle",
+      projectPath: "/tmp/project-idle"
+    });
+    store.setActiveSession("chat-1", idleSession.sessionId);
+
+    activeTurns.push({
+      sessionId: runningSession.sessionId,
+      chatId: "chat-1",
+      threadId: "thread-running",
+      turnId: "turn-running",
+      tracker: {
+        getInspectSnapshot: () => createInspectSnapshot({
+          completedCommentary: ["Running focused runtime checks."]
+        }),
+        getStatus: () => createActivityStatus()
+      },
+      statusCard: createStatusCard(),
+      latestStatusProgressText: null,
+      latestPlanFingerprint: "",
+      latestAgentFingerprint: "",
+      subagentIdentityBackfillStates: new Map(),
+      errorCards: [],
+      nextErrorCardId: 1,
+      surfaceQueue: Promise.resolve()
+    });
+
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_initialized", runningSession.sessionId, undefined, {
+      forcePreferredFocus: true
+    });
+
+    const html = sentHtml[0]?.html ?? "";
+    assert.match(html, /<b>当前输入会话<\/b>/u);
+    assert.match(html, /\[当前输入\]\n<b>Session Alpha<\/b> \/ Project One · 空闲/u);
+    assert.match(html, /<b>当前查看中的运行会话<\/b>/u);
+    assert.match(html, /\[查看中\]\n1\. <b>Session Alpha<\/b> \/ Project One · Running/u);
+    assert.doesNotMatch(html, /\[查看中 \/ 当前输入\]/u);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("RuntimeSurfaceController commits hub focus changes when Telegram reports the edit as unchanged", async () => {
   const activeTurns: unknown[] = [];
   const { controller, store, sentHtml, editedHtml, deletedMessages, cleanup } = await createControllerContext({
@@ -1213,6 +1278,50 @@ test("RuntimeSurfaceController reanchors and localizes the recovery hub after br
     assert.match(sentHtml[1]?.html ?? "", /\[viewing \/ current input\]/u);
     assert.doesNotMatch(sentHtml[1]?.html ?? "", /Input target:/u);
     assert.deepEqual(deletedMessages, [sentHtml[0]?.messageId ?? 0]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController recovery hub shows a separate current input session when it is not in the recovered set", async () => {
+  const activeTurns: unknown[] = [];
+  const { controller, store, sentHtml, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns
+  });
+
+  try {
+    store.upsertPendingAuthorization({
+      telegramUserId: "user-1",
+      telegramChatId: "chat-1",
+      telegramUsername: "tester",
+      displayName: "Tester"
+    });
+    const candidate = store.listPendingAuthorizations()[0];
+    assert.ok(candidate);
+    store.confirmPendingAuthorization(candidate);
+
+    const recoveredSession = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Recovered Project",
+      projectPath: "/tmp/recovered-project"
+    });
+    const idleSession = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Idle Project",
+      projectPath: "/tmp/idle-project"
+    });
+    store.setActiveSession("chat-1", idleSession.sessionId);
+    store.updateSessionStatus(recoveredSession.sessionId, "failed", { failureReason: "bridge_restart" });
+
+    const delivered = await controller.sendRecoveryHub("chat-1", [recoveredSession.sessionId]);
+    assert.equal(delivered, true);
+
+    const html = sentHtml[0]?.html ?? "";
+    assert.match(html, /<b>当前输入会话<\/b>/u);
+    assert.match(html, /\[当前输入\]\n<b>Session Alpha<\/b> \/ Project One · 空闲/u);
+    assert.match(html, /<b>当前查看中的会话<\/b>/u);
+    assert.match(html, /\[查看中\]\n1\. <b>Recovered Project<\/b> \/ Recovered Project · Recovered/u);
+    assert.doesNotMatch(html, /当前查看中的运行会话/u);
   } finally {
     await cleanup();
   }

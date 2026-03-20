@@ -19,7 +19,8 @@ import {
   buildRuntimeErrorCard,
   buildRuntimeStatusCard,
   buildRuntimeStatusReplyMarkup,
-  type RuntimeCommandEntryView
+  type RuntimeCommandEntryView,
+  type RuntimeHubSessionView
 } from "../telegram/ui.js";
 import {
   DEFAULT_RUNTIME_STATUS_FIELDS,
@@ -908,6 +909,9 @@ export class RuntimeSurfaceController {
           };
         })
         .filter((session): session is NonNullable<typeof session> => Boolean(session));
+      const activeInputSession = hubState.windowIndex === 0
+        ? this.buildSeparateHubActiveInputSession(chatId, new Set(turnMap.keys()))
+        : null;
 
       const focusedTurn = visibleState.focusedSessionId ? (turnMap.get(visibleState.focusedSessionId) ?? null) : null;
       const focused = this.buildFocusedRuntimeHubSection(focusedTurn, {
@@ -919,6 +923,8 @@ export class RuntimeSurfaceController {
         totalWindows,
         totalSessions: turns.length,
         sessions,
+        activeInputSession,
+        sessionCollectionKind: "running",
         planEntries: focused.planEntries,
         planExpanded: !options?.compactFocused && visibleState.planExpanded,
         agentEntries: focused.agentEntries,
@@ -1005,16 +1011,19 @@ export class RuntimeSurfaceController {
         isFocused: session.sessionId === visibleState.focusedSessionId,
         isActiveInputTarget: session.sessionId === (store?.getActiveSession(chatId)?.sessionId ?? null)
       }));
+    const activeInputSession = this.buildSeparateHubActiveInputSession(chatId, new Set(visibleState.sessionIds));
 
-      const text = buildRuntimeHubMessage({
-        language: this.deps.getUiLanguage(),
-        windowIndex: 0,
-        totalWindows: 1,
-        totalSessions: sessions.length,
-        sessions,
-        terminalSummaries: [],
-        isMainHub: true
-      });
+    const text = buildRuntimeHubMessage({
+      language: this.deps.getUiLanguage(),
+      windowIndex: 0,
+      totalWindows: 1,
+      totalSessions: sessions.length,
+      sessions,
+      activeInputSession,
+      sessionCollectionKind: "generic",
+      terminalSummaries: [],
+      isMainHub: true
+    });
 
     return {
       text,
@@ -1031,6 +1040,44 @@ export class RuntimeSurfaceController {
       }),
       visibleState
     };
+  }
+
+  private buildSeparateHubActiveInputSession(
+    chatId: string,
+    renderedSessionIds: ReadonlySet<string>
+  ): RuntimeHubSessionView | null {
+    const store = this.deps.getStore();
+    const activeSession = store?.getActiveSession(chatId) ?? null;
+    if (!activeSession || renderedSessionIds.has(activeSession.sessionId)) {
+      return null;
+    }
+
+    const context = this.deps.getRuntimeCardContext(activeSession.sessionId);
+    return {
+      sessionId: activeSession.sessionId,
+      sessionName: context.sessionName ?? activeSession.displayName,
+      projectName: context.projectName ?? (activeSession.projectAlias?.trim() || activeSession.projectName),
+      state: this.formatStandaloneHubSessionState(activeSession),
+      progressText: null,
+      isFocused: false,
+      isActiveInputTarget: true
+    };
+  }
+
+  private formatStandaloneHubSessionState(session: SessionRow): string {
+    const language = this.deps.getUiLanguage();
+    switch (session.status) {
+      case "idle":
+        return language === "en" ? "Idle" : "空闲";
+      case "running":
+        return language === "en" ? "Running" : "执行中";
+      case "interrupted":
+        return language === "en" ? "Interrupted" : "已中断";
+      case "failed":
+        return language === "en" ? "Failed" : "失败";
+      default:
+        return session.status;
+    }
   }
 
   private async deleteHubState(hubState: RuntimeHubState): Promise<void> {

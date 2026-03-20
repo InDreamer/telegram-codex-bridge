@@ -4497,6 +4497,63 @@ test("use command can switch away from a running session so another session beco
   }
 });
 
+test("use command shows a separate current input session when another session keeps running", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; parseMode?: string }> = [];
+  const deleted: number[] = [];
+
+  try {
+    authorizeChat(store, "chat-1");
+    const runningSession = await withMockedNow("2026-03-10T09:00:00.000Z", async () => createSession(store, "chat-1"));
+    const idleSession = await withMockedNow("2026-03-10T09:05:00.000Z", async () => store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project Idle",
+      projectPath: "/tmp/project-idle"
+    }));
+    store.setActiveSession("chat-1", runningSession.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const messageId = 955 + sent.length;
+        sent.push({ messageId, text, parseMode: options?.parseMode });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string) =>
+        createFakeTelegramMessage(messageId, text),
+      deleteMessage: async (_chatId: string, messageId: number) => {
+        deleted.push(messageId);
+        return true;
+      }
+    };
+
+    installRunningAppServer(service, "thread-running-idle-target", "turn-running-idle-target");
+    await (service as any).startRealTurn("chat-1", runningSession, "Do the work");
+    await (service as any).handleAppServerNotification("turn/started", {
+      threadId: "thread-running-idle-target",
+      turnId: "turn-running-idle-target"
+    });
+
+    const initialStatusMessageId = sent[0]?.messageId;
+    assert.ok(initialStatusMessageId);
+
+    const idleSessionIndex = store.listSessions("chat-1").findIndex((entry) => entry.sessionId === idleSession.sessionId) + 1;
+    await (service as any).routeCommand("chat-1", "use", `${idleSessionIndex}`);
+
+    assert.equal(sent[1]?.parseMode, "HTML");
+    assert.equal(sent[1]?.text, "<b>已切换到项目：</b> Project Idle");
+    assert.match(sent[2]?.text ?? "", /<b>当前输入会话<\/b>/u);
+    assert.match(sent[2]?.text ?? "", /\[当前输入\]\n1?\.?\s*<b>Project Idle<\/b> \/ Project Idle · 空闲/u);
+    assert.match(sent[2]?.text ?? "", /<b>当前查看中的运行会话<\/b>/u);
+    assert.match(sent[2]?.text ?? "", /\[查看中\]/u);
+    assert.doesNotMatch(sent[2]?.text ?? "", /\[查看中 \/ 当前输入\]/u);
+    assert.deepEqual(deleted, [initialStatusMessageId]);
+    assert.equal(store.getActiveSession("chat-1")?.sessionId, idleSession.sessionId);
+    assert.equal(store.getSessionById(runningSession.sessionId)?.status, "running");
+  } finally {
+    await cleanup();
+  }
+});
+
 test("use command reanchors a background running session after it becomes foreground", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ messageId: number; text: string; parseMode?: string }> = [];

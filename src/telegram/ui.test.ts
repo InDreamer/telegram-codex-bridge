@@ -775,14 +775,65 @@ test("buildRuntimeHubMessage separates focused and other sessions without an inp
     isMainHub: true
   });
 
-  assert.match(text, /<b>当前查看中的会话<\/b>/u);
+  assert.match(text, /<b>当前查看中的运行会话<\/b>/u);
   assert.match(text, /\[查看中 \/ 当前输入\]/u);
   assert.match(text, /1\. <b>telegram-codex-bridge<\/b> \/ telegram-codex-bridge · Running/u);
   assert.match(text, /<b>其他运行中的会话<\/b>/u);
   assert.match(text, /2\. <b>algo-research<\/b> \/ algo-research · Running/u);
   assert.doesNotMatch(text, /输入目标/u);
-  assert.doesNotMatch(text, /<b>运行中的会话<\/b>/u);
+  assert.doesNotMatch(text, /<b>当前输入会话<\/b>/u);
   assert.match(text, /使用 \/inspect 查看完整详情，使用 \/interrupt 打断当前操作，使用 \/status 查看运行详情/u);
+});
+
+test("buildRuntimeHubMessage renders a separate current input session when the foreground session is idle", () => {
+  const text = buildRuntimeHubMessage({
+    language: "zh",
+    windowIndex: 0,
+    totalWindows: 1,
+    totalSessions: 2,
+    activeInputSession: {
+      sessionId: "session-input",
+      sessionName: "tweakcc",
+      projectName: "tweakcc",
+      state: "空闲",
+      progressText: null,
+      isFocused: false,
+      isActiveInputTarget: true
+    },
+    sessions: [
+      {
+        sessionId: "session-1",
+        sessionName: "t3code",
+        projectName: "t3code",
+        state: "Running",
+        progressText: "文本给的是骨架，但代码已经漂移了。",
+        isFocused: true,
+        isActiveInputTarget: false
+      },
+      {
+        sessionId: "session-2",
+        sessionName: "sub2api",
+        projectName: "sub2api",
+        state: "Running",
+        progressText: "前端和引导流都要核对。",
+        isFocused: false,
+        isActiveInputTarget: false
+      }
+    ],
+    planEntries: [],
+    planExpanded: false,
+    agentEntries: [],
+    agentsExpanded: false,
+    isMainHub: true
+  });
+
+  assert.match(text, /<b>当前输入会话<\/b>/u);
+  assert.match(text, /\[当前输入\]\n<b>tweakcc<\/b> \/ tweakcc · 空闲/u);
+  assert.match(text, /<b>当前查看中的运行会话<\/b>/u);
+  assert.match(text, /\[查看中\]\n1\. <b>t3code<\/b> \/ t3code · Running/u);
+  assert.match(text, /<b>其他运行中的会话<\/b>/u);
+  assert.match(text, /2\. <b>sub2api<\/b> \/ sub2api · Running/u);
+  assert.doesNotMatch(text, /\[查看中 \/ 当前输入\]/u);
 });
 
 test("buildRuntimeStatusCard puts long progress on a second line", () => {

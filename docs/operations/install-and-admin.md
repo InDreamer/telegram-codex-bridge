@@ -259,6 +259,7 @@ Readiness / preflight behavior:
 Structured activity visibility:
 - the Telegram chat keeps one bridge-owned runtime hub per visible hub window
 - the hub keeps the focused session first, renders its progress once, and separates other running sessions underneath instead of appending a second detailed status block
+- when the current input target has no running turn yet, the main hub shows that session in a separate current-input block above the running-session sections instead of pretending another running session is the foreground target
 - the bridge exposes current plan state through an inline expand/collapse button on the focused runtime surface
 - the bridge keeps per-command detail out of the main chat flow and still creates separate error cards when needed
 - the bridge updates cards only when visible state changes or when a complete progress unit is available

@@ -215,6 +215,8 @@ export function buildRuntimeHubMessage(options: {
   totalWindows: number;
   totalSessions: number;
   sessions: RuntimeHubSessionView[];
+  activeInputSession?: RuntimeHubSessionView | null;
+  sessionCollectionKind?: "running" | "generic";
   planEntries?: string[];
   planExpanded?: boolean;
   agentEntries?: CollabAgentStateSnapshot[];
@@ -224,9 +226,14 @@ export function buildRuntimeHubMessage(options: {
   sessionProgressTextLimit?: number;
 }): string {
   const language = options.language ?? "zh";
+  const sessionCollectionKind = options.sessionCollectionKind ?? "running";
   const sessionProgressTextLimit = options.sessionProgressTextLimit ?? 120;
   const focusedSession = options.sessions.find((session) => session.isFocused) ?? options.sessions[0] ?? null;
   const otherSessions = options.sessions.filter((session) => session.sessionId !== focusedSession?.sessionId);
+  const activeInputSession = options.activeInputSession
+    && !options.sessions.some((session) => session.sessionId === options.activeInputSession?.sessionId)
+    ? options.activeInputSession
+    : null;
   const lines: string[] = [
     formatHtmlHeading(language === "en" ? "Runtime Status" : "运行状态"),
     formatHtmlField(
@@ -237,8 +244,21 @@ export function buildRuntimeHubMessage(options: {
     )
   ];
 
+  if (activeInputSession) {
+    lines.push("", `<b>${language === "en" ? "Current input session" : "当前输入会话"}</b>`);
+    pushRuntimeHubSession(lines, activeInputSession, null, {
+      language,
+      progressTextLimit: sessionProgressTextLimit,
+      emphasizeMarkers: true
+    });
+  }
+
   if (focusedSession) {
-    lines.push("", `<b>${language === "en" ? "Focused session" : "当前查看中的会话"}</b>`);
+    lines.push("", `<b>${
+      sessionCollectionKind === "running"
+        ? (language === "en" ? "Focused running session" : "当前查看中的运行会话")
+        : (language === "en" ? "Focused session" : "当前查看中的会话")
+    }</b>`);
     pushRuntimeHubSession(lines, focusedSession, 1, {
       language,
       progressTextLimit: sessionProgressTextLimit,
@@ -263,7 +283,11 @@ export function buildRuntimeHubMessage(options: {
   }
 
   if (otherSessions.length > 0) {
-    lines.push("", `<b>${language === "en" ? "Other running sessions" : "其他运行中的会话"}</b>`);
+    lines.push("", `<b>${
+      sessionCollectionKind === "running"
+        ? (language === "en" ? "Other running sessions" : "其他运行中的会话")
+        : (language === "en" ? "Other sessions" : "其他会话")
+    }</b>`);
     for (const [index, session] of otherSessions.entries()) {
       pushRuntimeHubSession(lines, session, index + 2, {
         language,
@@ -343,7 +367,7 @@ function appendExpandedAgentSection(
 function pushRuntimeHubSession(
   lines: string[],
   session: RuntimeHubSessionView,
-  index: number,
+  index: number | null,
   options: {
     language: UiLanguage;
     progressTextLimit: number;
@@ -361,8 +385,9 @@ function pushRuntimeHubSession(
 
   const markerText = !options.emphasizeMarkers && markers.length > 0 ? ` [${markers.join(" / ")}]` : "";
   const projectName = session.projectName?.trim() ? ` / ${escapeHtml(session.projectName.trim())}` : "";
+  const prefix = index === null ? "" : `${index}. `;
   lines.push(
-    `${index}. <b>${escapeHtml(session.sessionName)}</b>${projectName}${markerText} · ${escapeHtml(session.state)}`
+    `${prefix}<b>${escapeHtml(session.sessionName)}</b>${projectName}${markerText} · ${escapeHtml(session.state)}`
   );
 
   if (session.progressText && options.progressTextLimit > 0) {
