@@ -13,6 +13,12 @@ import {
   type ParsedCallbackData
 } from "../telegram/ui.js";
 import type { SessionRow, UiLanguage } from "../types.js";
+import {
+  isTelegramDeleteCommitted,
+  isTelegramEditCommitted,
+  type TelegramDeleteResult,
+  type TelegramEditResult
+} from "./runtime-surface-state.js";
 
 const DIRECTORY_PAGE_SIZE = 6;
 const TEXT_DETECTION_MAX_BYTES = 4096;
@@ -83,8 +89,8 @@ interface ProjectBrowserCoordinatorDeps {
     messageId: number,
     html: string,
     replyMarkup?: TelegramInlineKeyboardMarkup
-  ) => Promise<{ outcome: "edited" } | { outcome: "rate_limited"; retryAfterMs: number } | { outcome: "failed" }>;
-  safeDeleteMessage: (chatId: string, messageId: number) => Promise<boolean>;
+  ) => Promise<TelegramEditResult>;
+  safeDeleteMessage: (chatId: string, messageId: number) => Promise<TelegramDeleteResult>;
   safeAnswerCallbackQuery: (callbackQueryId: string, text?: string) => Promise<void>;
   safeSendPhoto: (
     chatId: string,
@@ -298,7 +304,7 @@ export class ProjectBrowserCoordinator {
         await this.handleBack(state, language);
         return;
       case "browse_close":
-        if (await this.deps.safeDeleteMessage(chatId, messageId)) {
+        if (isTelegramDeleteCommitted(await this.deps.safeDeleteMessage(chatId, messageId))) {
           this.browseStates.delete(state.token);
           await this.deps.safeAnswerCallbackQuery(callbackQueryId);
           return;
@@ -551,7 +557,7 @@ export class ProjectBrowserCoordinator {
     language: UiLanguage
   ): Promise<void> {
     const result = await this.deps.safeEditHtmlMessageText(state.chatId, state.messageId, text, replyMarkup);
-    if (result.outcome === "edited") {
+    if (isTelegramEditCommitted(result)) {
       return;
     }
 

@@ -60,6 +60,13 @@ async function createCoordinatorContext(options: {
     defaultReasoningEffort: "low" | "medium" | "high";
     supportedReasoningEfforts: Array<{ reasoningEffort: "low" | "medium" | "high"; description: string }>;
   }>;
+  safeSendHtmlMessageResult?: (
+    chatId: string,
+    html: string,
+    replyMarkup?: {
+      inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+    }
+  ) => Promise<{ message_id: number } | null>;
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "ctb-turn-coordinator-test-"));
   const paths = createTestPaths(root);
@@ -83,6 +90,7 @@ async function createCoordinatorContext(options: {
   }> = [];
   const interactionResolutions: Array<{ chatId: string; sessionId: string; state: string; reason: string }> = [];
   const reanchorReasons: string[] = [];
+  const finalizedHandoffs: Array<{ chatId: string; sessionId: string }> = [];
   let nextMessageId = 1;
 
   const coordinator = new TurnCoordinator({
@@ -127,12 +135,23 @@ async function createCoordinatorContext(options: {
     reanchorRuntimeAfterBridgeReply: async (_chatId, reason, _sessionId) => {
       reanchorReasons.push(reason);
     },
+    finalizeTerminalRuntimeHandoff: async (chatId, sessionId) => {
+      finalizedHandoffs.push({ chatId, sessionId });
+    },
     disposeRuntimeCards: () => {},
     safeSendMessage: async (_chatId, text) => {
       safeMessages.push(text);
       return true;
     },
     safeSendHtmlMessageResult: async (chatId, html, replyMarkup) => {
+      if (options.safeSendHtmlMessageResult) {
+        const sent = await options.safeSendHtmlMessageResult(chatId, html, replyMarkup);
+        if (sent) {
+          sentHtmlMessages.push(replyMarkup ? { chatId, html, replyMarkup } : { chatId, html });
+        }
+        return sent;
+      }
+
       sentHtmlMessages.push(replyMarkup ? { chatId, html, replyMarkup } : { chatId, html });
       return { message_id: nextMessageId++ };
     },
@@ -148,6 +167,7 @@ async function createCoordinatorContext(options: {
     sentHtmlMessages,
     interactionResolutions,
     reanchorReasons,
+    finalizedHandoffs,
     cleanup: async () => {
       store.close();
       await rm(root, { recursive: true, force: true });
@@ -370,7 +390,7 @@ test("TurnCoordinator recreates missing remote threads before starting a turn", 
 });
 
 test("TurnCoordinator completes a normal turn and delivers the recovered final answer", async () => {
-  const { coordinator, store, sentHtmlMessages, interactionResolutions, reanchorReasons, cleanup } = await createCoordinatorContext({
+  const { coordinator, store, sentHtmlMessages, interactionResolutions, reanchorReasons, finalizedHandoffs, cleanup } = await createCoordinatorContext({
     appServer: {
       resumeThread: async () => ({
         thread: {
@@ -407,14 +427,18 @@ test("TurnCoordinator completes a normal turn and delivers the recovered final a
     assert.equal(sentHtmlMessages.length, 1);
     assert.match(sentHtmlMessages[0]?.html ?? "", /<b>Session Alpha \/ Project One<\/b>/u);
     assert.match(sentHtmlMessages[0]?.html ?? "", /Recovered final answer/u);
-    assert.equal(store.listFinalAnswerViews("chat-1").length, 0);
+    const views = store.listFinalAnswerViews("chat-1");
+    assert.equal(views.length, 1);
+    assert.equal(views[0]?.deliveryState, "visible");
+    assert.equal(views[0]?.telegramMessageId, 1);
     assert.deepEqual(interactionResolutions, [{
       chatId: "chat-1",
       sessionId: session.sessionId,
       state: "expired",
       reason: "turn_completed"
     }]);
-    assert.deepEqual(reanchorReasons, ["final_answer_sent"]);
+    assert.deepEqual(reanchorReasons, []);
+    assert.deepEqual(finalizedHandoffs, [{ chatId: "chat-1", sessionId: session.sessionId }]);
     assert.equal(store.getSessionById(session.sessionId)?.status, "idle");
     assert.equal(store.getSessionById(session.sessionId)?.lastTurnId, "turn-1");
   } finally {
@@ -423,7 +447,7 @@ test("TurnCoordinator completes a normal turn and delivers the recovered final a
 });
 
 test("TurnCoordinator completes plan-mode turns by sending a plan result with implementation action markup", async () => {
-  const { coordinator, store, sentHtmlMessages, reanchorReasons, cleanup } = await createCoordinatorContext({
+  const { coordinator, store, sentHtmlMessages, reanchorReasons, finalizedHandoffs, cleanup } = await createCoordinatorContext({
     appServer: {
       resumeThread: async () => ({
         thread: {
@@ -463,7 +487,114 @@ test("TurnCoordinator completes plan-mode turns by sending a plan result with im
     const views = store.listFinalAnswerViews("chat-1");
     assert.equal(views.length, 1);
     assert.equal(views[0]?.telegramMessageId, 1);
-    assert.deepEqual(reanchorReasons, ["plan_result_sent"]);
+    assert.equal(views[0]?.kind, "plan_result");
+    assert.equal(views[0]?.deliveryState, "visible");
+    assert.deepEqual(reanchorReasons, []);
+    assert.deepEqual(finalizedHandoffs, [{ chatId: "chat-1", sessionId: session.sessionId }]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator leaves a deferred terminal notice when final answer delivery is flood-limited", async () => {
+  let sendAttempt = 0;
+  const { coordinator, store, sentHtmlMessages, reanchorReasons, finalizedHandoffs, cleanup } = await createCoordinatorContext({
+    appServer: {
+      resumeThread: async () => ({
+        thread: {
+          id: "thread-deferred-final",
+          turns: [{
+            id: "turn-deferred-final",
+            items: [{
+              type: "agentMessage",
+              phase: "final_answer",
+              text: "Deferred final answer"
+            }]
+          }]
+        }
+      })
+    },
+    safeSendHtmlMessageResult: async (_chatId, _html, _replyMarkup) => {
+      sendAttempt += 1;
+      return sendAttempt === 1 ? null : { message_id: 1 };
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      displayName: "Session Deferred",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.beginActiveTurn("chat-1", session, "thread-deferred-final", "turn-deferred-final", "inProgress");
+    await coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-deferred-final",
+      turnId: "turn-deferred-final",
+      status: "completed"
+    });
+
+    assert.equal(coordinator.getActiveTurn(), null);
+    assert.equal(sentHtmlMessages.length, 1);
+    assert.match(sentHtmlMessages[0]?.html ?? "", /暂未送达/u);
+    const views = store.listFinalAnswerViews("chat-1");
+    assert.equal(views.length, 1);
+    assert.equal(views[0]?.deliveryState, "deferred_notice_visible");
+    assert.equal(views[0]?.telegramMessageId, null);
+    assert.deepEqual(reanchorReasons, []);
+    assert.deepEqual(finalizedHandoffs, [{ chatId: "chat-1", sessionId: session.sessionId }]);
+    assert.equal(store.countRuntimeNotices(), 0);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator keeps the final runtime surface until a deferred terminal notice becomes visible", async () => {
+  const { coordinator, store, finalizedHandoffs, cleanup } = await createCoordinatorContext({
+    appServer: {
+      resumeThread: async () => ({
+        thread: {
+          id: "thread-pending-final",
+          turns: [{
+            id: "turn-pending-final",
+            items: [{
+              type: "agentMessage",
+              phase: "final_answer",
+              text: "Pending final answer"
+            }]
+          }]
+        }
+      })
+    },
+    safeSendHtmlMessageResult: async () => null
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      displayName: "Session Pending",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.beginActiveTurn("chat-1", session, "thread-pending-final", "turn-pending-final", "inProgress");
+    await coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-pending-final",
+      turnId: "turn-pending-final",
+      status: "completed"
+    });
+
+    const heldTurn = coordinator.getActiveTurn();
+    assert.ok(heldTurn);
+    assert.equal(heldTurn?.terminalDeliveryPending, true);
+    assert.equal(store.listFinalAnswerViews("chat-1")[0]?.deliveryState, "pending");
+    assert.equal(store.countRuntimeNotices(), 1);
+    assert.deepEqual(finalizedHandoffs, []);
+
+    await coordinator.handleDeferredTerminalNoticeVisible("chat-1", session.sessionId, "turn-pending-final");
+    assert.equal(coordinator.getActiveTurn(), null);
+    assert.deepEqual(finalizedHandoffs, [{ chatId: "chat-1", sessionId: session.sessionId }]);
   } finally {
     await cleanup();
   }

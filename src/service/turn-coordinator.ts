@@ -34,6 +34,7 @@ const MAX_RUNNING_SESSIONS_PER_CHAT = 10;
 
 interface ActiveTurnState extends InteractionBrokerActiveTurn {
   startedInPlanMode: boolean;
+  terminalDeliveryPending: boolean;
   finalMessage: string | null;
   effectiveModel: string | null;
   effectiveReasoningEffort: ReasoningEffort | null;
@@ -60,6 +61,14 @@ interface EffectiveTurnConfig {
   model: string | null;
   reasoningEffort: ReasoningEffort | null;
   reasoningEffortPinned: boolean;
+}
+
+interface TerminalDeliveryResult {
+  answerId: string;
+  kind: "final_answer" | "plan_result";
+  visible: boolean;
+  resultVisible: boolean;
+  deferredNoticeVisible: boolean;
 }
 
 interface EnsuredThreadState {
@@ -123,6 +132,7 @@ interface TurnCoordinatorDeps {
   runRuntimeCardOperation: (activeTurn: ActiveTurnState, operation: () => Promise<void>) => Promise<void>;
   reanchorStatusCardToLatestMessage: (activeTurn: ActiveTurnState, reason: string) => Promise<void>;
   reanchorRuntimeAfterBridgeReply: (chatId: string, reason: string, sessionId?: string) => Promise<void>;
+  finalizeTerminalRuntimeHandoff: (chatId: string, sessionId: string) => Promise<void>;
   disposeRuntimeCards: (activeTurn: ActiveTurnState) => void;
   safeSendMessage: (chatId: string, text: string) => Promise<boolean>;
   safeSendHtmlMessageResult: (
@@ -420,6 +430,7 @@ export class TurnCoordinator {
       threadId,
       turnId,
       startedInPlanMode: session.planMode,
+      terminalDeliveryPending: false,
       finalMessage: null,
       effectiveModel: resolvedEffectiveConfig.model,
       effectiveReasoningEffort: resolvedEffectiveConfig.reasoningEffort,
@@ -647,14 +658,19 @@ export class TurnCoordinator {
       resolutionSource: "turn_expired"
     });
 
-    this.unregisterActiveTurn(activeTurn);
-
     const store = this.deps.getStore();
     if (!store) {
+      this.unregisterActiveTurn(activeTurn);
+      this.deps.disposeRuntimeCards(activeTurn);
       return;
     }
 
     if (classified.status === "completed") {
+      const holdTerminalRuntimeSurface = this.listActiveTurns()
+        .filter((candidate) => candidate.chatId === activeTurn.chatId)
+        .length === 1;
+      activeTurn.terminalDeliveryPending = holdTerminalRuntimeSurface;
+
       let finalMessage = activeTurn.finalMessage;
       let proposedPlan: string | null = null;
       const appServer = this.deps.getAppServer();
@@ -670,14 +686,23 @@ export class TurnCoordinator {
         proposedPlan = turnArtifacts.proposedPlan;
       }
       store.markSessionSuccessful(activeTurn.sessionId);
-      this.deps.disposeRuntimeCards(activeTurn);
-      if (activeTurn.startedInPlanMode && proposedPlan) {
-        await this.sendPlanResult(activeTurn, proposedPlan);
+      const delivery = activeTurn.startedInPlanMode && proposedPlan
+        ? await this.sendPlanResult(activeTurn, proposedPlan)
+        : await this.sendFinalAnswer(activeTurn, finalMessage);
+
+      if (holdTerminalRuntimeSurface && delivery.visible) {
+        await this.completeTerminalRuntimeHandoff(activeTurn);
         return;
       }
-      await this.sendFinalAnswer(activeTurn, finalMessage);
+
+      if (!holdTerminalRuntimeSurface) {
+        this.unregisterActiveTurn(activeTurn);
+        this.deps.disposeRuntimeCards(activeTurn);
+      }
       return;
     }
+
+    this.unregisterActiveTurn(activeTurn);
 
     if (classified.status === "interrupted") {
       store.updateSessionStatus(activeTurn.sessionId, "interrupted", {
@@ -706,6 +731,10 @@ export class TurnCoordinator {
     }
 
     for (const runningTurn of this.listActiveTurns()) {
+      if (runningTurn.tracker.getStatus().turnStatus === "completed") {
+        continue;
+      }
+
       await this.deps.interactionBroker.resolveActionablePendingInteractionsForSession(
         runningTurn.chatId,
         runningTurn.sessionId,
@@ -724,6 +753,30 @@ export class TurnCoordinator {
       });
       await this.deps.safeSendMessage(runningTurn.chatId, "Codex 服务暂时不可用，请稍后重试。");
     }
+  }
+
+  async handleDeferredTerminalNoticeVisible(chatId: string, sessionId: string | null, turnId: string | null): Promise<void> {
+    if (!sessionId || !turnId) {
+      return;
+    }
+
+    const activeTurn = this.getActiveTurnBySessionId(sessionId);
+    if (!activeTurn || activeTurn.chatId !== chatId || activeTurn.turnId !== turnId || !activeTurn.terminalDeliveryPending) {
+      return;
+    }
+
+    await this.completeTerminalRuntimeHandoff(activeTurn);
+  }
+
+  private async completeTerminalRuntimeHandoff(activeTurn: ActiveTurnState): Promise<void> {
+    if (!activeTurn.terminalDeliveryPending) {
+      return;
+    }
+
+    activeTurn.terminalDeliveryPending = false;
+    this.unregisterActiveTurn(activeTurn);
+    this.deps.disposeRuntimeCards(activeTurn);
+    await this.deps.finalizeTerminalRuntimeHandoff(activeTurn.chatId, activeTurn.sessionId);
   }
 
   private async buildTurnStartRequest(
@@ -794,7 +847,7 @@ export class TurnCoordinator {
     };
   }
 
-  private async sendFinalAnswer(activeTurn: ActiveTurnState, finalMessage: string | null): Promise<void> {
+  private async sendFinalAnswer(activeTurn: ActiveTurnState, finalMessage: string | null): Promise<TerminalDeliveryResult> {
     const text = finalMessage || "本次操作已完成，但没有可返回的最终答复。";
     const rendered = buildCollapsibleFinalAnswerView(text, this.getFinalAnswerRenderContext(activeTurn.sessionId));
     await this.deps.logger.info("sending final answer", {
@@ -806,109 +859,216 @@ export class TurnCoordinator {
     });
 
     const store = this.deps.getStore();
-    let delivered = false;
-    if (rendered.truncated && store) {
-      let answerId: string | null = null;
-
-      try {
-        const saved = store.saveFinalAnswerView({
-          telegramChatId: activeTurn.chatId,
-          sessionId: activeTurn.sessionId,
-          threadId: activeTurn.threadId,
-          turnId: activeTurn.turnId,
-          previewHtml: rendered.previewHtml,
-          pages: rendered.pages
-        });
-        answerId = saved.answerId;
-
-        const sent = await this.deps.safeSendHtmlMessageResult(
-          activeTurn.chatId,
-          saved.previewHtml,
-          buildFinalAnswerReplyMarkup({
-            answerId: saved.answerId,
-            totalPages: saved.pages.length,
-            expanded: false
-          })
-        );
-
-        if (sent) {
-          store.setFinalAnswerMessageId(saved.answerId, sent.message_id);
-          delivered = true;
-          await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "final_answer_sent", activeTurn.sessionId);
-          return;
-        }
-      } catch (error) {
-        await this.deps.logger.warn("persisted final answer delivery failed; falling back to chunked send", {
-          chatId: activeTurn.chatId,
-          sessionId: activeTurn.sessionId,
-          error: `${error}`
-        });
-      }
-
-      if (answerId) {
-        store.deleteFinalAnswerView(answerId);
-      }
+    if (!store) {
+      return {
+        answerId: `missing-store:${activeTurn.turnId}`,
+        kind: "final_answer",
+        visible: false,
+        resultVisible: false,
+        deferredNoticeVisible: false
+      };
     }
 
-    if (!rendered.truncated && rendered.pages.length === 1) {
-      delivered = (await this.deps.safeSendHtmlMessageResult(activeTurn.chatId, rendered.pages[0] ?? "")) !== null;
-      if (delivered) {
+    const saved = store.saveFinalAnswerView({
+      telegramChatId: activeTurn.chatId,
+      sessionId: activeTurn.sessionId,
+      threadId: activeTurn.threadId,
+      turnId: activeTurn.turnId,
+      kind: "final_answer",
+      deliveryState: "pending",
+      previewHtml: rendered.previewHtml,
+      pages: rendered.pages
+    });
+
+    const directMarkup = this.buildTerminalResultReplyMarkup(saved, rendered.truncated);
+    const directHtml = this.buildTerminalResultHtml(saved, rendered.truncated);
+    const sent = await this.deps.safeSendHtmlMessageResult(activeTurn.chatId, directHtml, directMarkup);
+    if (sent) {
+      store.setFinalAnswerMessageId(saved.answerId, sent.message_id);
+      store.setFinalAnswerDeliveryState(saved.answerId, "visible");
+      if (!activeTurn.terminalDeliveryPending) {
         await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "final_answer_sent", activeTurn.sessionId);
       }
-      return;
+      return {
+        answerId: saved.answerId,
+        kind: "final_answer",
+        visible: true,
+        resultVisible: true,
+        deferredNoticeVisible: false
+      };
     }
 
-    for (const page of rendered.pages) {
-      delivered = (await this.deps.safeSendHtmlMessageResult(activeTurn.chatId, page)) !== null || delivered;
-    }
-
-    if (delivered) {
-      await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "final_answer_sent", activeTurn.sessionId);
-    }
+    const deferredNoticeVisible = await this.sendDeferredTerminalNotice(activeTurn, saved);
+    return {
+      answerId: saved.answerId,
+      kind: "final_answer",
+      visible: deferredNoticeVisible,
+      resultVisible: false,
+      deferredNoticeVisible
+    };
   }
 
-  private async sendPlanResult(activeTurn: ActiveTurnState, planMarkdown: string): Promise<void> {
+  private async sendPlanResult(activeTurn: ActiveTurnState, planMarkdown: string): Promise<TerminalDeliveryResult> {
     const rendered = buildCollapsibleFinalAnswerView(planMarkdown, this.getFinalAnswerRenderContext(activeTurn.sessionId));
     const store = this.deps.getStore();
+    if (!store) {
+      return {
+        answerId: `missing-store:${activeTurn.turnId}`,
+        kind: "plan_result",
+        visible: false,
+        resultVisible: false,
+        deferredNoticeVisible: false
+      };
+    }
 
-    if (store) {
-      const saved = store.saveFinalAnswerView({
-        telegramChatId: activeTurn.chatId,
-        sessionId: activeTurn.sessionId,
-        threadId: activeTurn.threadId,
-        turnId: activeTurn.turnId,
-        previewHtml: rendered.previewHtml,
-        pages: rendered.pages
-      });
+    const saved = store.saveFinalAnswerView({
+      telegramChatId: activeTurn.chatId,
+      sessionId: activeTurn.sessionId,
+      threadId: activeTurn.threadId,
+      turnId: activeTurn.turnId,
+      kind: "plan_result",
+      deliveryState: "pending",
+      previewHtml: rendered.previewHtml,
+      pages: rendered.pages
+    });
 
-      const markup = rendered.truncated
+    const sent = await this.deps.safeSendHtmlMessageResult(
+      activeTurn.chatId,
+      this.buildTerminalResultHtml(saved, rendered.truncated),
+      this.buildTerminalResultReplyMarkup(saved, rendered.truncated)
+    );
+    if (sent) {
+      store.setFinalAnswerMessageId(saved.answerId, sent.message_id);
+      store.setFinalAnswerDeliveryState(saved.answerId, "visible");
+      if (!activeTurn.terminalDeliveryPending) {
+        await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "plan_result_sent", activeTurn.sessionId);
+      }
+      return {
+        answerId: saved.answerId,
+        kind: "plan_result",
+        visible: true,
+        resultVisible: true,
+        deferredNoticeVisible: false
+      };
+    }
+
+    const deferredNoticeVisible = await this.sendDeferredTerminalNotice(activeTurn, saved);
+    return {
+      answerId: saved.answerId,
+      kind: "plan_result",
+      visible: deferredNoticeVisible,
+      resultVisible: false,
+      deferredNoticeVisible
+    };
+  }
+
+  private buildTerminalResultHtml(
+    saved: ReturnType<BridgeStateStore["saveFinalAnswerView"]>,
+    truncated: boolean
+  ): string {
+    return truncated || saved.pages.length > 1
+      ? saved.previewHtml
+      : (saved.pages[0] ?? saved.previewHtml);
+  }
+
+  private buildTerminalResultReplyMarkup(
+    saved: ReturnType<BridgeStateStore["saveFinalAnswerView"]>,
+    truncated: boolean
+  ): {
+    inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+  } | undefined {
+    if (saved.kind === "plan_result") {
+      return truncated || saved.pages.length > 1
         ? buildPlanResultReplyMarkup({
           answerId: saved.answerId,
           totalPages: saved.pages.length,
           expanded: false,
-          primaryActionConsumed: false
+          primaryActionConsumed: saved.primaryActionConsumed
         })
         : {
           inline_keyboard: buildPlanResultActionRows(saved.answerId)
         };
+    }
 
-      const sent = await this.deps.safeSendHtmlMessageResult(
+    if (!truncated && saved.pages.length <= 1) {
+      return undefined;
+    }
+
+    return buildFinalAnswerReplyMarkup({
+      answerId: saved.answerId,
+      totalPages: saved.pages.length,
+      expanded: false
+    });
+  }
+
+  private buildDeferredTerminalNotice(
+    saved: ReturnType<BridgeStateStore["saveFinalAnswerView"]>
+  ): {
+    html: string;
+    replyMarkup: {
+      inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+    };
+  } {
+    if (saved.kind === "plan_result") {
+      return {
+        html: "<i>方案结果暂未送达。点击“展开方案”重新渲染。</i>",
+        replyMarkup: buildPlanResultReplyMarkup({
+          answerId: saved.answerId,
+          totalPages: saved.pages.length,
+          expanded: false,
+          primaryActionConsumed: saved.primaryActionConsumed
+        })
+      };
+    }
+
+    return {
+      html: "<i>最终答复暂未送达。点击“展开全文”重新渲染。</i>",
+      replyMarkup: buildFinalAnswerReplyMarkup({
+        answerId: saved.answerId,
+        totalPages: saved.pages.length,
+        expanded: false
+      })
+    };
+  }
+
+  private async sendDeferredTerminalNotice(
+    activeTurn: ActiveTurnState,
+    saved: ReturnType<BridgeStateStore["saveFinalAnswerView"]>
+  ): Promise<boolean> {
+    const store = this.deps.getStore();
+    if (!store) {
+      return false;
+    }
+
+    const renderedNotice = this.buildDeferredTerminalNotice(saved);
+    const notice = store.createRuntimeNotice({
+      telegramChatId: activeTurn.chatId,
+      type: "terminal_delivery_deferred",
+      message: renderedNotice.html,
+      parseMode: "HTML",
+      replyMarkup: renderedNotice.replyMarkup,
+      sessionId: activeTurn.sessionId,
+      turnId: activeTurn.turnId
+    });
+    const sent = await this.deps.safeSendHtmlMessageResult(
+      activeTurn.chatId,
+      renderedNotice.html,
+      renderedNotice.replyMarkup
+    );
+    if (!sent) {
+      return false;
+    }
+
+    store.clearRuntimeNotice(notice.key);
+    store.setFinalAnswerDeliveryState(saved.answerId, "deferred_notice_visible");
+    if (!activeTurn.terminalDeliveryPending) {
+      await this.deps.reanchorRuntimeAfterBridgeReply(
         activeTurn.chatId,
-        rendered.truncated ? saved.previewHtml : (rendered.pages[0] ?? ""),
-        markup
+        saved.kind === "plan_result" ? "plan_result_deferred_notice_sent" : "final_answer_deferred_notice_sent",
+        activeTurn.sessionId
       );
-      if (sent) {
-        store.setFinalAnswerMessageId(saved.answerId, sent.message_id);
-        await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "plan_result_sent", activeTurn.sessionId);
-        return;
-      }
-
-      store.deleteFinalAnswerView(saved.answerId);
     }
-
-    if (await this.deps.safeSendHtmlMessageResult(activeTurn.chatId, rendered.pages[0] ?? "")) {
-      await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "plan_result_sent", activeTurn.sessionId);
-    }
+    return true;
   }
 
   private getFinalAnswerRenderContext(sessionId: string): {

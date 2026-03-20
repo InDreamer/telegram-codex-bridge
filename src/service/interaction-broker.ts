@@ -14,7 +14,7 @@ import type { PendingInteractionRow, PendingInteractionSummary, PendingInteracti
 import { SKIP_QUESTION_OPTION_VALUE, type NormalizedApprovalInteraction, type NormalizedInteraction, type NormalizedQuestion, type NormalizedQuestionnaireInteraction } from "../interactions/normalize.js";
 import { parseBooleanLike } from "../util/boolean.js";
 import { asRecord, getString, getStringArray } from "../util/untyped.js";
-import type { TelegramEditResult } from "./runtime-surface-state.js";
+import { isTelegramEditCommitted, type TelegramEditResult } from "./runtime-surface-state.js";
 
 export interface PendingInteractionTextMode {
   sessionId: string;
@@ -474,16 +474,17 @@ export class InteractionBroker {
 
     const rendered = buildPendingInteractionSurface(row, interaction, { answeredExpanded: expanded });
     const result = await this.deps.safeEditHtmlMessageText(chatId, messageId, rendered.text, rendered.replyMarkup);
-    switch (result.outcome) {
-      case "edited":
-        await this.deps.safeAnswerCallbackQuery(callbackQueryId);
-        return;
-      case "rate_limited":
-        await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Telegram 正在限流，请稍后再试。");
-        return;
-      default:
-        await this.deps.safeAnswerCallbackQuery(callbackQueryId, "暂时无法更新这条消息，请稍后再试。");
+    if (isTelegramEditCommitted(result)) {
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId);
+      return;
     }
+
+    if (result.outcome === "rate_limited") {
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Telegram 正在限流，请稍后再试。");
+      return;
+    }
+
+    await this.deps.safeAnswerCallbackQuery(callbackQueryId, "暂时无法更新这条消息，请稍后再试。");
   }
 
   async handleNormalizedServerRequest(

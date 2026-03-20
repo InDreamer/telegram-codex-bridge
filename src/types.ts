@@ -1,3 +1,5 @@
+import type { TelegramInlineKeyboardMarkup } from "./telegram/api.js";
+
 export type BridgeReadinessState =
   | "ready"
   | "awaiting_authorization"
@@ -180,8 +182,12 @@ export type InstallSourceMetadata = GitHubArchiveInstallSource;
 export interface RuntimeNotice {
   key: string;
   telegramChatId: string;
-  type: "bridge_restart_recovery" | "app_server_notice";
+  type: "bridge_restart_recovery" | "app_server_notice" | "terminal_delivery_deferred";
   message: string;
+  parseMode?: "HTML" | null;
+  replyMarkup?: TelegramInlineKeyboardMarkup | null;
+  sessionId?: string | null;
+  turnId?: string | null;
   createdAt: string;
 }
 
@@ -192,6 +198,8 @@ export interface FinalAnswerViewRow {
   sessionId: string;
   threadId: string;
   turnId: string;
+  kind: "final_answer" | "plan_result";
+  deliveryState: "pending" | "visible" | "deferred_notice_visible";
   previewHtml: string;
   pages: string[];
   primaryActionConsumed: boolean;

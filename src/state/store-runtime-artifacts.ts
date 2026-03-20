@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
+import type { TelegramInlineKeyboardMarkup } from "../telegram/api.js";
 import { DEFAULT_RUNTIME_STATUS_FIELDS } from "../types.js";
 import type {
   FinalAnswerViewRow,
@@ -23,8 +24,12 @@ import { buildInClausePlaceholders } from "./store-shared.js";
 interface RuntimeNoticeRecord {
   key: string;
   telegram_chat_id: string;
-  type: "bridge_restart_recovery" | "app_server_notice";
+  type: "bridge_restart_recovery" | "app_server_notice" | "terminal_delivery_deferred";
   message: string;
+  parse_mode: "HTML" | null;
+  reply_markup_json: string | null;
+  session_id: string | null;
+  turn_id: string | null;
   created_at: string;
 }
 
@@ -35,6 +40,8 @@ interface FinalAnswerViewRecord {
   session_id: string;
   thread_id: string;
   turn_id: string;
+  kind: FinalAnswerViewRow["kind"];
+  delivery_state: FinalAnswerViewRow["deliveryState"];
   preview_html: string;
   pages_json: string;
   primary_action_consumed: number;
@@ -74,6 +81,12 @@ function mapRuntimeNotice(record: RuntimeNoticeRecord): RuntimeNotice {
     telegramChatId: record.telegram_chat_id,
     type: record.type,
     message: record.message,
+    parseMode: record.parse_mode,
+    replyMarkup: record.reply_markup_json
+      ? JSON.parse(record.reply_markup_json) as TelegramInlineKeyboardMarkup
+      : null,
+    sessionId: record.session_id,
+    turnId: record.turn_id,
     createdAt: record.created_at
   };
 }
@@ -86,6 +99,12 @@ function mapFinalAnswerView(record: FinalAnswerViewRecord): FinalAnswerViewRow {
     sessionId: record.session_id,
     threadId: record.thread_id,
     turnId: record.turn_id,
+    kind: record.kind === "plan_result" ? "plan_result" : "final_answer",
+    deliveryState: record.delivery_state === "visible"
+      ? "visible"
+      : record.delivery_state === "deferred_notice_visible"
+        ? "deferred_notice_visible"
+        : "pending",
     previewHtml: record.preview_html,
     pages: JSON.parse(record.pages_json) as string[],
     primaryActionConsumed: record.primary_action_consumed === 1,
@@ -129,6 +148,10 @@ export interface StoreRuntimeArtifacts {
     telegramChatId: string;
     type: RuntimeNotice["type"];
     message: string;
+    parseMode?: RuntimeNotice["parseMode"];
+    replyMarkup?: RuntimeNotice["replyMarkup"];
+    sessionId?: string | null;
+    turnId?: string | null;
   }): RuntimeNotice;
   listNoticeChatIds(): string[];
   rebindRuntimeNoticesChatIds(telegramChatId: string, previousChatIds: string[]): void;
@@ -143,6 +166,8 @@ export interface StoreRuntimeArtifacts {
     sessionId: string;
     threadId: string;
     turnId: string;
+    kind?: FinalAnswerViewRow["kind"];
+    deliveryState?: FinalAnswerViewRow["deliveryState"];
     previewHtml: string;
     pages: string[];
     primaryActionConsumed?: boolean;
@@ -151,6 +176,7 @@ export interface StoreRuntimeArtifacts {
   listFinalAnswerViews(telegramChatId: string): FinalAnswerViewRow[];
   rebindFinalAnswerViewsChatIds(telegramChatId: string, previousChatIds: string[]): void;
   setFinalAnswerMessageId(answerId: string, telegramMessageId: number): void;
+  setFinalAnswerDeliveryState(answerId: string, deliveryState: FinalAnswerViewRow["deliveryState"]): void;
   setFinalAnswerPrimaryActionConsumed(answerId: string, consumed: boolean): void;
   deleteFinalAnswerView(answerId: string): void;
   clearAllFinalAnswerViews(): void;
@@ -216,14 +242,28 @@ export function createStoreRuntimeArtifacts(db: DatabaseSync): StoreRuntimeArtif
             telegram_chat_id,
             type,
             message,
+            parse_mode,
+            reply_markup_json,
+            session_id,
+            turn_id,
             created_at
           )
-          VALUES (?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `
       );
 
       for (const notice of notices) {
-        statement.run(notice.key, notice.telegramChatId, notice.type, notice.message, notice.createdAt);
+        statement.run(
+          notice.key,
+          notice.telegramChatId,
+          notice.type,
+          notice.message,
+          notice.parseMode ?? null,
+          notice.replyMarkup ? JSON.stringify(notice.replyMarkup) : null,
+          notice.sessionId ?? null,
+          notice.turnId ?? null,
+          notice.createdAt
+        );
       }
     },
 
@@ -233,6 +273,10 @@ export function createStoreRuntimeArtifacts(db: DatabaseSync): StoreRuntimeArtif
         telegramChatId: options.telegramChatId,
         type: options.type,
         message: options.message,
+        parseMode: options.parseMode ?? null,
+        replyMarkup: options.replyMarkup ?? null,
+        sessionId: options.sessionId ?? null,
+        turnId: options.turnId ?? null,
         createdAt: nowIso()
       };
 
@@ -244,12 +288,26 @@ export function createStoreRuntimeArtifacts(db: DatabaseSync): StoreRuntimeArtif
               telegram_chat_id,
               type,
               message,
+              parse_mode,
+              reply_markup_json,
+              session_id,
+              turn_id,
               created_at
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
           `
         )
-        .run(notice.key, notice.telegramChatId, notice.type, notice.message, notice.createdAt);
+        .run(
+          notice.key,
+          notice.telegramChatId,
+          notice.type,
+          notice.message,
+          notice.parseMode ?? null,
+          notice.replyMarkup ? JSON.stringify(notice.replyMarkup) : null,
+          notice.sessionId ?? null,
+          notice.turnId ?? null,
+          notice.createdAt
+        );
 
       return notice;
     },
@@ -376,12 +434,14 @@ export function createStoreRuntimeArtifacts(db: DatabaseSync): StoreRuntimeArtif
                 session_id,
                 thread_id,
                 turn_id,
+                kind,
+                delivery_state,
                 preview_html,
                 pages_json,
                 primary_action_consumed,
                 created_at
               )
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `
           )
           .run(
@@ -391,6 +451,8 @@ export function createStoreRuntimeArtifacts(db: DatabaseSync): StoreRuntimeArtif
             options.sessionId,
             options.threadId,
             options.turnId,
+            options.kind ?? "final_answer",
+            options.deliveryState ?? "pending",
             options.previewHtml,
             JSON.stringify(options.pages),
             options.primaryActionConsumed ? 1 : 0,
@@ -470,6 +532,18 @@ export function createStoreRuntimeArtifacts(db: DatabaseSync): StoreRuntimeArtif
           `
         )
         .run(telegramMessageId, answerId);
+    },
+
+    setFinalAnswerDeliveryState(answerId, deliveryState) {
+      db
+        .prepare(
+          `
+            UPDATE final_answer_view
+            SET delivery_state = ?
+            WHERE answer_id = ?
+          `
+        )
+        .run(deliveryState, answerId);
     },
 
     setFinalAnswerPrimaryActionConsumed(answerId, consumed) {

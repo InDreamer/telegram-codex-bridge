@@ -74,7 +74,7 @@ async function createCoordinatorContext() {
     safeSendHtmlMessageResult: async () => ({ message_id: 101 }),
     safeEditMessageText: async () => ({ outcome: "edited" }),
     safeEditHtmlMessageText: async () => ({ outcome: "edited" }),
-    safeDeleteMessage: async () => true,
+    safeDeleteMessage: async () => ({ outcome: "deleted" }),
     reanchorRuntimeAfterBridgeReply: async (chatId, sessionId, reason) => {
       reanchorCalls.push({ chatId, sessionId, reason });
     }

@@ -523,6 +523,10 @@ export class BridgeStateStore {
     telegramChatId: string;
     type: RuntimeNotice["type"];
     message: string;
+    parseMode?: RuntimeNotice["parseMode"];
+    replyMarkup?: RuntimeNotice["replyMarkup"];
+    sessionId?: string | null;
+    turnId?: string | null;
   }): RuntimeNotice {
     return this.runtimeArtifacts.createRuntimeNotice(options);
   }
@@ -554,6 +558,8 @@ export class BridgeStateStore {
     sessionId: string;
     threadId: string;
     turnId: string;
+    kind?: FinalAnswerViewRow["kind"];
+    deliveryState?: FinalAnswerViewRow["deliveryState"];
     previewHtml: string;
     pages: string[];
     primaryActionConsumed?: boolean;
@@ -571,6 +577,10 @@ export class BridgeStateStore {
 
   setFinalAnswerMessageId(answerId: string, telegramMessageId: number): void {
     this.runtimeArtifacts.setFinalAnswerMessageId(answerId, telegramMessageId);
+  }
+
+  setFinalAnswerDeliveryState(answerId: string, deliveryState: FinalAnswerViewRow["deliveryState"]): void {
+    this.runtimeArtifacts.setFinalAnswerDeliveryState(answerId, deliveryState);
   }
 
   setFinalAnswerPrimaryActionConsumed(answerId: string, consumed: boolean): void {

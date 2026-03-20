@@ -2,7 +2,12 @@ import type { BridgeConfig } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { BridgePaths } from "../paths.js";
 import { buildProjectPicker, refreshProjectPicker, validateManualProjectPath } from "../project/discovery.js";
-import type { TelegramEditResult } from "./runtime-surface-state.js";
+import {
+  isTelegramDeleteCommitted,
+  isTelegramEditCommitted,
+  type TelegramDeleteResult,
+  type TelegramEditResult
+} from "./runtime-surface-state.js";
 import type { BridgeStateStore } from "../state/store.js";
 import {
   buildArchiveSuccessText,
@@ -95,7 +100,7 @@ interface SessionProjectCoordinatorDeps {
     text: string,
     replyMarkup?: TelegramInlineKeyboardMarkup
   ) => Promise<TelegramEditResult>;
-  safeDeleteMessage: (chatId: string, messageId: number) => Promise<boolean>;
+  safeDeleteMessage: (chatId: string, messageId: number) => Promise<TelegramDeleteResult>;
   reanchorRuntimeAfterBridgeReply: (chatId: string, sessionId: string, reason: string) => Promise<void>;
 }
 
@@ -702,7 +707,7 @@ export class SessionProjectCoordinator {
     if (!name) {
       if (pendingRename.sourceMessageId) {
         const result = await this.deps.safeEditMessageText(chatId, pendingRename.sourceMessageId, this.getRenamePromptText(pendingRename.kind));
-        if (result.outcome === "edited") {
+        if (isTelegramEditCommitted(result)) {
           return;
         }
       }
@@ -826,7 +831,7 @@ export class SessionProjectCoordinator {
       html?: boolean;
     }
   ): Promise<boolean> {
-    if (messageId > 0 && await this.deps.safeDeleteMessage(chatId, messageId)) {
+    if (messageId > 0 && isTelegramDeleteCommitted(await this.deps.safeDeleteMessage(chatId, messageId))) {
       if (options?.html) {
         return await this.deps.safeSendHtmlMessage(chatId, text);
       } else {
@@ -838,7 +843,7 @@ export class SessionProjectCoordinator {
       const result = options?.html
         ? await this.deps.safeEditHtmlMessageText(chatId, messageId, text)
         : await this.deps.safeEditMessageText(chatId, messageId, text);
-      if (result.outcome === "edited") {
+      if (isTelegramEditCommitted(result)) {
         return true;
       }
     }
@@ -869,7 +874,7 @@ export class SessionProjectCoordinator {
 
   private async editOrSendRenamePrompt(chatId: string, messageId: number, promptText: string): Promise<number> {
     const result = await this.deps.safeEditMessageText(chatId, messageId, promptText);
-    if (result.outcome === "edited") {
+    if (isTelegramEditCommitted(result)) {
       return messageId;
     }
 
@@ -896,7 +901,7 @@ export class SessionProjectCoordinator {
       const result = message.html
         ? await this.deps.safeEditHtmlMessageText(chatId, previousMessageId, message.text, message.replyMarkup)
         : await this.deps.safeEditMessageText(chatId, previousMessageId, message.text, message.replyMarkup);
-      if (result.outcome === "edited") {
+      if (isTelegramEditCommitted(result)) {
         pickerState.interactiveMessageId = previousMessageId;
         return previousMessageId;
       }
@@ -937,7 +942,7 @@ export class SessionProjectCoordinator {
       const result = message.html
         ? await this.deps.safeEditHtmlMessageText(chatId, previousMessageId, message.text, message.replyMarkup)
         : await this.deps.safeEditMessageText(chatId, previousMessageId, message.text, message.replyMarkup);
-      if (result.outcome === "edited") {
+      if (isTelegramEditCommitted(result)) {
         pickerState.interactiveMessageId = previousMessageId;
         return previousMessageId;
       }

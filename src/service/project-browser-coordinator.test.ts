@@ -120,7 +120,7 @@ async function createCoordinatorContext() {
     },
     safeDeleteMessage: async (_chatId, messageId) => {
       deletedMessages.push(messageId);
-      return true;
+      return { outcome: "deleted" };
     },
     safeAnswerCallbackQuery: async (_callbackQueryId, text) => {
       callbackAnswers.push(text);

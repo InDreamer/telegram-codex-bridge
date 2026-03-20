@@ -27,9 +27,12 @@ import {
 import {
   formatRuntimeBlockedReason,
   type ErrorCardState,
+  isTelegramDeleteCommitted,
+  isTelegramEditCommitted,
   type RuntimeCardMessageState,
   selectStatusProgressText,
   type StatusCardState,
+  type TelegramDeleteResult,
   type TelegramEditResult
 } from "./service/runtime-surface-state.js";
 import { extractFinalAnswerFromHistory } from "./service/turn-artifacts.js";
@@ -261,7 +264,7 @@ export class BridgeService {
         this.safeEditMessageText(chatId, messageId, text, replyMarkup),
       safeEditHtmlMessageText: async (chatId, messageId, text, replyMarkup) =>
         this.safeEditHtmlMessageText(chatId, messageId, text, replyMarkup),
-      safeDeleteMessage: async (chatId, messageId) => this.safeDeleteMessage(chatId, messageId),
+      safeDeleteMessage: async (chatId, messageId) => this.safeDeleteMessageResult(chatId, messageId),
       reanchorRuntimeAfterBridgeReply: async (chatId, sessionId, reason) =>
         this.reanchorRuntimeAfterBridgeReply(chatId, reason, sessionId)
     });
@@ -272,7 +275,7 @@ export class BridgeService {
       safeSendHtmlMessageResult: async (chatId, html, replyMarkup) => this.safeSendHtmlMessageResult(chatId, html, replyMarkup),
       safeEditHtmlMessageText: async (chatId, messageId, html, replyMarkup) =>
         this.safeEditHtmlMessageText(chatId, messageId, html, replyMarkup),
-      safeDeleteMessage: async (chatId, messageId) => this.safeDeleteMessage(chatId, messageId),
+      safeDeleteMessage: async (chatId, messageId) => this.safeDeleteMessageResult(chatId, messageId),
       safeAnswerCallbackQuery: async (callbackQueryId, text) => this.safeAnswerCallbackQuery(callbackQueryId, text),
       safeSendPhoto: async (chatId, photoPath, options) => this.safeSendPhoto(chatId, photoPath, options),
       getUiLanguage: () => this.getUiLanguage()
@@ -294,7 +297,7 @@ export class BridgeService {
         this.safeEditHtmlMessageText(chatId, messageId, html, replyMarkup),
       safeEditMessageText: async (chatId, messageId, text, replyMarkup) =>
         this.safeEditMessageText(chatId, messageId, text, replyMarkup),
-      safeDeleteMessage: async (chatId, messageId) => this.safeDeleteMessage(chatId, messageId),
+      safeDeleteMessage: async (chatId, messageId) => this.safeDeleteMessageResult(chatId, messageId),
       safeAnswerCallbackQuery: async (callbackQueryId, text) => this.safeAnswerCallbackQuery(callbackQueryId, text),
       getUiLanguage: () => this.getUiLanguage(),
       getRuntimeCardContext: (sessionId) => this.getRuntimeCardContext(sessionId),
@@ -343,6 +346,8 @@ export class BridgeService {
         this.runtimeSurfaceController.reanchorStatusCardToLatestMessage(activeTurn as ActiveTurnState, reason),
       reanchorRuntimeAfterBridgeReply: async (chatId, reason, sessionId) =>
         this.reanchorRuntimeAfterBridgeReply(chatId, reason, sessionId),
+      finalizeTerminalRuntimeHandoff: async (chatId, sessionId) =>
+        this.runtimeSurfaceController.completeTerminalRuntimeHandoff(chatId, sessionId),
       disposeRuntimeCards: (activeTurn) =>
         this.runtimeSurfaceController.disposeRuntimeCards(activeTurn as ActiveTurnState),
       safeSendMessage: async (chatId, text) => this.safeSendMessage(chatId, text),
@@ -1416,8 +1421,20 @@ export class BridgeService {
     for (const targetChatId of targetChatIds) {
       const notices = this.store.listRuntimeNotices(targetChatId);
       for (const notice of notices) {
-        if (await this.safeSendMessage(targetChatId, notice.message)) {
-          this.store.clearRuntimeNotice(notice.key);
+        const delivered = notice.parseMode === "HTML"
+          ? (await this.safeSendHtmlMessageResult(targetChatId, notice.message, notice.replyMarkup ?? undefined)) !== null
+          : (await this.safeSendMessageResult(targetChatId, notice.message, notice.replyMarkup ?? undefined)) !== null;
+        if (!delivered) {
+          continue;
+        }
+
+        this.store.clearRuntimeNotice(notice.key);
+        if (notice.type === "terminal_delivery_deferred") {
+          await this.turnCoordinator.handleDeferredTerminalNoticeVisible(
+            targetChatId,
+            notice.sessionId ?? null,
+            notice.turnId ?? null
+          );
         }
       }
     }
@@ -2247,6 +2264,16 @@ export class BridgeService {
       });
       return { outcome: "edited" };
     } catch (error) {
+      if (isTelegramMessageNotModifiedError(error)) {
+        await this.logger.info("telegram message edit unchanged", {
+          chatId,
+          messageId,
+          replyMarkup: replyMarkup ? "inline_keyboard" : null,
+          preview: summarizeTextPreview(text)
+        });
+        return { outcome: "unchanged" };
+      }
+
       await this.logger.warn("telegram message edit failed", { chatId, messageId, error: `${error}` });
       const retryAfterMs = getTelegramRetryAfterMs(error);
       if (retryAfterMs !== null) {
@@ -2419,6 +2446,16 @@ export class BridgeService {
       });
       return { outcome: "edited" };
     } catch (error) {
+      if (isTelegramMessageNotModifiedError(error)) {
+        await this.logger.info("telegram html message edit unchanged", {
+          chatId,
+          messageId,
+          replyMarkup: replyMarkup ? "inline_keyboard" : null,
+          preview: summarizeTextPreview(html)
+        });
+        return { outcome: "unchanged" };
+      }
+
       await this.logger.warn("telegram HTML message edit failed", { chatId, messageId, error: `${error}` });
       const retryAfterMs = getTelegramRetryAfterMs(error);
       if (retryAfterMs !== null) {
@@ -2442,7 +2479,7 @@ export class BridgeService {
       const result = options?.html
         ? await this.safeEditHtmlMessageText(chatId, messageId, text, options.replyMarkup)
         : await this.safeEditMessageText(chatId, messageId, text, options?.replyMarkup);
-      if (result.outcome === "edited") {
+      if (isTelegramEditCommitted(result)) {
         return true;
       }
     }
@@ -2455,7 +2492,7 @@ export class BridgeService {
     }
 
     if (messageId > 0 && sent.message_id !== messageId) {
-      await this.safeDeleteMessage(chatId, messageId);
+      await this.safeDeleteMessageResult(chatId, messageId);
     }
 
     return true;
@@ -2559,19 +2596,36 @@ export class BridgeService {
     await this.runtimeSurfaceController.reanchorRuntimeAfterBridgeReply(activeTurn, chatId, reason, sessionId);
   }
 
-  private async safeDeleteMessage(chatId: string, messageId: number): Promise<boolean> {
+  private async safeDeleteMessageResult(chatId: string, messageId: number): Promise<TelegramDeleteResult> {
     if (!this.api?.deleteMessage) {
-      return false;
+      return { outcome: "failed" };
     }
 
     try {
       await this.api.deleteMessage(chatId, messageId);
       await this.logger.info("telegram message deleted", { chatId, messageId });
-      return true;
+      return { outcome: "deleted" };
     } catch (error) {
+      if (isTelegramMessageDeleteNotFoundError(error)) {
+        await this.logger.info("telegram message delete skipped; message already missing", {
+          chatId,
+          messageId
+        });
+        return { outcome: "not_found" };
+      }
+
       await this.logger.warn("telegram message delete failed", { chatId, messageId, error: `${error}` });
-      return false;
+      const retryAfterMs = getTelegramRetryAfterMs(error);
+      if (retryAfterMs !== null) {
+        return { outcome: "rate_limited", retryAfterMs };
+      }
+
+      return { outcome: "failed" };
     }
+  }
+
+  private async safeDeleteMessage(chatId: string, messageId: number): Promise<boolean> {
+    return isTelegramDeleteCommitted(await this.safeDeleteMessageResult(chatId, messageId));
   }
 
   private async syncTelegramCommands(): Promise<void> {
@@ -2617,6 +2671,22 @@ export async function runBridgeService(importMetaUrl: string): Promise<void> {
   });
 
   await service.run();
+}
+
+function isTelegramMessageNotModifiedError(error: unknown): boolean {
+  if (!(error instanceof TelegramApiError)) {
+    return false;
+  }
+
+  return error.errorCode === 400 && /message is not modified/iu.test(error.description);
+}
+
+function isTelegramMessageDeleteNotFoundError(error: unknown): boolean {
+  if (!(error instanceof TelegramApiError)) {
+    return false;
+  }
+
+  return error.errorCode === 400 && /message to delete not found/iu.test(error.description);
 }
 
 function getTelegramRetryAfterMs(error: unknown): number | null {

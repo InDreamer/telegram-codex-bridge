@@ -7,8 +7,23 @@ const RUNTIME_CARD_THROTTLE_MS = 2000;
 
 export type TelegramEditResult =
   | { outcome: "edited" }
+  | { outcome: "unchanged" }
   | { outcome: "rate_limited"; retryAfterMs: number }
   | { outcome: "failed" };
+
+export type TelegramDeleteResult =
+  | { outcome: "deleted" }
+  | { outcome: "not_found" }
+  | { outcome: "rate_limited"; retryAfterMs: number }
+  | { outcome: "failed" };
+
+export function isTelegramEditCommitted(result: TelegramEditResult): boolean {
+  return result.outcome === "edited" || result.outcome === "unchanged";
+}
+
+export function isTelegramDeleteCommitted(result: TelegramDeleteResult): boolean {
+  return result.outcome === "deleted" || result.outcome === "not_found";
+}
 
 export interface RuntimeCardMessageState {
   surface: "status" | "plan" | "error";

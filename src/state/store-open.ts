@@ -25,7 +25,7 @@ const LEGACY_RUNTIME_STATUS_FIELD_MIGRATIONS: ReadonlyMap<string, RuntimeStatusF
   ["thread_id", "session-id"]
 ]);
 const RUNTIME_STATUS_FIELD_V4_MIGRATION_CUTOFF = "2026-03-17T00:00:00.000Z";
-const CURRENT_SCHEMA_VERSION = 13;
+const CURRENT_SCHEMA_VERSION = 15;
 
 export function parseRuntimeStatusFields(fieldsJson: string): RuntimeStatusField[] {
   try {
@@ -167,6 +167,10 @@ function initialSchema(): string {
       telegram_chat_id TEXT NOT NULL,
       type TEXT NOT NULL,
       message TEXT NOT NULL,
+      parse_mode TEXT NULL,
+      reply_markup_json TEXT NULL,
+      session_id TEXT NULL,
+      turn_id TEXT NULL,
       created_at TEXT NOT NULL
     );
 
@@ -177,6 +181,8 @@ function initialSchema(): string {
       session_id TEXT NOT NULL,
       thread_id TEXT NOT NULL,
       turn_id TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'final_answer',
+      delivery_state TEXT NOT NULL DEFAULT 'pending',
       preview_html TEXT NOT NULL,
       pages_json TEXT NOT NULL,
       primary_action_consumed INTEGER NOT NULL DEFAULT 0,
@@ -308,6 +314,8 @@ function applyMigrations(db: DatabaseSync): void {
           session_id TEXT NOT NULL,
           thread_id TEXT NOT NULL,
           turn_id TEXT NOT NULL,
+          kind TEXT NOT NULL DEFAULT 'final_answer',
+          delivery_state TEXT NOT NULL DEFAULT 'pending',
           preview_html TEXT NOT NULL,
           pages_json TEXT NOT NULL,
           primary_action_consumed INTEGER NOT NULL DEFAULT 0,
@@ -496,6 +504,46 @@ function applyMigrations(db: DatabaseSync): void {
     }
 
     recordMigration(db, 13);
+  }
+
+  if (!applied.has(14)) {
+    if (!hasColumn(db, "runtime_notice", "parse_mode")) {
+      db.exec("ALTER TABLE runtime_notice ADD COLUMN parse_mode TEXT NULL");
+    }
+    if (!hasColumn(db, "runtime_notice", "reply_markup_json")) {
+      db.exec("ALTER TABLE runtime_notice ADD COLUMN reply_markup_json TEXT NULL");
+    }
+    if (!hasColumn(db, "runtime_notice", "session_id")) {
+      db.exec("ALTER TABLE runtime_notice ADD COLUMN session_id TEXT NULL");
+    }
+    if (!hasColumn(db, "runtime_notice", "turn_id")) {
+      db.exec("ALTER TABLE runtime_notice ADD COLUMN turn_id TEXT NULL");
+    }
+
+    recordMigration(db, 14);
+  }
+
+  if (!applied.has(15)) {
+    if (!hasColumn(db, "final_answer_view", "kind")) {
+      db.exec("ALTER TABLE final_answer_view ADD COLUMN kind TEXT NOT NULL DEFAULT 'final_answer'");
+    }
+    if (!hasColumn(db, "final_answer_view", "delivery_state")) {
+      db.exec("ALTER TABLE final_answer_view ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'pending'");
+    }
+
+    db.exec(
+      `
+        UPDATE final_answer_view
+        SET delivery_state = CASE
+          WHEN telegram_message_id IS NOT NULL THEN 'visible'
+          ELSE 'pending'
+        END
+        WHERE delivery_state NOT IN ('pending', 'visible', 'deferred_notice_visible')
+           OR delivery_state IS NULL
+      `
+    );
+
+    recordMigration(db, 15);
   }
 }
 
