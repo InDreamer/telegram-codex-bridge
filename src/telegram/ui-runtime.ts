@@ -105,9 +105,19 @@ export function buildRuntimeStatusCard(
     planExpanded?: boolean;
     agentEntries?: CollabAgentStateSnapshot[];
     agentsExpanded?: boolean;
+    progressTextLimit?: number;
+    expandedPlanEntryLimit?: number;
+    expandedPlanEntryTextLimit?: number;
+    expandedAgentLimit?: number;
+    expandedAgentProgressTextLimit?: number;
   }
 ): string {
   const language = options.language ?? "zh";
+  const progressTextLimit = options.progressTextLimit ?? 240;
+  const expandedPlanEntryLimit = options.expandedPlanEntryLimit ?? 10;
+  const expandedPlanEntryTextLimit = options.expandedPlanEntryTextLimit ?? 200;
+  const expandedAgentLimit = options.expandedAgentLimit ?? 10;
+  const expandedAgentProgressTextLimit = options.expandedAgentProgressTextLimit ?? 160;
   const lines: string[] = [formatHtmlHeading(language === "en" ? "Runtime Status" : "运行状态")];
   pushHtmlRuntimeCardContext(lines, options, language);
 
@@ -118,7 +128,7 @@ export function buildRuntimeStatusCard(
   }
 
   if (options.progressText) {
-    const progressText = renderInlineMarkdown(truncateText(options.progressText, 240));
+    const progressText = renderInlineMarkdown(truncateText(options.progressText, progressTextLimit));
     if (stripHtml(progressText).length > 72) {
       lines.push(formatHtmlHeading(language === "en" ? "Progress" : "进度"));
       lines.push(progressText);
@@ -128,26 +138,30 @@ export function buildRuntimeStatusCard(
   }
 
   if (options.planExpanded && options.planEntries && options.planEntries.length > 0) {
-    lines.push("", "<b>计划清单:</b>");
+    lines.push("", `<b>${language === "en" ? "Plan:" : "计划清单:"}</b>`);
 
-    for (const [index, entry] of options.planEntries.slice(0, 10).entries()) {
-      lines.push(`${index + 1}. ${renderInlineMarkdown(truncateText(entry, 200))}`);
+    for (const [index, entry] of options.planEntries.slice(0, expandedPlanEntryLimit).entries()) {
+      lines.push(`${index + 1}. ${renderInlineMarkdown(truncateText(entry, expandedPlanEntryTextLimit))}`);
     }
 
-    if (options.planEntries.length > 10) {
-      lines.push(`... ${options.planEntries.length - 10} more steps`);
+    if (options.planEntries.length > expandedPlanEntryLimit) {
+      lines.push(language === "en"
+        ? `... ${options.planEntries.length - expandedPlanEntryLimit} more steps`
+        : `... 还有 ${options.planEntries.length - expandedPlanEntryLimit} 个步骤`);
     }
   }
 
   if (options.agentsExpanded && options.agentEntries && options.agentEntries.length > 0) {
-    lines.push("", "<b>Agents:</b>");
+    lines.push("", `<b>${language === "en" ? "Agents:" : "Agent:"}</b>`);
 
-    for (const [index, entry] of options.agentEntries.slice(0, 10).entries()) {
-      lines.push(renderAgentRuntimeLine(entry, index + 1));
+    for (const [index, entry] of options.agentEntries.slice(0, expandedAgentLimit).entries()) {
+      lines.push(renderAgentRuntimeLine(entry, index + 1, expandedAgentProgressTextLimit));
     }
 
-    if (options.agentEntries.length > 10) {
-      lines.push(`... ${options.agentEntries.length - 10} more agents`);
+    if (options.agentEntries.length > expandedAgentLimit) {
+      lines.push(language === "en"
+        ? `... ${options.agentEntries.length - expandedAgentLimit} more agents`
+        : `... 还有 ${options.agentEntries.length - expandedAgentLimit} 个 Agent`);
     }
   }
 
@@ -172,7 +186,9 @@ export function buildRuntimeStatusReplyMarkup(options: {
 
   if (options.planEntries.length > 0) {
     rows.push([{
-      text: options.planExpanded ? "收起计划清单" : buildCollapsedPlanButtonLabel(options.planEntries),
+      text: options.planExpanded
+        ? (language === "en" ? "Hide Plan" : "收起计划清单")
+        : buildCollapsedPlanButtonLabel(options.planEntries, language),
       callback_data: options.planExpanded
         ? encodePlanCollapseCallback(options.sessionId)
         : encodePlanExpandCallback(options.sessionId)
@@ -181,7 +197,9 @@ export function buildRuntimeStatusReplyMarkup(options: {
 
   if (options.agentEntries.length > 0) {
     rows.push([{
-      text: options.agentsExpanded ? "收起 Agent" : buildCollapsedAgentButtonLabel(options.agentEntries),
+      text: options.agentsExpanded
+        ? (language === "en" ? "Hide Agents" : "收起 Agent")
+        : buildCollapsedAgentButtonLabel(options.agentEntries, language),
       callback_data: options.agentsExpanded
         ? encodeAgentCollapseCallback(options.sessionId)
         : encodeAgentExpandCallback(options.sessionId)
@@ -215,8 +233,10 @@ export function buildRuntimeHubMessage(options: {
   activeInputTargetInWindow: boolean;
   terminalSummaries?: RuntimeHubTerminalSummaryView[];
   isMainHub: boolean;
+  sessionProgressTextLimit?: number;
 }): string {
   const language = options.language ?? "zh";
+  const sessionProgressTextLimit = options.sessionProgressTextLimit ?? 120;
   const lines: string[] = [
     formatHtmlHeading(language === "en" ? "Runtime Status" : "运行状态"),
     formatHtmlField(
@@ -252,8 +272,8 @@ export function buildRuntimeHubMessage(options: {
       `${index + 1}. <b>${escapeHtml(session.sessionName)}</b>${projectName}${markerText} · ${escapeHtml(session.state)}`
     );
 
-    if (session.progressText) {
-      lines.push(`   ${renderInlineMarkdown(truncateText(session.progressText, 120))}`);
+    if (session.progressText && sessionProgressTextLimit > 0) {
+      lines.push(`   ${renderInlineMarkdown(truncateText(session.progressText, sessionProgressTextLimit))}`);
     }
   }
 
@@ -298,7 +318,9 @@ export function buildRuntimeHubReplyMarkup(options: {
 
   if (options.focusedSessionId && (options.planEntries?.length ?? 0) > 0) {
     rows.push([{
-      text: options.planExpanded ? "收起计划清单" : buildCollapsedPlanButtonLabel(options.planEntries ?? []),
+      text: options.planExpanded
+        ? (language === "en" ? "Hide Plan" : "收起计划清单")
+        : buildCollapsedPlanButtonLabel(options.planEntries ?? [], language),
       callback_data: options.planExpanded
         ? encodePlanCollapseCallback(options.focusedSessionId)
         : encodePlanExpandCallback(options.focusedSessionId)
@@ -307,7 +329,9 @@ export function buildRuntimeHubReplyMarkup(options: {
 
   if (options.focusedSessionId && (options.agentEntries?.length ?? 0) > 0) {
     rows.push([{
-      text: options.agentsExpanded ? "收起 Agent" : buildCollapsedAgentButtonLabel(options.agentEntries ?? []),
+      text: options.agentsExpanded
+        ? (language === "en" ? "Hide Agents" : "收起 Agent")
+        : buildCollapsedAgentButtonLabel(options.agentEntries ?? [], language),
       callback_data: options.agentsExpanded
         ? encodeAgentCollapseCallback(options.focusedSessionId)
         : encodeAgentExpandCallback(options.focusedSessionId)
@@ -1248,26 +1272,30 @@ function formatRuntimeStatusOptionalLabelZh(label: string): string {
   }
 }
 
-function buildCollapsedPlanButtonLabel(entries: string[]): string {
+function buildCollapsedPlanButtonLabel(entries: string[], language: UiLanguage = "zh"): string {
   const currentEntry = selectCurrentPlanEntry(entries);
   if (!currentEntry) {
-    return "查看计划清单";
+    return language === "en" ? "Show Plan" : "查看计划清单";
   }
 
-  return `计划清单：${truncateText(stripPlanEntryStatus(currentEntry), 40)}`;
+  return language === "en"
+    ? `Plan: ${truncateText(stripPlanEntryStatus(currentEntry), 40)}`
+    : `计划清单：${truncateText(stripPlanEntryStatus(currentEntry), 40)}`;
 }
 
-function buildCollapsedAgentButtonLabel(entries: CollabAgentStateSnapshot[]): string {
-  return `Agent：${entries.length} 个运行中`;
+function buildCollapsedAgentButtonLabel(entries: CollabAgentStateSnapshot[], language: UiLanguage = "zh"): string {
+  return language === "en"
+    ? `Agents: ${entries.length} running`
+    : `Agent：${entries.length} 个运行中`;
 }
 
-function renderAgentRuntimeLine(entry: CollabAgentStateSnapshot, index: number): string {
+function renderAgentRuntimeLine(entry: CollabAgentStateSnapshot, index: number, progressLimit = 160): string {
   const prefix = `${index}. ${escapeHtml(entry.label)} (${escapeHtml(formatAgentStatus(entry.status))})`;
   if (!entry.progress) {
     return prefix;
   }
 
-  return `${prefix}: ${renderInlineMarkdown(truncateText(entry.progress, 160))}`;
+  return `${prefix}: ${renderInlineMarkdown(truncateText(entry.progress, progressLimit))}`;
 }
 
 function selectCurrentPlanEntry(entries: string[]): string | null {

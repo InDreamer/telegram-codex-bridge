@@ -73,6 +73,9 @@ It should:
 - use `serverRequest/resolved` to close matching pending interaction cards when the server resolves them independently
 - when the active root turn reaches a terminal state, expire every unresolved interaction for that Telegram session, including subagent-thread requests
 - if the app-server child exits mid-turn, fail every unresolved interaction for that Telegram session and clear any pending free-text interaction mode before reconnecting
+- keep runtime hub and restart-recovery surfaces in the selected bridge UI language; a `/language` change must refresh the currently visible bridge-owned runtime surface, including the recovery hub
+- compact runtime hub renders before they approach Telegram's message-size ceiling by collapsing expanded plan or agent sections and then falling back to a shorter focused-session summary when needed
+- when a hub edit fails for a non-rate-limit reason, prefer sending a fresh bridge-owned hub message instead of retrying the dead message forever
 - capture the final assistant message emitted before `turn/completed`
 - send the final assistant message as a separate Telegram message after turn completion
 - render the final assistant message with Telegram HTML derived from a safe Markdown subset rather than sending raw Markdown literals
@@ -202,6 +205,9 @@ Important fields:
 - `type`
 - `message`
 - `created_at`
+
+Recovery rule:
+- bridge-restart notices remain persisted until a recovery hub has actually been delivered; if the recovery hub cannot be shown, normal runtime-notice delivery remains the fallback signal
 
 ### `project_scan_cache`
 

@@ -153,6 +153,10 @@ async function createControllerContext(options: {
   backfillSubagentIdentities?: (activeTurn: unknown, agentEntries: unknown[]) => Promise<boolean>;
   listActiveTurns?: () => unknown[];
   initialSentMessageId?: number;
+  getUiLanguage?: () => "zh" | "en";
+  buildRuntimeStatusLine?: (sessionId: string, inspect: InspectSnapshot) => string[];
+  buildPendingInteractionSummaries?: (activeSession: { sessionId: string }) => Array<{ id: string }>;
+  handleRecoveryHubVisible?: (chatId: string) => void;
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "ctb-runtime-surface-test-"));
   const paths = createTestPaths(root);
@@ -179,7 +183,7 @@ async function createControllerContext(options: {
     getActiveInspectActivity: () => null,
     getRecentActivity: () => null,
     getHistoricalInspectPayload: async () => null,
-    buildPendingInteractionSummaries: () => [],
+    buildPendingInteractionSummaries: (activeSession) => options.buildPendingInteractionSummaries?.(activeSession as never) as never[] ?? [],
     buildAnsweredInteractionSummaries: () => [],
     safeSendMessage: async () => true,
     safeSendHtmlMessage: async () => true,
@@ -214,12 +218,12 @@ async function createControllerContext(options: {
     safeAnswerCallbackQuery: async (_callbackQueryId, text) => {
       callbackAnswers.push(text);
     },
-    getUiLanguage: () => "zh",
+    getUiLanguage: () => options.getUiLanguage?.() ?? "zh",
     getRuntimeCardContext: () => ({
       sessionName: "Session Alpha",
       projectName: "Project One"
     }),
-    buildRuntimeStatusLine: () => [],
+    buildRuntimeStatusLine: (sessionId, inspect) => options.buildRuntimeStatusLine?.(sessionId, inspect) ?? [],
     runtimeTraceSink: {
       logRuntimeCardEvent: async (_activeTurn, _surface, event) => {
         traceEvents.push(event);
@@ -227,6 +231,9 @@ async function createControllerContext(options: {
     },
     backfillSubagentIdentities: async (activeTurn, agentEntries) =>
       await (options.backfillSubagentIdentities?.(activeTurn, agentEntries) ?? Promise.resolve(false)),
+    handleRecoveryHubVisible: (chatId) => {
+      options.handleRecoveryHubVisible?.(chatId);
+    },
     refreshActiveRuntimeStatusCard: async (_chatId, reason) => {
       refreshReasons.push(reason);
     }
@@ -271,6 +278,45 @@ test("RuntimeSurfaceController saves runtime preferences and refreshes the activ
     assert.equal(callbackAnswers.at(-1), "已保存。");
     assert.deepEqual(refreshReasons, ["runtime_preferences_saved"]);
     assert.match(editedHtml.at(-1)?.html ?? "", /模型名/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController falls back to a fresh summary when runtime preference save cannot edit the panel", async () => {
+  let editCount = 0;
+  const { controller, store, sentHtml, editedHtml, callbackAnswers, refreshReasons, cleanup } =
+    await createControllerContext({
+      safeEditHtmlMessageText: async () => {
+        editCount += 1;
+        if (editCount < 2) {
+          return { outcome: "edited" };
+        }
+        return { outcome: "failed" };
+      }
+    });
+
+  try {
+    await controller.handleRuntime("chat-1");
+
+    const token = getOnlyDraftToken(controller);
+    const messageId = sentHtml[0]?.messageId ?? 0;
+
+    await controller.handleRuntimePreferencesToggleCallback(
+      "runtime-toggle",
+      "chat-1",
+      messageId,
+      token,
+      "model-name"
+    );
+    await controller.handleRuntimePreferencesSaveCallback("runtime-save", "chat-1", messageId, token);
+
+    assert.deepEqual(store.getRuntimeCardPreferences().fields, ["model-name"]);
+    assert.equal(callbackAnswers.at(-1), "已保存。");
+    assert.deepEqual(refreshReasons, ["runtime_preferences_saved"]);
+    assert.equal(editedHtml.at(-1)?.messageId, messageId);
+    assert.equal(sentHtml.length, 2);
+    assert.match(sentHtml.at(-1)?.html ?? "", /模型名/u);
   } finally {
     await cleanup();
   }
@@ -645,6 +691,622 @@ test("RuntimeSurfaceController reuses a retained hub message when deletion fails
     assert.equal(sentHtml.length, 1);
     assert.equal(editedHtml.length, 1);
     assert.equal(editedHtml[0]?.messageId, messageId);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController retains the superseded hub when fallback resend cannot delete it", async () => {
+  const activeTurns: unknown[] = [];
+  const deleteAttempts: number[] = [];
+  let inspect = createInspectSnapshot();
+  const { controller, store, sentHtml, editedHtml, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns,
+    safeEditHtmlMessageText: async () => ({ outcome: "failed" }),
+    safeDeleteMessage: async (_chatId, messageId) => {
+      deleteAttempts.push(messageId);
+      return false;
+    }
+  });
+
+  try {
+    const session = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    store.setActiveSession("chat-1", session.sessionId);
+
+    activeTurns.push({
+      sessionId: session.sessionId,
+      chatId: "chat-1",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      tracker: {
+        getInspectSnapshot: () => inspect,
+        getStatus: () => createActivityStatus()
+      },
+      statusCard: createStatusCard(),
+      latestStatusProgressText: null,
+      latestPlanFingerprint: "",
+      latestAgentFingerprint: "",
+      subagentIdentityBackfillStates: new Map(),
+      errorCards: [],
+      nextErrorCardId: 1,
+      surfaceQueue: Promise.resolve()
+    });
+
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_initialized", session.sessionId, undefined, {
+      forcePreferredFocus: true
+    });
+
+    const originalMessageId = sentHtml[0]?.messageId ?? 0;
+    inspect = createInspectSnapshot({
+      completedCommentary: ["updated progress"]
+    });
+    await controller.refreshLiveRuntimeHubs("chat-1", "test_refresh", session.sessionId);
+
+    const replacementMessageId = sentHtml[1]?.messageId ?? 0;
+    assert.ok(originalMessageId > 0);
+    assert.ok(replacementMessageId > 0);
+    assert.notEqual(replacementMessageId, originalMessageId);
+    assert.equal(editedHtml.length, 1);
+    assert.deepEqual(deleteAttempts, [originalMessageId]);
+
+    const runtimeHubStates = (controller as unknown as {
+      runtimeHubStates: Map<string, {
+        liveHubs: Map<number, { messageId: number }>;
+        retainedMessages: Array<{ messageId: number }>;
+      }>;
+    }).runtimeHubStates;
+    const chatState = runtimeHubStates.get("chat-1");
+    assert.ok(chatState);
+    assert.equal(chatState?.liveHubs.get(0)?.messageId, replacementMessageId);
+    assert.deepEqual(chatState?.retainedMessages.map((entry) => entry.messageId), [originalMessageId]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController excludes terminal sessions from the hub session count", async () => {
+  const activeTurns: unknown[] = [];
+  const { controller, store, sentHtml, editedHtml, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns
+  });
+
+  try {
+    const sessionOne = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    const sessionTwo = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project Two",
+      projectPath: "/tmp/project-two"
+    });
+    store.setActiveSession("chat-1", sessionTwo.sessionId);
+
+    activeTurns.push(
+      {
+        sessionId: sessionOne.sessionId,
+        chatId: "chat-1",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        tracker: {
+          getInspectSnapshot: () => createInspectSnapshot(),
+          getStatus: () => createActivityStatus()
+        },
+        statusCard: createStatusCard(),
+        latestStatusProgressText: null,
+        latestPlanFingerprint: "",
+        latestAgentFingerprint: "",
+        subagentIdentityBackfillStates: new Map(),
+        errorCards: [],
+        nextErrorCardId: 1,
+        surfaceQueue: Promise.resolve()
+      },
+      {
+        sessionId: sessionTwo.sessionId,
+        chatId: "chat-1",
+        threadId: "thread-2",
+        turnId: "turn-2",
+        tracker: {
+          getInspectSnapshot: () => createInspectSnapshot(),
+          getStatus: () => createActivityStatus()
+        },
+        statusCard: createStatusCard(),
+        latestStatusProgressText: null,
+        latestPlanFingerprint: "",
+        latestAgentFingerprint: "",
+        subagentIdentityBackfillStates: new Map(),
+        errorCards: [],
+        nextErrorCardId: 1,
+        surfaceQueue: Promise.resolve()
+      }
+    );
+
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_initialized", sessionTwo.sessionId, undefined, {
+      forcePreferredFocus: true
+    });
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_terminal", null, sessionOne.sessionId);
+
+    assert.match(sentHtml[0]?.html ?? "", /<b>Hub：<\/b> 1\/1 · 2 个会话/u);
+    assert.match(editedHtml.at(-1)?.html ?? "", /<b>Hub：<\/b> 1\/1 · 1 个会话/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController reanchors and localizes the recovery hub after bridge replies", async () => {
+  const activeTurns: unknown[] = [];
+  let language: "zh" | "en" = "zh";
+  const { controller, store, sentHtml, deletedMessages, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns,
+    getUiLanguage: () => language
+  });
+
+  try {
+    store.upsertPendingAuthorization({
+      telegramUserId: "user-1",
+      telegramChatId: "chat-1",
+      telegramUsername: "tester",
+      displayName: "Tester"
+    });
+    const candidate = store.listPendingAuthorizations()[0];
+    assert.ok(candidate);
+    store.confirmPendingAuthorization(candidate);
+
+    const sessionOne = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    const sessionTwo = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project Two",
+      projectPath: "/tmp/project-two"
+    });
+    store.setActiveSession("chat-1", sessionOne.sessionId);
+    store.updateSessionStatus(sessionOne.sessionId, "failed", { failureReason: "bridge_restart" });
+    store.updateSessionStatus(sessionTwo.sessionId, "failed", { failureReason: "bridge_restart" });
+
+    const delivered = await controller.sendRecoveryHub("chat-1", [sessionOne.sessionId, sessionTwo.sessionId]);
+    assert.equal(delivered, true);
+    assert.match(sentHtml[0]?.html ?? "", /恢复后会话/u);
+
+    language = "en";
+    store.setActiveSession("chat-1", sessionTwo.sessionId);
+    await controller.reanchorRuntimeAfterBridgeReply(null, "chat-1", "language_changed");
+
+    assert.equal(sentHtml.length, 2);
+    assert.match(sentHtml[1]?.html ?? "", /Recovered Session/u);
+    assert.match(sentHtml[1]?.html ?? "", /Input target:/u);
+    assert.match(sentHtml[1]?.html ?? "", /current input/u);
+    assert.deepEqual(deletedMessages, [sentHtml[0]?.messageId ?? 0]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController retries recovery hub delivery after a transient send failure", async () => {
+  let failSend = true;
+  const recoveryHubVisibleChats: string[] = [];
+  const { controller, store, cleanup } = await createControllerContext({
+    safeSendHtmlMessageResult: async (_chatId, html) => {
+      if (failSend) {
+        return null;
+      }
+
+      return createFakeTelegramMessage(1700, html);
+    },
+    handleRecoveryHubVisible: (chatId) => {
+      recoveryHubVisibleChats.push(chatId);
+    }
+  });
+
+  try {
+    store.upsertPendingAuthorization({
+      telegramUserId: "user-1",
+      telegramChatId: "chat-1",
+      telegramUsername: "tester",
+      displayName: "Tester"
+    });
+    const candidate = store.listPendingAuthorizations()[0];
+    assert.ok(candidate);
+    store.confirmPendingAuthorization(candidate);
+
+    const session = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    store.setActiveSession("chat-1", session.sessionId);
+    store.updateSessionStatus(session.sessionId, "failed", { failureReason: "bridge_restart" });
+
+    const delivered = await controller.sendRecoveryHub("chat-1", [session.sessionId]);
+    assert.equal(delivered, false);
+
+    const runtimeHubStates = (controller as unknown as {
+      runtimeHubStates: Map<string, {
+        recoveryHub: {
+          messageId: number;
+          pendingText: string | null;
+          timer: ReturnType<typeof setTimeout> | null;
+        } | null;
+      }>;
+    }).runtimeHubStates;
+    const recoveryHub = runtimeHubStates.get("chat-1")?.recoveryHub;
+    assert.ok(recoveryHub);
+    assert.equal(recoveryHub?.messageId, 0);
+    assert.ok(recoveryHub?.pendingText);
+    assert.notEqual(recoveryHub?.timer, null);
+    assert.deepEqual(recoveryHubVisibleChats, []);
+
+    failSend = false;
+    await (controller as any).flushHubRender(recoveryHub);
+    assert.equal(recoveryHub?.messageId, 1700);
+    assert.deepEqual(recoveryHubVisibleChats, ["chat-1"]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController does not reanchor another session past pending interaction controls", async () => {
+  const activeTurns: unknown[] = [];
+  const { controller, store, sentHtml, deletedMessages, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns,
+    buildPendingInteractionSummaries: (session) => session.sessionId === blockedSessionId
+      ? [{ id: "pending-1" }]
+      : []
+  });
+  let blockedSessionId = "";
+
+  try {
+    const blockedSession = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Blocked Project",
+      projectPath: "/tmp/project-blocked"
+    });
+    const finishedSession = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Finished Project",
+      projectPath: "/tmp/project-finished"
+    });
+    blockedSessionId = blockedSession.sessionId;
+    store.setActiveSession("chat-1", blockedSession.sessionId);
+
+    activeTurns.push({
+      sessionId: blockedSession.sessionId,
+      chatId: "chat-1",
+      threadId: "thread-blocked",
+      turnId: "turn-blocked",
+      tracker: {
+        getInspectSnapshot: () => createInspectSnapshot(),
+        getStatus: () => createActivityStatus({
+          turnStatus: "blocked",
+          threadBlockedReason: "waitingOnApproval"
+        })
+      },
+      statusCard: createStatusCard(),
+      latestStatusProgressText: null,
+      latestPlanFingerprint: "",
+      latestAgentFingerprint: "",
+      subagentIdentityBackfillStates: new Map(),
+      errorCards: [],
+      nextErrorCardId: 1,
+      surfaceQueue: Promise.resolve()
+    });
+
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_initialized", blockedSession.sessionId, undefined, {
+      forcePreferredFocus: true
+    });
+
+    assert.equal(sentHtml.length, 1);
+    await controller.reanchorRuntimeAfterBridgeReply(null, "chat-1", "final_answer_sent", finishedSession.sessionId);
+
+    assert.equal(sentHtml.length, 1);
+    assert.deepEqual(deletedMessages, []);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController reanchors the main hub for a finished background session", async () => {
+  const activeTurns: Array<{
+    sessionId: string;
+    chatId: string;
+    threadId: string;
+    turnId: string;
+    tracker: {
+      getInspectSnapshot: () => InspectSnapshot;
+      getStatus: () => ActivityStatus;
+    };
+    statusCard: ReturnType<typeof createStatusCard>;
+    latestStatusProgressText: null;
+    latestPlanFingerprint: string;
+    latestAgentFingerprint: string;
+    subagentIdentityBackfillStates: Map<string, "pending" | "resolved" | "exhausted">;
+    errorCards: never[];
+    nextErrorCardId: number;
+    surfaceQueue: Promise<void>;
+  }> = [];
+  const { controller, store, sentHtml, deletedMessages, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns
+  });
+
+  try {
+    const sessions = await Promise.all(
+      Array.from({ length: 7 }, (_, index) => store.createSession({
+        telegramChatId: "chat-1",
+        projectName: `Project ${index + 1}`,
+        projectPath: `/tmp/project-${index + 1}`
+      }))
+    );
+    const activeInputSession = sessions[5];
+    const finishedBackgroundSession = sessions[6];
+    assert.ok(activeInputSession);
+    assert.ok(finishedBackgroundSession);
+    store.setActiveSession("chat-1", activeInputSession.sessionId);
+
+    for (const [index, session] of sessions.entries()) {
+      activeTurns.push({
+        sessionId: session.sessionId,
+        chatId: "chat-1",
+        threadId: `thread-${index + 1}`,
+        turnId: `turn-${index + 1}`,
+        tracker: {
+          getInspectSnapshot: () => createInspectSnapshot({
+            completedCommentary: [`progress ${index + 1}`]
+          }),
+          getStatus: () => createActivityStatus()
+        },
+        statusCard: createStatusCard(),
+        latestStatusProgressText: null,
+        latestPlanFingerprint: "",
+        latestAgentFingerprint: "",
+        subagentIdentityBackfillStates: new Map(),
+        errorCards: [],
+        nextErrorCardId: 1,
+        surfaceQueue: Promise.resolve()
+      });
+    }
+
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_initialized", activeInputSession.sessionId, undefined, {
+      forcePreferredFocus: true
+    });
+
+    const mainHubMessageId = sentHtml[0]?.messageId ?? 0;
+    const secondaryHubMessageId = sentHtml[1]?.messageId ?? 0;
+    assert.ok(mainHubMessageId > 0);
+    assert.ok(secondaryHubMessageId > 0);
+
+    const finishedIndex = activeTurns.findIndex((turn) => turn.sessionId === finishedBackgroundSession.sessionId);
+    assert.ok(finishedIndex >= 0);
+    activeTurns.splice(finishedIndex, 1);
+
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_terminal", null, finishedBackgroundSession.sessionId);
+    await controller.reanchorRuntimeAfterBridgeReply(null, "chat-1", "final_answer_sent", finishedBackgroundSession.sessionId);
+
+    assert.equal(sentHtml.length, 3);
+    assert.equal(sentHtml[2]?.messageId, 1002);
+    assert.equal(deletedMessages.at(-1), mainHubMessageId);
+    assert.notEqual(deletedMessages.at(-1), secondaryHubMessageId);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController keeps the visible expanded hub actionable when compact fallback delivery fails", async () => {
+  const activeTurns: unknown[] = [];
+  let inspect = createInspectSnapshot({
+    planSnapshot: ["Ship the small patch."]
+  });
+  let failHubEdit = false;
+  let failFreshSend = false;
+  let nextMessageId = 2000;
+  const sendCalls: Array<{ messageId: number; html: string }> = [];
+  const editCalls: Array<{ messageId: number; html: string }> = [];
+  const { controller, store, callbackAnswers, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns,
+    safeSendHtmlMessageResult: async (_chatId, html) => {
+      if (failFreshSend) {
+        return null;
+      }
+
+      const messageId = nextMessageId++;
+      sendCalls.push({ messageId, html });
+      return createFakeTelegramMessage(messageId, html);
+    },
+    safeEditHtmlMessageText: async (_chatId, messageId, html) => {
+      editCalls.push({ messageId, html });
+      if (failHubEdit) {
+        return { outcome: "failed" };
+      }
+      return { outcome: "edited" };
+    }
+  });
+
+  try {
+    const session = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    store.setActiveSession("chat-1", session.sessionId);
+
+    activeTurns.push({
+      sessionId: session.sessionId,
+      chatId: "chat-1",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      tracker: {
+        getInspectSnapshot: () => inspect,
+        getStatus: () => createActivityStatus()
+      },
+      statusCard: createStatusCard(),
+      latestStatusProgressText: null,
+      latestPlanFingerprint: "",
+      latestAgentFingerprint: "",
+      subagentIdentityBackfillStates: new Map(),
+      errorCards: [],
+      nextErrorCardId: 1,
+      surfaceQueue: Promise.resolve()
+    });
+
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_initialized", session.sessionId, undefined, {
+      forcePreferredFocus: true
+    });
+
+    const visibleMessageId = sendCalls[0]?.messageId ?? 0;
+    assert.ok(visibleMessageId > 0);
+
+    await controller.handleStatusCardSectionToggle(
+      "plan-expand",
+      "chat-1",
+      visibleMessageId,
+      session.sessionId,
+      true,
+      "plan"
+    );
+
+    const runtimeHubStates = (controller as unknown as {
+      runtimeHubStates: Map<string, {
+        liveHubs: Map<number, {
+          messageId: number;
+          planExpanded: boolean;
+          visibleState: { planExpanded: boolean };
+        }>;
+      }>;
+    }).runtimeHubStates;
+    const hubState = runtimeHubStates.get("chat-1")?.liveHubs.get(0);
+    assert.ok(hubState);
+    assert.equal(hubState?.messageId, visibleMessageId);
+    assert.equal(hubState?.planExpanded, true);
+    assert.equal(hubState?.visibleState.planExpanded, true);
+
+    inspect = createInspectSnapshot({
+      planSnapshot: Array.from({ length: 14 }, (_, index) => `${index + 1}. ${"x".repeat(260)}`)
+    });
+    failHubEdit = true;
+    failFreshSend = true;
+    await controller.refreshLiveRuntimeHubs("chat-1", "runtime_progress", session.sessionId);
+
+    assert.equal(hubState?.messageId, visibleMessageId);
+    assert.equal(hubState?.planExpanded, true);
+    assert.equal(hubState?.visibleState.planExpanded, true);
+
+    failHubEdit = false;
+    failFreshSend = false;
+    await controller.handleStatusCardSectionToggle(
+      "plan-collapse",
+      "chat-1",
+      visibleMessageId,
+      session.sessionId,
+      false,
+      "plan"
+    );
+
+    assert.equal(callbackAnswers.at(-1), undefined);
+    assert.equal(hubState?.planExpanded, false);
+    assert.equal(hubState?.visibleState.planExpanded, false);
+    assert.equal(sendCalls.length, 1);
+    assert.ok(editCalls.length >= 2);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController marks hidden plan sections as collapsed in compact hub renders", async () => {
+  const activeTurns: unknown[] = [];
+  let inspect = createInspectSnapshot({
+    planSnapshot: ["Ship the small patch."]
+  });
+  let nextMessageId = 2100;
+  const sendCalls: Array<{ messageId: number; html: string; replyMarkup?: TelegramInlineKeyboardMarkup }> = [];
+  const editCalls: Array<{ messageId: number; html: string; replyMarkup?: TelegramInlineKeyboardMarkup }> = [];
+  const { controller, store, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns,
+    buildRuntimeStatusLine: () => Array.from({ length: 20 }, (_, index) => `Field ${index + 1}: ${"w".repeat(400)}`),
+    safeSendHtmlMessageResult: async (_chatId, html, replyMarkup) => {
+      const messageId = nextMessageId++;
+      sendCalls.push(replyMarkup ? { messageId, html, replyMarkup } : { messageId, html });
+      return createFakeTelegramMessage(messageId, html);
+    },
+    safeEditHtmlMessageText: async (_chatId, messageId, html, replyMarkup) => {
+      editCalls.push(replyMarkup ? { messageId, html, replyMarkup } : { messageId, html });
+      return { outcome: "edited" };
+    }
+  });
+
+  try {
+    const session = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    store.setActiveSession("chat-1", session.sessionId);
+
+    activeTurns.push({
+      sessionId: session.sessionId,
+      chatId: "chat-1",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      tracker: {
+        getInspectSnapshot: () => inspect,
+        getStatus: () => createActivityStatus()
+      },
+      statusCard: createStatusCard(),
+      latestStatusProgressText: null,
+      latestPlanFingerprint: "",
+      latestAgentFingerprint: "",
+      subagentIdentityBackfillStates: new Map(),
+      errorCards: [],
+      nextErrorCardId: 1,
+      surfaceQueue: Promise.resolve()
+    });
+
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_initialized", session.sessionId, undefined, {
+      forcePreferredFocus: true
+    });
+
+    const visibleMessageId = sendCalls[0]?.messageId ?? 0;
+    assert.ok(visibleMessageId > 0);
+
+    await controller.handleStatusCardSectionToggle(
+      "plan-expand",
+      "chat-1",
+      visibleMessageId,
+      session.sessionId,
+      true,
+      "plan"
+    );
+
+    inspect = createInspectSnapshot({
+      planSnapshot: Array.from({ length: 14 }, (_, index) => `${index + 1}. ${"x".repeat(260)}`),
+      completedCommentary: ["y".repeat(1200)]
+    });
+    const editCountBeforeRefresh = editCalls.length;
+    await controller.refreshLiveRuntimeHubs("chat-1", "test_compact_render", session.sessionId);
+
+    const compactEdit = editCalls[editCountBeforeRefresh];
+    assert.ok(compactEdit);
+    assert.match(compactEdit?.html ?? "", /<b>运行状态<\/b>/u);
+    assert.equal(compactEdit?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "计划清单：1. xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…");
+    assert.match(compactEdit?.replyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data ?? "", /plan:expand/u);
+
+    const runtimeHubStates = (controller as unknown as {
+      runtimeHubStates: Map<string, {
+        liveHubs: Map<number, {
+          planExpanded: boolean;
+          visibleState: { planExpanded: boolean };
+        }>;
+      }>;
+    }).runtimeHubStates;
+    const hubState = runtimeHubStates.get("chat-1")?.liveHubs.get(0);
+    assert.ok(hubState);
+    assert.equal(hubState?.planExpanded, false);
+    assert.equal(hubState?.visibleState.planExpanded, false);
   } finally {
     await cleanup();
   }

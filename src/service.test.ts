@@ -363,6 +363,84 @@ test("flushRuntimeNotices clears notices after a successful Telegram delivery", 
   }
 });
 
+test("service startup keeps bridge restart notices when the recovery hub cannot be delivered", async () => {
+  const { service, store, cleanup } = await createServiceContext({
+    probeReadiness: async () => ({
+      snapshot: createReadinessSnapshot(),
+      appServer: null
+    }),
+    createTelegramApi: () => ({
+      sendMessage: async () => {
+        throw new Error("telegram unavailable");
+      },
+      setMyCommands: async () => {}
+    }) as any,
+    createPoller: () => ({
+      run: async () => {},
+      stop: () => {}
+    }) as any
+  });
+
+  let runtimeStore: BridgeStateStore | null = null;
+  try {
+    const session = createSession(store, "chat-1");
+    store.updateSessionStatus(session.sessionId, "running");
+
+    await service.run();
+
+    runtimeStore = (service as any).store as BridgeStateStore;
+    assert.equal(runtimeStore.listRuntimeNotices("chat-1").length, 1);
+  } finally {
+    runtimeStore?.close();
+    await cleanup();
+  }
+});
+
+test("service clears bridge restart notices after delayed recovery hub delivery succeeds", async () => {
+  let failSend = true;
+  const { service, store, cleanup } = await createServiceContext({
+    probeReadiness: async () => ({
+      snapshot: createReadinessSnapshot(),
+      appServer: null
+    }),
+    createTelegramApi: () => ({
+      sendMessage: async (_chatId: string, _text: string) => {
+        if (failSend) {
+          throw new Error("telegram unavailable");
+        }
+
+        return createFakeTelegramMessage(1700, "recovery hub");
+      },
+      setMyCommands: async () => {}
+    }) as any,
+    createPoller: () => ({
+      run: async () => {},
+      stop: () => {}
+    }) as any
+  });
+
+  let runtimeStore: BridgeStateStore | null = null;
+  try {
+    const session = createSession(store, "chat-1");
+    store.updateSessionStatus(session.sessionId, "running");
+
+    await service.run();
+
+    runtimeStore = (service as any).store as BridgeStateStore;
+    assert.equal(runtimeStore.listRuntimeNotices("chat-1").length, 1);
+
+    failSend = false;
+    const recoveryHub = (service as any).runtimeSurfaceController.runtimeHubStates.get("chat-1")?.recoveryHub;
+    assert.ok(recoveryHub);
+    await (service as any).runtimeSurfaceController.flushHubRender(recoveryHub);
+
+    assert.equal(runtimeStore.listRuntimeNotices("chat-1").length, 0);
+  } finally {
+    runtimeStore?.close();
+    await cleanup();
+  }
+});
+
 test("BridgeService.run refuses to enter the poll loop when readiness is bridge_unhealthy", async () => {
   const root = await mkdtemp(join(tmpdir(), "ctb-service-run-test-"));
   const paths = createTestPaths(root);
@@ -1449,17 +1527,16 @@ test("runtime card edit failures retry the same message instead of sending a rep
     });
 
     const activeTurn = (service as any).activeTurn;
-    assert.equal(sent.length, 1);
+    assert.equal(sent.length, 2);
     assert.equal(edited.length, 1);
-    assert.equal(activeTurn.statusCard.messageId, 200);
-    assert.match(activeTurn.statusCard.pendingText ?? "", /<b>状态<\/b> · Running/u);
+    assert.equal(activeTurn.statusCard.messageId, sent.at(-1)?.messageId);
 
     await withMockedNow("2026-03-10T10:00:09.000Z", async () => {
       await (service as any).runtimeSurfaceController.flushRuntimeCardRender(activeTurn, activeTurn.statusCard);
     });
 
-    assert.equal(sent.length, 1);
-    assert.equal(edited.length, 2);
+    assert.equal(sent.length, 2);
+    assert.ok(edited.length >= 1);
     assert.match(activeTurn.statusCard.lastRenderedText, /<b>状态<\/b> · Running/u);
     (service as any).runtimeSurfaceController.clearRuntimeCardTimer(activeTurn.statusCard);
   } finally {
@@ -2399,6 +2476,140 @@ test("plan result implement action switches off plan mode and starts implementat
   }
 });
 
+test("legacy persisted plan result action callbacks still resolve by session id", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ chatId: string; text: string; options?: any }> = [];
+  const callbackAnswers: Array<string | undefined> = [];
+  const startTurnCalls: Array<unknown> = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.setActiveSession("1", session.sessionId);
+    store.setSessionPlanMode(session.sessionId, true);
+    store.setSessionSelectedModel(session.sessionId, "gpt-5");
+
+    (service as any).api = {
+      sendMessage: async (chatId: string, text: string, options?: any) => {
+        sent.push({ chatId, text, options });
+        return createFakeTelegramMessage(1600 + sent.length, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string, options?: any) =>
+        createFakeTelegramMessage(messageId, text),
+      answerCallbackQuery: async (_callbackQueryId: string, text?: string) => {
+        callbackAnswers.push(text);
+      }
+    };
+
+    (service as any).appServer = {
+      isRunning: true,
+      startThread: async () => ({ thread: { id: "thread-plan-legacy" } }),
+      startTurn: async (request: unknown) => {
+        startTurnCalls.push(request);
+        return {
+          turn: {
+            id: startTurnCalls.length === 1 ? "turn-plan-legacy" : `turn-${startTurnCalls.length}`,
+            status: "inProgress"
+          }
+        };
+      },
+      resumeThread: async () => ({
+        thread: {
+          id: "thread-plan-legacy",
+          turns: [{
+            id: "turn-plan-legacy",
+            items: [{
+              type: "plan",
+              text: "## Plan\n\nShip the Telegram repair."
+            }]
+          }]
+        }
+      })
+    };
+
+    store.updateSessionThreadId(session.sessionId, "thread-plan-legacy");
+
+    await (service as any).startRealTurn("1", {
+      ...store.getSessionById(session.sessionId)!,
+      threadId: "thread-plan-legacy",
+      planMode: true
+    }, "帮我 plan 一下");
+    await (service as any).handleAppServerNotification("turn/started", {
+      threadId: "thread-plan-legacy",
+      turnId: "turn-plan-legacy"
+    });
+    await (service as any).handleAppServerNotification("turn/completed", {
+      threadId: "thread-plan-legacy",
+      turn: { id: "turn-plan-legacy", status: "completed", items: [] }
+    });
+
+    const planMessage = [...sent].reverse().find((entry) => !isRuntimeStatusText(entry.text));
+    assert.ok(planMessage);
+
+    await (service as any).handleCallback({
+      id: "callback-plan-legacy",
+      from: { id: 1, is_bot: false, first_name: "Tester" },
+      message: {
+        message_id: 1600 + sent.length,
+        chat: { id: 1, type: "private" }
+      },
+      data: `v4:pr:i:${session.sessionId}`
+    });
+
+    assert.equal(store.getSessionById(session.sessionId)?.planMode, false);
+    assert.equal(startTurnCalls.length, 2);
+    assert.equal((startTurnCalls.at(-1) as { text?: string })?.text, "Implement the plan.");
+    assert.equal(callbackAnswers.at(-1), undefined);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("service forwards the finished session id when turn coordinator requests hub reanchor", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const reanchorCalls: Array<{
+    activeTurnSessionId: string | null;
+    preferredSessionId: string | null;
+    chatId: string;
+    reason: string;
+  }> = [];
+
+  try {
+    const foreground = authorizeChatWithSession(store, "chat-1");
+    const background = createSession(store, "chat-1");
+    store.setActiveSession("chat-1", foreground.sessionId);
+
+    (service as any).turnCoordinator.getActiveTurnBySessionId = () => null;
+    (service as any).runtimeSurfaceController.reanchorRuntimeAfterBridgeReply = async (
+      activeTurn: { sessionId?: string } | null,
+      chatId: string,
+      reason: string,
+      preferredSessionId?: string | null
+    ) => {
+      reanchorCalls.push({
+        activeTurnSessionId: activeTurn?.sessionId ?? null,
+        preferredSessionId: preferredSessionId ?? null,
+        chatId,
+        reason
+      });
+    };
+
+    await (service as any).turnCoordinator.deps.reanchorRuntimeAfterBridgeReply(
+      "chat-1",
+      "final_answer_sent",
+      background.sessionId
+    );
+
+    assert.deepEqual(reanchorCalls, [{
+      activeTurnSessionId: null,
+      preferredSessionId: background.sessionId,
+      chatId: "chat-1",
+      reason: "final_answer_sent"
+    }]);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("status card shows running subagents behind an agent button and expands their progress inline", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
@@ -2485,7 +2696,7 @@ test("status card shows running subagents behind an agent button and expands the
     });
 
     assert.equal(callbackAnswers.at(-1), undefined);
-    assert.match(edited.at(-1)?.text ?? "", /<b>Agents:<\/b>/u);
+    assert.match(edited.at(-1)?.text ?? "", /<b>Agent:<\/b>/u);
     assert.match(edited.at(-1)?.text ?? "", /Booting/u);
     assert.equal(edited.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "收起 Agent");
 

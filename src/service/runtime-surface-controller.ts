@@ -56,6 +56,9 @@ const FAILED_EDIT_RETRY_MS = 5000;
 const FAILED_HUB_DELETE_RETRY_MS = 5000;
 const RUNTIME_HUB_WINDOW_SIZE = 5;
 const RUNTIME_HUB_TERMINAL_SUMMARY_LIMIT = 3;
+const RUNTIME_HUB_TEXT_SOFT_LIMIT = 3200;
+const RUNTIME_HUB_SESSION_PROGRESS_TEXT_LIMIT = 120;
+const RUNTIME_HUB_COMPACT_SESSION_PROGRESS_TEXT_LIMIT = 80;
 
 interface RuntimePreferencesDraftState {
   chatId: string;
@@ -105,6 +108,14 @@ interface RuntimeHubTerminalSummary {
   state: string;
 }
 
+interface RuntimeHubVisibleState {
+  callbackVersion: number;
+  focusedSessionId: string | null;
+  sessionIds: string[];
+  planExpanded: boolean;
+  agentsExpanded: boolean;
+}
+
 interface RuntimeHubState {
   token: string;
   chatId: string;
@@ -124,6 +135,9 @@ interface RuntimeHubState {
   pendingText: string | null;
   pendingReplyMarkup: TelegramInlineKeyboardMarkup | null;
   pendingReason: string | null;
+  pendingVisibleState: RuntimeHubVisibleState | null;
+  replacementMessageId: number | null;
+  visibleState: RuntimeHubVisibleState;
   timer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -205,6 +219,7 @@ interface RuntimeSurfaceControllerDeps {
     activeTurn: RuntimeSurfaceActiveTurn,
     agentEntries: CollabAgentStateSnapshot[]
   ) => Promise<boolean>;
+  handleRecoveryHubVisible: (chatId: string) => void;
   refreshActiveRuntimeStatusCard: (chatId: string, reason: string) => Promise<void>;
 }
 
@@ -230,12 +245,42 @@ export class RuntimeSurfaceController {
     return state;
   }
 
+  private notifyRecoveryHubVisible(hubState: RuntimeHubState): void {
+    if (hubState.kind !== "recovery" || hubState.messageId <= 0) {
+      return;
+    }
+
+    this.deps.handleRecoveryHubVisible(hubState.chatId);
+  }
+
+  private chatHasActionablePendingInteractions(chatId: string, excludedSessionId?: string | null): boolean {
+    const store = this.deps.getStore();
+    if (!store) {
+      return false;
+    }
+
+    return store
+      .listSessions(chatId)
+      .some((session) =>
+        session.sessionId !== excludedSessionId
+        && this.deps.buildPendingInteractionSummaries(session).length > 0
+      );
+  }
+
   private createRuntimeHubState(
     chatId: string,
     kind: "live" | "recovery",
     windowIndex: number,
     options?: { messageId?: number }
   ): RuntimeHubState {
+    const visibleState: RuntimeHubVisibleState = {
+      callbackVersion: 0,
+      focusedSessionId: null,
+      sessionIds: [],
+      planExpanded: false,
+      agentsExpanded: false
+    };
+
     return {
       token: randomUUID().replace(/-/gu, "").slice(0, 8),
       chatId,
@@ -255,8 +300,55 @@ export class RuntimeSurfaceController {
       pendingText: null,
       pendingReplyMarkup: null,
       pendingReason: null,
+      pendingVisibleState: null,
+      replacementMessageId: null,
+      visibleState,
       timer: null
     };
+  }
+
+  private cloneRuntimeHubVisibleState(state: RuntimeHubVisibleState): RuntimeHubVisibleState {
+    return {
+      callbackVersion: state.callbackVersion,
+      focusedSessionId: state.focusedSessionId,
+      sessionIds: [...state.sessionIds],
+      planExpanded: state.planExpanded,
+      agentsExpanded: state.agentsExpanded
+    };
+  }
+
+  private getDesiredRuntimeHubVisibleState(hubState: RuntimeHubState): RuntimeHubVisibleState {
+    return {
+      callbackVersion: hubState.callbackVersion,
+      focusedSessionId: hubState.focusedSessionId,
+      sessionIds: [...hubState.sessionIds],
+      planExpanded: hubState.planExpanded,
+      agentsExpanded: hubState.agentsExpanded
+    };
+  }
+
+  private commitRuntimeHubVisibleState(hubState: RuntimeHubState, state: RuntimeHubVisibleState): void {
+    hubState.callbackVersion = state.callbackVersion;
+    hubState.focusedSessionId = state.focusedSessionId;
+    hubState.sessionIds = [...state.sessionIds];
+    hubState.planExpanded = state.planExpanded;
+    hubState.agentsExpanded = state.agentsExpanded;
+    hubState.visibleState = this.cloneRuntimeHubVisibleState(state);
+  }
+
+  private runtimeHubVisibleStateEquals(
+    left: RuntimeHubVisibleState | null,
+    right: RuntimeHubVisibleState | null
+  ): boolean {
+    if (!left || !right) {
+      return left === right;
+    }
+
+    return left.callbackVersion === right.callbackVersion
+      && left.focusedSessionId === right.focusedSessionId
+      && left.planExpanded === right.planExpanded
+      && left.agentsExpanded === right.agentsExpanded
+      && left.sessionIds.join("\u0000") === right.sessionIds.join("\u0000");
   }
 
   private clearRetainedHubTimer(retained: RetainedHubMessage): void {
@@ -482,9 +574,16 @@ export class RuntimeSurfaceController {
 
     const saved = store.setRuntimeCardPreferences(draft.fields);
     draft.fields = [...saved.fields];
-    await this.deps.safeAnswerCallbackQuery(callbackQueryId, "已保存。");
     this.runtimePreferenceDrafts.delete(token);
-    await this.deps.safeEditHtmlMessageText(chatId, messageId, buildRuntimePreferencesAppliedMessage(saved.fields));
+    const delivered = await this.replaceBridgeOwnedHtmlMessage(
+      chatId,
+      messageId,
+      buildRuntimePreferencesAppliedMessage(saved.fields)
+    );
+    await this.deps.safeAnswerCallbackQuery(
+      callbackQueryId,
+      delivered ? "已保存。" : "设置已保存，但消息暂时无法更新。"
+    );
     await this.deps.refreshActiveRuntimeStatusCard(chatId, "runtime_preferences_saved");
   }
 
@@ -520,12 +619,12 @@ export class RuntimeSurfaceController {
 
     const fields = this.deps.getStore()?.getRuntimeCardPreferences().fields ?? draft.fields;
     this.runtimePreferenceDrafts.delete(token);
-    const result = await this.deps.safeEditHtmlMessageText(
+    const delivered = await this.replaceBridgeOwnedHtmlMessage(
       chatId,
       messageId,
       buildRuntimePreferencesClosedMessage(fields)
     );
-    if (result.outcome === "edited") {
+    if (delivered) {
       await this.deps.safeAnswerCallbackQuery(callbackQueryId);
       return;
     }
@@ -643,8 +742,13 @@ export class RuntimeSurfaceController {
     }
 
     hubState.messageId = activeTurn.statusCard.messageId;
-    hubState.planExpanded = activeTurn.statusCard.planExpanded;
-    hubState.agentsExpanded = activeTurn.statusCard.agentsExpanded;
+    this.commitRuntimeHubVisibleState(hubState, {
+      callbackVersion: hubState.callbackVersion,
+      focusedSessionId: hubState.focusedSessionId,
+      sessionIds: hubState.sessionIds,
+      planExpanded: activeTurn.statusCard.planExpanded,
+      agentsExpanded: activeTurn.statusCard.agentsExpanded
+    });
     hubState.lastRenderedText = activeTurn.statusCard.lastRenderedText;
     hubState.lastRenderedReplyMarkupKey = activeTurn.statusCard.lastRenderedReplyMarkupKey;
     hubState.lastRenderedAtMs = activeTurn.statusCard.lastRenderedAtMs;
@@ -652,26 +756,34 @@ export class RuntimeSurfaceController {
     hubState.pendingText = activeTurn.statusCard.pendingText;
     hubState.pendingReplyMarkup = activeTurn.statusCard.pendingReplyMarkup;
     hubState.pendingReason = activeTurn.statusCard.pendingReason;
+    hubState.pendingVisibleState = this.cloneRuntimeHubVisibleState(hubState.visibleState);
   }
 
   private buildFocusedRuntimeHubSection(
     activeTurn: RuntimeSurfaceActiveTurn | null,
-    hubState: RuntimeHubState
+    visibleState: RuntimeHubVisibleState,
+    options?: {
+      compact?: boolean;
+    }
   ): {
     text: string;
     planEntries: string[];
     agentEntries: CollabAgentStateSnapshot[];
   } {
+    const compact = options?.compact ?? false;
     if (!activeTurn) {
-      const context = hubState.focusedSessionId
-        ? this.deps.getRuntimeCardContext(hubState.focusedSessionId)
+      const context = visibleState.focusedSessionId
+        ? this.deps.getRuntimeCardContext(visibleState.focusedSessionId)
         : { sessionName: null, projectName: null };
       return {
         text: buildRuntimeStatusCard({
           ...context,
           language: this.deps.getUiLanguage(),
           state: "Unavailable",
-          progressText: "当前没有可展示的运行详情。"
+          progressText: this.deps.getUiLanguage() === "en"
+            ? "There is no runtime detail to show right now."
+            : "当前没有可展示的运行详情。",
+          progressTextLimit: compact ? 120 : 240
         }),
         planEntries: [],
         agentEntries: []
@@ -687,13 +799,18 @@ export class RuntimeSurfaceController {
       text: buildRuntimeStatusCard({
         ...this.deps.getRuntimeCardContext(activeTurn.sessionId),
         language: this.deps.getUiLanguage(),
-        optionalFieldLines: this.deps.buildRuntimeStatusLine(activeTurn.sessionId, inspect),
+        optionalFieldLines: compact ? [] : this.deps.buildRuntimeStatusLine(activeTurn.sessionId, inspect),
         state: formatVisibleRuntimeState(inspect),
         progressText,
-        planEntries: inspect.planSnapshot,
-        planExpanded: hubState.planExpanded,
-        agentEntries: inspect.agentSnapshot,
-        agentsExpanded: hubState.agentsExpanded
+        progressTextLimit: compact ? 120 : 240,
+        planEntries: compact ? [] : inspect.planSnapshot,
+        planExpanded: compact ? false : visibleState.planExpanded,
+        agentEntries: compact ? [] : inspect.agentSnapshot,
+        agentsExpanded: compact ? false : visibleState.agentsExpanded,
+        expandedPlanEntryLimit: compact ? 3 : 10,
+        expandedPlanEntryTextLimit: compact ? 80 : 200,
+        expandedAgentLimit: compact ? 3 : 10,
+        expandedAgentProgressTextLimit: compact ? 80 : 160
       }),
       planEntries: inspect.planSnapshot,
       agentEntries: inspect.agentSnapshot
@@ -701,90 +818,158 @@ export class RuntimeSurfaceController {
   }
 
   private buildRecoveryHubSection(sessionId: string | null): string {
+    const language = this.deps.getUiLanguage();
     const session = sessionId ? this.deps.getStore()?.getSessionById(sessionId) ?? null : null;
     if (!session) {
       return buildRuntimeStatusCard({
-        language: this.deps.getUiLanguage(),
+        language,
         state: "Recovered",
-        progressText: "桥已重启。请选择一个会话并继续新的任务。"
+        progressText: language === "en"
+          ? "The bridge restarted. Pick a session and continue with a new task."
+          : "桥已重启。请选择一个会话并继续新的任务。"
       });
     }
 
     return [
-      formatHtmlHeading("恢复后会话"),
-      formatHtmlField("会话：", session.displayName),
-      formatHtmlField("项目：", session.projectAlias?.trim() || session.projectName),
-      formatHtmlField("状态：", session.failureReason === "bridge_restart" ? "上次任务因桥重启而停止" : session.status),
-      "发送新任务会基于已有线程上下文继续。"
+      formatHtmlHeading(language === "en" ? "Recovered Session" : "恢复后会话"),
+      formatHtmlField(language === "en" ? "Session:" : "会话：", session.displayName),
+      formatHtmlField(language === "en" ? "Project:" : "项目：", session.projectAlias?.trim() || session.projectName),
+      formatHtmlField(
+        language === "en" ? "State:" : "状态：",
+        session.failureReason === "bridge_restart"
+          ? (language === "en" ? "Last turn stopped because the bridge restarted" : "上次任务因桥重启而停止")
+          : session.status
+      ),
+      language === "en"
+        ? "Send a new task to continue from the existing thread context."
+        : "发送新任务会基于已有线程上下文继续。"
     ].join("\n");
   }
 
   private buildLiveHubRenderPayload(
     chatId: string,
     hubState: RuntimeHubState,
-    totalWindows: number
-  ): { text: string; replyMarkup: TelegramInlineKeyboardMarkup } {
-    const turns = this.getOrderedActiveTurns(chatId);
-    const turnMap = new Map(turns.map((activeTurn) => [activeTurn.sessionId, activeTurn] as const));
-    const activeSessionId = this.deps.getStore()?.getActiveSession(chatId)?.sessionId ?? null;
-    const sessions = hubState.sessionIds
-      .map((sessionId) => {
-        const activeTurn = turnMap.get(sessionId);
-        if (!activeTurn) {
-          return null;
-        }
-        const context = this.deps.getRuntimeCardContext(sessionId);
-        const inspect = activeTurn.tracker.getInspectSnapshot();
-        return {
-          sessionId,
-          sessionName: context.sessionName ?? "session",
-          projectName: context.projectName ?? null,
-          state: formatVisibleRuntimeState(inspect),
-          progressText: inspect.completedCommentary.at(-1) ?? null,
-          isFocused: sessionId === hubState.focusedSessionId,
-          isActiveInputTarget: sessionId === activeSessionId
-        };
-      })
-      .filter((session): session is NonNullable<typeof session> => Boolean(session));
+    totalWindows: number,
+    turns: RuntimeSurfaceActiveTurn[]
+  ): {
+    text: string;
+    replyMarkup: TelegramInlineKeyboardMarkup;
+    visibleState: RuntimeHubVisibleState;
+  } {
+    const desiredVisibleState = this.getDesiredRuntimeHubVisibleState(hubState);
+    const render = (
+      visibleState: RuntimeHubVisibleState,
+      options?: {
+      compactFocused?: boolean;
+      sessionProgressTextLimit?: number;
+    }): {
+      text: string;
+      replyMarkup: TelegramInlineKeyboardMarkup;
+      visibleState: RuntimeHubVisibleState;
+    } => {
+      const turnMap = new Map(turns.map((activeTurn) => [activeTurn.sessionId, activeTurn] as const));
+      const activeSessionId = this.deps.getStore()?.getActiveSession(chatId)?.sessionId ?? null;
+      const sessions = visibleState.sessionIds
+        .map((sessionId) => {
+          const activeTurn = turnMap.get(sessionId);
+          if (!activeTurn) {
+            return null;
+          }
+          const context = this.deps.getRuntimeCardContext(sessionId);
+          const inspect = activeTurn.tracker.getInspectSnapshot();
+          return {
+            sessionId,
+            sessionName: context.sessionName ?? "session",
+            projectName: context.projectName ?? null,
+            state: formatVisibleRuntimeState(inspect),
+            progressText: inspect.completedCommentary.at(-1) ?? null,
+            isFocused: sessionId === visibleState.focusedSessionId,
+            isActiveInputTarget: sessionId === activeSessionId
+          };
+        })
+        .filter((session): session is NonNullable<typeof session> => Boolean(session));
 
-    const focusedTurn = hubState.focusedSessionId ? (turnMap.get(hubState.focusedSessionId) ?? null) : null;
-    const focused = this.buildFocusedRuntimeHubSection(focusedTurn, hubState);
-    const activeContext = activeSessionId ? this.deps.getRuntimeCardContext(activeSessionId) : { sessionName: null };
-    const text = buildRuntimeHubMessage({
-      language: this.deps.getUiLanguage(),
-      windowIndex: hubState.windowIndex,
-      totalWindows,
-      totalSessions: turns.length,
-      sessions,
-      focusedSessionText: focused.text,
-      activeInputTargetName: activeContext.sessionName ?? null,
-      activeInputTargetInWindow: sessions.some((session) => session.sessionId === activeSessionId),
-      terminalSummaries: hubState.windowIndex === 0 ? this.getOrCreateHubChatState(chatId).terminalSummaries : [],
-      isMainHub: hubState.windowIndex === 0
-    });
-
-    return {
-      text,
-      replyMarkup: buildRuntimeHubReplyMarkup({
-        token: hubState.token,
-        callbackVersion: hubState.callbackVersion,
+      const focusedTurn = visibleState.focusedSessionId ? (turnMap.get(visibleState.focusedSessionId) ?? null) : null;
+      const focused = this.buildFocusedRuntimeHubSection(focusedTurn, visibleState, {
+        compact: options?.compactFocused ?? false
+      });
+      const activeContext = activeSessionId ? this.deps.getRuntimeCardContext(activeSessionId) : { sessionName: null };
+      const text = buildRuntimeHubMessage({
         language: this.deps.getUiLanguage(),
+        windowIndex: hubState.windowIndex,
+        totalWindows,
+        totalSessions: turns.length,
         sessions,
-        focusedSessionId: hubState.focusedSessionId,
-        planEntries: focused.planEntries,
-        planExpanded: hubState.planExpanded,
-        agentEntries: focused.agentEntries,
-        agentsExpanded: hubState.agentsExpanded
-      })
+        focusedSessionText: focused.text,
+        activeInputTargetName: activeContext.sessionName ?? null,
+        activeInputTargetInWindow: sessions.some((session) => session.sessionId === activeSessionId),
+        terminalSummaries: hubState.windowIndex === 0 ? this.getOrCreateHubChatState(chatId).terminalSummaries : [],
+        isMainHub: hubState.windowIndex === 0,
+        sessionProgressTextLimit: options?.sessionProgressTextLimit ?? RUNTIME_HUB_SESSION_PROGRESS_TEXT_LIMIT
+      });
+
+      return {
+        text,
+        replyMarkup: buildRuntimeHubReplyMarkup({
+          token: hubState.token,
+          callbackVersion: visibleState.callbackVersion,
+          language: this.deps.getUiLanguage(),
+          sessions,
+          focusedSessionId: visibleState.focusedSessionId,
+          planEntries: focused.planEntries,
+          planExpanded: visibleState.planExpanded,
+          agentEntries: focused.agentEntries,
+          agentsExpanded: visibleState.agentsExpanded
+        }),
+        visibleState: this.cloneRuntimeHubVisibleState(visibleState)
+      };
     };
+
+    let rendered = render(desiredVisibleState);
+    if (rendered.text.length <= RUNTIME_HUB_TEXT_SOFT_LIMIT) {
+      return rendered;
+    }
+
+    const compactedVisibleState = desiredVisibleState.planExpanded || desiredVisibleState.agentsExpanded
+      ? {
+        ...desiredVisibleState,
+        planExpanded: false,
+        agentsExpanded: false,
+        callbackVersion: desiredVisibleState.callbackVersion + 1
+      }
+      : desiredVisibleState;
+
+    if (compactedVisibleState !== desiredVisibleState) {
+      rendered = render(compactedVisibleState, {
+        sessionProgressTextLimit: RUNTIME_HUB_COMPACT_SESSION_PROGRESS_TEXT_LIMIT
+      });
+      if (rendered.text.length <= RUNTIME_HUB_TEXT_SOFT_LIMIT) {
+        return rendered;
+      }
+    }
+
+    rendered = render(compactedVisibleState, {
+      compactFocused: true,
+      sessionProgressTextLimit: RUNTIME_HUB_COMPACT_SESSION_PROGRESS_TEXT_LIMIT
+    });
+    if (rendered.text.length <= RUNTIME_HUB_TEXT_SOFT_LIMIT) {
+      return rendered;
+    }
+
+    return render(compactedVisibleState, {
+      compactFocused: true,
+      sessionProgressTextLimit: 0
+    });
   }
 
   private buildRecoveryHubRenderPayload(chatId: string, hubState: RuntimeHubState): {
     text: string;
     replyMarkup: TelegramInlineKeyboardMarkup;
+    visibleState: RuntimeHubVisibleState;
   } {
+    const visibleState = this.getDesiredRuntimeHubVisibleState(hubState);
     const store = this.deps.getStore();
-    const sessions = hubState.sessionIds
+    const sessions = visibleState.sessionIds
       .map((sessionId) => store?.getSessionById(sessionId) ?? null)
       .filter((session): session is SessionRow => Boolean(session))
       .map((session) => ({
@@ -792,8 +977,12 @@ export class RuntimeSurfaceController {
         sessionName: session.displayName,
         projectName: session.projectAlias?.trim() || session.projectName,
         state: session.failureReason === "bridge_restart" ? "Recovered" : session.status,
-        progressText: session.failureReason === "bridge_restart" ? "上次运行因桥重启而停止" : null,
-        isFocused: session.sessionId === hubState.focusedSessionId,
+        progressText: session.failureReason === "bridge_restart"
+          ? (this.deps.getUiLanguage() === "en"
+            ? "Last turn stopped because the bridge restarted"
+            : "上次运行因桥重启而停止")
+          : null,
+        isFocused: session.sessionId === visibleState.focusedSessionId,
         isActiveInputTarget: session.sessionId === (store?.getActiveSession(chatId)?.sessionId ?? null)
       }));
 
@@ -806,7 +995,7 @@ export class RuntimeSurfaceController {
       totalWindows: 1,
       totalSessions: sessions.length,
       sessions,
-      focusedSessionText: this.buildRecoveryHubSection(hubState.focusedSessionId),
+      focusedSessionText: this.buildRecoveryHubSection(visibleState.focusedSessionId),
       activeInputTargetName: activeContext.sessionName ?? null,
       activeInputTargetInWindow: sessions.some((session) => session.isActiveInputTarget),
       terminalSummaries: [],
@@ -817,15 +1006,16 @@ export class RuntimeSurfaceController {
       text,
       replyMarkup: buildRuntimeHubReplyMarkup({
         token: hubState.token,
-        callbackVersion: hubState.callbackVersion,
+        callbackVersion: visibleState.callbackVersion,
         language: this.deps.getUiLanguage(),
         sessions,
-        focusedSessionId: hubState.focusedSessionId,
+        focusedSessionId: visibleState.focusedSessionId,
         planEntries: [],
         planExpanded: false,
         agentEntries: [],
         agentsExpanded: false
-      })
+      }),
+      visibleState
     };
   }
 
@@ -841,6 +1031,8 @@ export class RuntimeSurfaceController {
     hubState.pendingText = null;
     hubState.pendingReplyMarkup = null;
     hubState.pendingReason = null;
+    hubState.pendingVisibleState = null;
+    hubState.replacementMessageId = null;
     if (messageId > 0) {
       await this.deleteHubMessage(hubState.chatId, messageId);
     }
@@ -887,7 +1079,7 @@ export class RuntimeSurfaceController {
       chatState.liveHubs.set(windowIndex, hubState);
       const singleSessionTurn = this.getSingleSessionHubActiveTurn(hubState);
       this.hydrateSingleSessionHubStateFromTurn(hubState, singleSessionTurn);
-      const rendered = this.buildLiveHubRenderPayload(chatId, hubState, totalWindows);
+      const rendered = this.buildLiveHubRenderPayload(chatId, hubState, totalWindows, turns);
       if (singleSessionTurn) {
         await this.logRuntimeCardEvent(singleSessionTurn, singleSessionTurn.statusCard, "state_transition", {
           reason,
@@ -897,7 +1089,8 @@ export class RuntimeSurfaceController {
       }
       await this.requestHubRender(hubState, rendered.text, rendered.replyMarkup, {
         force: reason !== "runtime_progress",
-        reason
+        reason,
+        visibleState: rendered.visibleState
       });
     }
 
@@ -910,9 +1103,9 @@ export class RuntimeSurfaceController {
     }
   }
 
-  async sendRecoveryHub(chatId: string, sessionIds: string[]): Promise<void> {
+  async sendRecoveryHub(chatId: string, sessionIds: string[]): Promise<boolean> {
     if (sessionIds.length === 0) {
-      return;
+      return false;
     }
 
     const chatState = this.getOrCreateHubChatState(chatId);
@@ -931,8 +1124,10 @@ export class RuntimeSurfaceController {
     const rendered = this.buildRecoveryHubRenderPayload(chatId, hubState);
     await this.requestHubRender(hubState, rendered.text, rendered.replyMarkup, {
       force: true,
-      reason: "bridge_restart_recovery"
+      reason: "bridge_restart_recovery",
+      visibleState: rendered.visibleState
     });
+    return hubState.messageId > 0;
   }
 
   resolveFocusedRuntimeHubSession(
@@ -948,7 +1143,7 @@ export class RuntimeSurfaceController {
     if (options?.requireLive && hubState.kind !== "live") {
       return null;
     }
-    return hubState.focusedSessionId === sessionId ? hubState : null;
+    return hubState.visibleState.focusedSessionId === sessionId ? hubState : null;
   }
 
   async handleHubSelectCallback(
@@ -960,12 +1155,12 @@ export class RuntimeSurfaceController {
     slot: number
   ): Promise<void> {
     const hubState = this.getLiveHubState(chatId, messageId);
-    if (!hubState || hubState.token !== token || hubState.callbackVersion !== version) {
+    if (!hubState || hubState.token !== token || hubState.visibleState.callbackVersion !== version) {
       await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
       return;
     }
 
-    const sessionId = hubState.sessionIds[slot];
+    const sessionId = hubState.visibleState.sessionIds[slot];
     const store = this.deps.getStore();
     if (!store || !sessionId || !store.getSessionById(sessionId)) {
       await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
@@ -987,7 +1182,8 @@ export class RuntimeSurfaceController {
     const rendered = this.buildRecoveryHubRenderPayload(hubState.chatId, hubState);
     await this.requestHubRender(hubState, rendered.text, rendered.replyMarkup, {
       force: true,
-      reason: "recovery_hub_session_selected"
+      reason: "recovery_hub_session_selected",
+      visibleState: rendered.visibleState
     });
   }
 
@@ -1011,18 +1207,24 @@ export class RuntimeSurfaceController {
     options: {
       force?: boolean;
       reason: string;
+      visibleState?: RuntimeHubVisibleState;
     }
   ): Promise<void> {
     if (hubState.destroyed) {
       return;
     }
 
+    const pendingVisibleState = this.cloneRuntimeHubVisibleState(
+      options.visibleState ?? this.getDesiredRuntimeHubVisibleState(hubState)
+    );
     const replyMarkupKey = serializeReplyMarkup(replyMarkup);
     const pendingChanged = hubState.pendingText !== text
-      || serializeReplyMarkup(hubState.pendingReplyMarkup) !== replyMarkupKey;
+      || serializeReplyMarkup(hubState.pendingReplyMarkup) !== replyMarkupKey
+      || !this.runtimeHubVisibleStateEquals(hubState.pendingVisibleState, pendingVisibleState);
     hubState.pendingText = text;
     hubState.pendingReplyMarkup = replyMarkup;
     hubState.pendingReason = options.reason;
+    hubState.pendingVisibleState = pendingVisibleState;
     this.syncSingleSessionHubState(hubState);
 
     const singleSessionTurn = this.getSingleSessionHubActiveTurn(hubState);
@@ -1062,7 +1264,11 @@ export class RuntimeSurfaceController {
 
     const text = hubState.pendingText;
     const replyMarkup = hubState.pendingReplyMarkup ?? undefined;
+    const pendingVisibleState = hubState.pendingVisibleState;
     if (!text || !replyMarkup) {
+      return;
+    }
+    if (!pendingVisibleState) {
       return;
     }
 
@@ -1071,15 +1277,21 @@ export class RuntimeSurfaceController {
       hubState.pendingText = null;
       hubState.pendingReplyMarkup = null;
       hubState.pendingReason = null;
+      hubState.pendingVisibleState = null;
+      hubState.replacementMessageId = null;
+      this.commitRuntimeHubVisibleState(hubState, pendingVisibleState);
       this.syncSingleSessionHubState(hubState);
       return;
     }
 
+    const reason = hubState.pendingReason;
     hubState.pendingText = null;
     hubState.pendingReplyMarkup = null;
     hubState.pendingReason = null;
+    hubState.pendingVisibleState = null;
 
-    if (hubState.messageId === 0) {
+    if (hubState.messageId === 0 || hubState.replacementMessageId !== null) {
+      const replacementMessageId = hubState.replacementMessageId;
       const sent = await this.deps.safeSendHtmlMessageResult(hubState.chatId, text, replyMarkup);
       if (hubState.destroyed) {
         if (sent) {
@@ -1091,7 +1303,10 @@ export class RuntimeSurfaceController {
       if (!sent) {
         hubState.pendingText = text;
         hubState.pendingReplyMarkup = replyMarkup;
+        hubState.pendingReason = reason;
+        hubState.pendingVisibleState = pendingVisibleState;
         this.syncSingleSessionHubState(hubState);
+        this.scheduleHubRetry(hubState, FAILED_EDIT_RETRY_MS);
         return;
       }
 
@@ -1100,7 +1315,13 @@ export class RuntimeSurfaceController {
       hubState.lastRenderedReplyMarkupKey = replyMarkupKey;
       hubState.lastRenderedAtMs = Date.now();
       hubState.rateLimitUntilAtMs = null;
+      hubState.replacementMessageId = null;
+      this.commitRuntimeHubVisibleState(hubState, pendingVisibleState);
       this.syncSingleSessionHubState(hubState);
+      this.notifyRecoveryHubVisible(hubState);
+      if (replacementMessageId && replacementMessageId !== sent.message_id) {
+        await this.deleteHubMessage(hubState.chatId, replacementMessageId);
+      }
       return;
     }
 
@@ -1116,12 +1337,16 @@ export class RuntimeSurfaceController {
       hubState.lastRenderedReplyMarkupKey = replyMarkupKey;
       hubState.lastRenderedAtMs = Date.now();
       hubState.rateLimitUntilAtMs = null;
+      this.commitRuntimeHubVisibleState(hubState, pendingVisibleState);
       this.syncSingleSessionHubState(hubState);
+      this.notifyRecoveryHubVisible(hubState);
       return;
     }
 
     hubState.pendingText = text;
     hubState.pendingReplyMarkup = replyMarkup;
+    hubState.pendingReason = reason;
+    hubState.pendingVisibleState = pendingVisibleState;
     if (result.outcome === "rate_limited") {
       hubState.rateLimitUntilAtMs = Date.now() + result.retryAfterMs;
       this.syncSingleSessionHubState(hubState);
@@ -1129,8 +1354,9 @@ export class RuntimeSurfaceController {
       return;
     }
 
+    hubState.replacementMessageId = previousMessageId;
     this.syncSingleSessionHubState(hubState);
-    this.scheduleHubRetry(hubState, FAILED_EDIT_RETRY_MS);
+    await this.flushHubRender(hubState);
   }
 
   private clearHubTimer(hubState: RuntimeHubState): void {
@@ -1205,7 +1431,10 @@ export class RuntimeSurfaceController {
     }
 
     const expandedField = section === "plan" ? "planExpanded" : "agentsExpanded";
-    if (hubState[expandedField] === expanded) {
+    const visibleExpanded = section === "plan"
+      ? hubState.visibleState.planExpanded
+      : hubState.visibleState.agentsExpanded;
+    if (visibleExpanded === expanded) {
       await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个操作已处理。");
       return;
     }
@@ -1662,41 +1891,71 @@ export class RuntimeSurfaceController {
   async reanchorRuntimeAfterBridgeReply(
     activeTurn: RuntimeSurfaceActiveTurn | null,
     chatId: string,
-    reason: string
+    reason: string,
+    preferredSessionId?: string | null
   ): Promise<void> {
     const chatState = this.runtimeHubStates.get(chatId);
-    if (!chatState || chatState.liveHubs.size === 0) {
+    if (!chatState) {
       return;
     }
 
+    const store = this.deps.getStore();
+    const preferredSession = preferredSessionId
+      ? store?.getSessionById(preferredSessionId) ?? null
+      : null;
+    const resolvedPreferredSessionId = preferredSession?.telegramChatId === chatId
+      ? preferredSession.sessionId
+      : null;
+
     const targetSessionId = activeTurn?.chatId === chatId
       ? activeTurn.sessionId
-      : (this.deps.getStore()?.getActiveSession(chatId)?.sessionId ?? null);
+      : resolvedPreferredSessionId ?? (store?.getActiveSession(chatId)?.sessionId ?? null);
 
-    const targetSession = targetSessionId ? this.deps.getStore()?.getSessionById(targetSessionId) ?? null : null;
+    const targetSession = targetSessionId ? store?.getSessionById(targetSessionId) ?? null : null;
     // Keep actionable interaction cards at the bottom of the chat; reanchoring the
     // hub ahead of them would push the pending reply controls away from the operator.
     if (
-      activeTurn?.tracker.getStatus().turnStatus === "blocked"
-      && targetSession
-      && this.deps.buildPendingInteractionSummaries(targetSession).length > 0
+      (
+        (activeTurn?.tracker.getStatus().turnStatus === "blocked"
+          && targetSession
+          && this.deps.buildPendingInteractionSummaries(targetSession).length > 0)
+        || this.chatHasActionablePendingInteractions(chatId, targetSessionId)
+      )
     ) {
       return;
     }
 
-    await this.refreshLiveRuntimeHubs(chatId, reason, targetSessionId, undefined, {
-      forcePreferredFocus: true
-    });
+    if (chatState.liveHubs.size > 0) {
+      await this.refreshLiveRuntimeHubs(chatId, reason, targetSessionId, undefined, {
+        forcePreferredFocus: true
+      });
 
-    const targetHub = [...chatState.liveHubs.values()].find((hubState) =>
-      targetSessionId ? hubState.sessionIds.includes(targetSessionId) : false
-    ) ?? chatState.liveHubs.get(0) ?? [...chatState.liveHubs.values()][0];
+      const targetHub = [...chatState.liveHubs.values()].find((hubState) =>
+        targetSessionId ? hubState.sessionIds.includes(targetSessionId) : false
+      ) ?? chatState.liveHubs.get(0) ?? [...chatState.liveHubs.values()][0];
 
-    if (!targetHub) {
+      if (!targetHub) {
+        return;
+      }
+
+      await this.reanchorRuntimeHubToLatestMessage(targetHub, reason);
       return;
     }
 
-    await this.reanchorRuntimeHubToLatestMessage(targetHub, reason);
+    const recoveryHub = chatState.recoveryHub;
+    if (!recoveryHub) {
+      return;
+    }
+
+    const visibleSessionIds = recoveryHub.sessionIds.filter((sessionId) => store?.getSessionById(sessionId));
+    this.updateHubFocus(
+      recoveryHub,
+      visibleSessionIds,
+      targetSessionId,
+      store?.getActiveSession(chatId)?.sessionId ?? null,
+      { forcePreferred: true }
+    );
+    await this.reanchorRuntimeHubToLatestMessage(recoveryHub, reason);
   }
 
   private async reanchorRuntimeHubToLatestMessage(hubState: RuntimeHubState, _reason: string): Promise<void> {
@@ -1707,7 +1966,12 @@ export class RuntimeSurfaceController {
     this.clearHubTimer(hubState);
     const previousMessageId = hubState.messageId;
     const rendered = hubState.kind === "live"
-      ? this.buildLiveHubRenderPayload(hubState.chatId, hubState, this.getOrCreateHubChatState(hubState.chatId).liveHubs.size)
+      ? this.buildLiveHubRenderPayload(
+        hubState.chatId,
+        hubState,
+        this.getOrCreateHubChatState(hubState.chatId).liveHubs.size,
+        this.getOrderedActiveTurns(hubState.chatId)
+      )
       : this.buildRecoveryHubRenderPayload(hubState.chatId, hubState);
     const sent = await this.deps.safeSendHtmlMessageResult(hubState.chatId, rendered.text, rendered.replyMarkup);
     if (!sent) {
@@ -1727,7 +1991,11 @@ export class RuntimeSurfaceController {
     hubState.pendingText = null;
     hubState.pendingReplyMarkup = null;
     hubState.pendingReason = null;
+    hubState.pendingVisibleState = null;
+    hubState.replacementMessageId = null;
+    this.commitRuntimeHubVisibleState(hubState, rendered.visibleState);
     this.syncSingleSessionHubState(hubState);
+    this.notifyRecoveryHubVisible(hubState);
     if (previousMessageId > 0 && previousMessageId !== sent.message_id) {
       await this.deleteHubMessage(hubState.chatId, previousMessageId);
     }
@@ -2007,6 +2275,30 @@ export class RuntimeSurfaceController {
       page: draft.page
     });
     await this.deps.safeEditHtmlMessageText(draft.chatId, draft.messageId, rendered.text, rendered.replyMarkup);
+  }
+
+  private async replaceBridgeOwnedHtmlMessage(
+    chatId: string,
+    messageId: number,
+    html: string
+  ): Promise<boolean> {
+    if (messageId > 0) {
+      const result = await this.deps.safeEditHtmlMessageText(chatId, messageId, html);
+      if (result.outcome === "edited") {
+        return true;
+      }
+    }
+
+    const sent = await this.deps.safeSendHtmlMessageResult(chatId, html);
+    if (!sent) {
+      return false;
+    }
+
+    if (messageId > 0 && sent.message_id !== messageId) {
+      await this.deps.safeDeleteMessage(chatId, messageId);
+    }
+
+    return true;
   }
 
   private buildPlanResultHtml(html: string, primaryActionConsumed: boolean): string {

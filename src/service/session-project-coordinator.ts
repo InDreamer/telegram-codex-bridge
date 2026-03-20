@@ -187,7 +187,7 @@ export class SessionProjectCoordinator {
       return;
     }
 
-    store.createSession({
+    const session = store.createSession({
       telegramChatId: chatId,
       projectName: candidate.projectName,
       projectPath: candidate.projectPath,
@@ -197,12 +197,13 @@ export class SessionProjectCoordinator {
     pickerState.resolved = true;
     pickerState.awaitingManualProjectPath = false;
     this.pickerStates.delete(chatId);
-    await this.consumeEphemeralMessage(
+    const delivered = await this.consumeEphemeralMessage(
       chatId,
       messageId,
       buildSessionCreatedText(candidate.displayName, candidate.projectPath),
       { html: true }
     );
+    await this.reanchorRuntimeAfterBridgeReply(chatId, session.sessionId, delivered, "session_created");
   }
 
   async handleScanMore(chatId: string, messageId: number): Promise<void> {
@@ -319,7 +320,7 @@ export class SessionProjectCoordinator {
       return;
     }
 
-    store.createSession({
+    const session = store.createSession({
       telegramChatId: chatId,
       projectName: candidate.projectName,
       projectPath: candidate.projectPath,
@@ -329,12 +330,13 @@ export class SessionProjectCoordinator {
     pickerState.resolved = true;
     pickerState.awaitingManualProjectPath = false;
     this.pickerStates.delete(chatId);
-    await this.consumeEphemeralMessage(
+    const delivered = await this.consumeEphemeralMessage(
       chatId,
       messageId,
       buildSessionCreatedText(candidate.displayName, candidate.projectPath),
       { html: true }
     );
+    await this.reanchorRuntimeAfterBridgeReply(chatId, session.sessionId, delivered, "session_created");
   }
 
   async returnToProjectPicker(chatId: string, messageId?: number): Promise<void> {

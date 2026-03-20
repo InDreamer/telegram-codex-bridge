@@ -305,6 +305,7 @@ export class BridgeService {
       },
       backfillSubagentIdentities: async (activeTurn, agentEntries) =>
         this.subagentIdentityBackfiller.backfill(activeTurn as ActiveTurnState, agentEntries),
+      handleRecoveryHubVisible: (chatId) => this.clearBridgeRestartRecoveryNotices(chatId),
       refreshActiveRuntimeStatusCard: async (chatId, reason) => this.refreshActiveRuntimeStatusCard(chatId, reason)
     });
     this.turnCoordinator = new TurnCoordinator({
@@ -340,8 +341,8 @@ export class BridgeService {
         this.runtimeSurfaceController.runRuntimeCardOperation(activeTurn as ActiveTurnState, operation),
       reanchorStatusCardToLatestMessage: async (activeTurn, reason) =>
         this.runtimeSurfaceController.reanchorStatusCardToLatestMessage(activeTurn as ActiveTurnState, reason),
-      reanchorRuntimeAfterBridgeReply: async (chatId, reason) =>
-        this.reanchorRuntimeAfterBridgeReply(chatId, reason),
+      reanchorRuntimeAfterBridgeReply: async (chatId, reason, sessionId) =>
+        this.reanchorRuntimeAfterBridgeReply(chatId, reason, sessionId),
       disposeRuntimeCards: (activeTurn) =>
         this.runtimeSurfaceController.disposeRuntimeCards(activeTurn as ActiveTurnState),
       safeSendMessage: async (chatId, text) => this.safeSendMessage(chatId, text),
@@ -525,9 +526,6 @@ export class BridgeService {
           recoveryChatId,
           recoverySessions.map((session) => session.sessionId)
         );
-        for (const notice of recoveryNotices) {
-          this.store.clearRuntimeNotice(notice.key);
-        }
       }
     }
     await this.flushRuntimeNotices();
@@ -1086,8 +1084,8 @@ export class BridgeService {
       return;
     }
 
-    const view = this.store.getFinalAnswerView(answerId, chatId);
-    if (!view || (view.telegramMessageId !== null && view.telegramMessageId !== messageId)) {
+    const view = this.resolvePlanResultActionView(chatId, messageId, answerId);
+    if (!view) {
       await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
       return;
     }
@@ -1097,7 +1095,7 @@ export class BridgeService {
         callbackQueryId,
         chatId,
         messageId,
-        answerId,
+        view.answerId,
         { expanded: true, page: 1 }
       );
       return;
@@ -1139,14 +1137,34 @@ export class BridgeService {
       return;
     }
 
-    this.store.setFinalAnswerPrimaryActionConsumed(answerId, true);
+    this.store.setFinalAnswerPrimaryActionConsumed(view.answerId, true);
     await this.runtimeSurfaceController.renderPersistedPlanResult(
       callbackQueryId,
       chatId,
       messageId,
-      answerId,
+      view.answerId,
       { expanded: true, page: 1 }
     );
+  }
+
+  private resolvePlanResultActionView(
+    chatId: string,
+    messageId: number,
+    answerIdOrLegacySessionId: string
+  ): ReturnType<BridgeStateStore["getFinalAnswerView"]> {
+    if (!this.store) {
+      return null;
+    }
+
+    const exact = this.store.getFinalAnswerView(answerIdOrLegacySessionId, chatId);
+    if (exact && (exact.telegramMessageId === null || exact.telegramMessageId === messageId)) {
+      return exact;
+    }
+
+    return this.store.listFinalAnswerViews(chatId).find((candidate) =>
+      candidate.sessionId === answerIdOrLegacySessionId
+      && candidate.telegramMessageId === messageId
+    ) ?? null;
   }
 
   private async authorizeMessageSender(
@@ -1401,6 +1419,18 @@ export class BridgeService {
         if (await this.safeSendMessage(targetChatId, notice.message)) {
           this.store.clearRuntimeNotice(notice.key);
         }
+      }
+    }
+  }
+
+  private clearBridgeRestartRecoveryNotices(chatId: string): void {
+    if (!this.store) {
+      return;
+    }
+
+    for (const notice of this.store.listRuntimeNotices(chatId)) {
+      if (notice.type === "bridge_restart_recovery") {
+        this.store.clearRuntimeNotice(notice.key);
       }
     }
   }
@@ -2526,7 +2556,7 @@ export class BridgeService {
     sessionId?: string
   ): Promise<void> {
     const activeTurn = sessionId ? this.getActiveTurnForSession(sessionId) : this.getActiveTurnForChat(chatId);
-    await this.runtimeSurfaceController.reanchorRuntimeAfterBridgeReply(activeTurn, chatId, reason);
+    await this.runtimeSurfaceController.reanchorRuntimeAfterBridgeReply(activeTurn, chatId, reason, sessionId);
   }
 
   private async safeDeleteMessage(chatId: string, messageId: number): Promise<boolean> {

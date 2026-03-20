@@ -122,7 +122,7 @@ interface TurnCoordinatorDeps {
   ) => Promise<void>;
   runRuntimeCardOperation: (activeTurn: ActiveTurnState, operation: () => Promise<void>) => Promise<void>;
   reanchorStatusCardToLatestMessage: (activeTurn: ActiveTurnState, reason: string) => Promise<void>;
-  reanchorRuntimeAfterBridgeReply: (chatId: string, reason: string) => Promise<void>;
+  reanchorRuntimeAfterBridgeReply: (chatId: string, reason: string, sessionId?: string) => Promise<void>;
   disposeRuntimeCards: (activeTurn: ActiveTurnState) => void;
   safeSendMessage: (chatId: string, text: string) => Promise<boolean>;
   safeSendHtmlMessageResult: (
@@ -695,7 +695,7 @@ export class TurnCoordinator {
     });
     this.deps.disposeRuntimeCards(activeTurn);
     if (await this.deps.safeSendMessage(activeTurn.chatId, "这次操作未成功完成，请重试。")) {
-      await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "turn_failed_notice_sent");
+      await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "turn_failed_notice_sent", activeTurn.sessionId);
     }
   }
 
@@ -834,7 +834,7 @@ export class TurnCoordinator {
         if (sent) {
           store.setFinalAnswerMessageId(saved.answerId, sent.message_id);
           delivered = true;
-          await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "final_answer_sent");
+          await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "final_answer_sent", activeTurn.sessionId);
           return;
         }
       } catch (error) {
@@ -853,7 +853,7 @@ export class TurnCoordinator {
     if (!rendered.truncated && rendered.pages.length === 1) {
       delivered = (await this.deps.safeSendHtmlMessageResult(activeTurn.chatId, rendered.pages[0] ?? "")) !== null;
       if (delivered) {
-        await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "final_answer_sent");
+        await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "final_answer_sent", activeTurn.sessionId);
       }
       return;
     }
@@ -863,7 +863,7 @@ export class TurnCoordinator {
     }
 
     if (delivered) {
-      await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "final_answer_sent");
+      await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "final_answer_sent", activeTurn.sessionId);
     }
   }
 
@@ -899,7 +899,7 @@ export class TurnCoordinator {
       );
       if (sent) {
         store.setFinalAnswerMessageId(saved.answerId, sent.message_id);
-        await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "plan_result_sent");
+        await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "plan_result_sent", activeTurn.sessionId);
         return;
       }
 
@@ -907,7 +907,7 @@ export class TurnCoordinator {
     }
 
     if (await this.deps.safeSendHtmlMessageResult(activeTurn.chatId, rendered.pages[0] ?? "")) {
-      await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "plan_result_sent");
+      await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "plan_result_sent", activeTurn.sessionId);
     }
   }
 

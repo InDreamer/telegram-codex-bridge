@@ -664,9 +664,9 @@ test("buildRuntimeStatusCard keeps expanded sections below progress", () => {
 
   assert.match(text, /<b>Current Dir<\/b> · \/tmp\/project-one/u);
   assert.ok(text.indexOf("<b>Progress</b>") > text.indexOf("<b>Current Dir</b>"));
-  assert.ok(text.indexOf("<b>计划清单:</b>") > text.indexOf("<b>Current Dir</b>"));
-  assert.ok(text.indexOf("<b>计划清单:</b>") > text.indexOf("<b>Progress</b>"));
-  assert.ok(text.indexOf("<b>Agents:</b>") > text.indexOf("<b>计划清单:</b>"));
+  assert.ok(text.indexOf("<b>Plan:</b>") > text.indexOf("<b>Current Dir</b>"));
+  assert.ok(text.indexOf("<b>Plan:</b>") > text.indexOf("<b>Progress</b>"));
+  assert.ok(text.indexOf("<b>Agents:</b>") > text.indexOf("<b>Plan:</b>"));
   assert.ok(
     text.indexOf("Use /inspect for full details. Use /interrupt to stop the current turn.") > text.indexOf("<b>Agents:</b>")
   );

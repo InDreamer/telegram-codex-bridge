@@ -124,7 +124,7 @@ async function createCoordinatorContext(options: {
     reanchorStatusCardToLatestMessage: async (_activeTurn, reason) => {
       reanchorReasons.push(reason);
     },
-    reanchorRuntimeAfterBridgeReply: async (_chatId, reason) => {
+    reanchorRuntimeAfterBridgeReply: async (_chatId, reason, _sessionId) => {
       reanchorReasons.push(reason);
     },
     disposeRuntimeCards: () => {},
