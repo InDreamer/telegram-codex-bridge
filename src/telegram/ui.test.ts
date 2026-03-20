@@ -27,6 +27,7 @@ import {
   buildWhereText,
   buildStatusText,
   buildInspectViewMessage,
+  buildRuntimeHubMessage,
   buildRuntimeHubReplyMarkup,
   buildRuntimeStatusReplyMarkup,
   buildRuntimeStatusCard,
@@ -199,6 +200,27 @@ test("buildStatusText renders bold field labels and escapes values for Telegram 
       "<b>问题：</b> token &lt;expired&gt;"
     ].join("\n")
   );
+});
+
+test("buildStatusText appends runtime status section when provided", () => {
+  const runtimeStatusText = buildRuntimeStatusCard({
+    language: "zh",
+    sessionName: "Session Alpha",
+    state: "Running",
+    progressText: "正在整理运行摘要。",
+    includeFooter: false
+  });
+
+  const text = buildStatusText(
+    createReadinessSnapshot(),
+    createSession({ displayName: "Session Alpha" }),
+    runtimeStatusText
+  );
+
+  assert.match(text, /^<b>服务状态<\/b>/u);
+  assert.match(text, /<b>运行状态<\/b>/u);
+  assert.match(text, /<b>进度<\/b> · 正在整理运行摘要。/u);
+  assert.doesNotMatch(text, /使用 \/inspect 查看完整详情/u);
 });
 
 test("buildSessionsText renders active markers and state summaries for visible sessions", async () => {
@@ -532,7 +554,7 @@ test("buildRuntimeStatusCard keeps only fixed runtime fields and renders progres
       "<b>Session</b> · ansi-escape",
       "<b>State</b> · Completed",
       "<b>Progress</b> · 确认 <code>ansi-escape</code> 是 <b>codex-tui</b> 的 ANSI 到 <code>ratatui</code> 适配边界层。",
-      "Use /inspect for full details. Use /interrupt to stop the current turn."
+      "Use /inspect for full details. Use /interrupt to stop the current turn. Use /status for runtime details."
     ].join("\n")
   );
 
@@ -668,7 +690,8 @@ test("buildRuntimeStatusCard keeps expanded sections below progress", () => {
   assert.ok(text.indexOf("<b>Plan:</b>") > text.indexOf("<b>Progress</b>"));
   assert.ok(text.indexOf("<b>Agents:</b>") > text.indexOf("<b>Plan:</b>"));
   assert.ok(
-    text.indexOf("Use /inspect for full details. Use /interrupt to stop the current turn.") > text.indexOf("<b>Agents:</b>")
+    text.indexOf("Use /inspect for full details. Use /interrupt to stop the current turn. Use /status for runtime details.")
+      > text.indexOf("<b>Agents:</b>")
   );
 });
 
@@ -687,9 +710,79 @@ test("buildRuntimeStatusCard uses compact label-dot-value rows and zh localizati
       "<b>会话</b> · 会话 Alpha",
       "<b>状态</b> · 运行中",
       "<b>进度</b> · 短进度",
-      "使用 /inspect 查看完整详情，使用 /interrupt 打断当前操作"
+      "使用 /inspect 查看完整详情，使用 /interrupt 打断当前操作，使用 /status 查看运行详情"
     ].join("\n")
   );
+});
+
+test("buildRuntimeStatusCard can omit the footer", () => {
+  const text = buildRuntimeStatusCard({
+    language: "zh",
+    sessionName: "会话 Alpha",
+    state: "运行中",
+    includeFooter: false
+  });
+
+  assert.equal(
+    text,
+    [
+      "<b>运行状态</b>",
+      "<b>会话</b> · 会话 Alpha",
+      "<b>状态</b> · 运行中"
+    ].join("\n")
+  );
+});
+
+test("buildRuntimeHubMessage separates focused and other sessions without an input-target row", () => {
+  const text = buildRuntimeHubMessage({
+    language: "zh",
+    windowIndex: 0,
+    totalWindows: 1,
+    totalSessions: 3,
+    sessions: [
+      {
+        sessionId: "session-1",
+        sessionName: "telegram-codex-bridge",
+        projectName: "telegram-codex-bridge",
+        state: "Running",
+        progressText: "验证已经有积极信号了。",
+        isFocused: true,
+        isActiveInputTarget: true
+      },
+      {
+        sessionId: "session-2",
+        sessionName: "algo-research",
+        projectName: "algo-research",
+        state: "Running",
+        progressText: "测试结果里有一个很有价值的现状信号。",
+        isFocused: false,
+        isActiveInputTarget: false
+      },
+      {
+        sessionId: "session-3",
+        sessionName: "app-server-test-client",
+        projectName: "app-server-test-client",
+        state: "Running",
+        progressText: "这个 crate 很聚焦。",
+        isFocused: false,
+        isActiveInputTarget: false
+      }
+    ],
+    planEntries: ["Collect protocol evidence (inProgress)"],
+    planExpanded: false,
+    agentEntries: [],
+    agentsExpanded: false,
+    isMainHub: true
+  });
+
+  assert.match(text, /<b>当前查看中的会话<\/b>/u);
+  assert.match(text, /\[查看中 \/ 当前输入\]/u);
+  assert.match(text, /1\. <b>telegram-codex-bridge<\/b> \/ telegram-codex-bridge · Running/u);
+  assert.match(text, /<b>其他运行中的会话<\/b>/u);
+  assert.match(text, /2\. <b>algo-research<\/b> \/ algo-research · Running/u);
+  assert.doesNotMatch(text, /输入目标/u);
+  assert.doesNotMatch(text, /<b>运行中的会话<\/b>/u);
+  assert.match(text, /使用 \/inspect 查看完整详情，使用 \/interrupt 打断当前操作，使用 \/status 查看运行详情/u);
 });
 
 test("buildRuntimeStatusCard puts long progress on a second line", () => {

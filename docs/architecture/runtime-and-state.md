@@ -51,18 +51,19 @@ The bridge must not mirror the raw runtime notification stream into Telegram.
 It should:
 - listen to the mixed runtime notification stream
 - reduce that stream into compact user-facing runtime surfaces
-- keep one status card per running Telegram session turn
-- keep only `Session`, `State`, and `Progress` as fixed runtime-card rows
+- keep one bridge-owned runtime hub per visible hub window instead of rendering a second detailed status block inside the hub
+- keep the hub focused on session navigation: show the focused session first, show its progress once, and separate the remaining running sessions underneath
+- move richer runtime rows such as model, directory, token usage, and plan mode out of the hub and into Telegram `/status`
 - render any operator-selected optional runtime fields as one row per field instead of a single pipe-delimited summary line
-- expose current plan state through a collapsed button on the status card rather than a separate plan card
-- project command activity into the status card rather than creating per-command messages
-- surface command activity on the status card only through the `Progress` section when a visible progress unit exists
-- keep the status-card `State` label aligned with reduced app-server runtime state such as active, blocked, and terminal turn outcomes
-- render status-card labels and progress content with Telegram-safe HTML rather than raw Markdown markers
+- expose current plan state through a collapsed button on the focused runtime surface rather than a separate plan card
+- project command activity into the runtime surface rather than creating per-command messages
+- surface command activity only through the visible progress text when a complete progress unit exists
+- keep the visible running-state label aligned with reduced app-server runtime state such as active, blocked, and terminal turn outcomes
+- render runtime-surface labels and progress content with Telegram-safe HTML rather than raw Markdown markers
 - create separate error cards when runtime failures surface
 - keep reasoning deltas and raw token fragments out of the normal Telegram chat flow
 - treat completed `agentMessage` items with `phase = commentary` as the authoritative commentary source
-- keep commentary-driven `Progress` separate from the reduced runtime `State` so phase narration does not replace the running or blocked indicator
+- keep commentary-driven progress separate from the reduced runtime state so phase narration does not replace the running or blocked indicator
 - use the same commentary-first rule for expanded subagent rows, but let blocker text override stale commentary while the subagent is waiting on approval or user input
 - resolve expanded subagent labels from protocol thread identity when available, preferring `agentNickname`, then thread title, then a local fallback label, and bound the rendered label length before building the Telegram card
 - keep raw `item/agentMessage/delta` traffic out of the normal Telegram chat flow

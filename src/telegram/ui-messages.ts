@@ -250,7 +250,8 @@ export function buildReasoningEffortPickerMessage(options: {
 
 export function buildStatusText(
   snapshot: ReadinessSnapshot,
-  activeSession: SessionRow | null
+  activeSession: SessionRow | null,
+  runtimeStatusText?: string | null
 ): string {
   const issueText = snapshot.details.issues.length === 0 ? "无" : snapshot.details.issues.join("；");
   const activeSessionText = activeSession
@@ -265,7 +266,7 @@ export function buildStatusText(
         .join(" / ")
     : "无";
 
-  return [
+  const lines = [
     formatHtmlHeading("服务状态"),
     formatHtmlField("桥接状态：", snapshot.state),
     formatHtmlField("Telegram 连通：", snapshot.details.telegramTokenValid ? "正常" : "异常"),
@@ -276,7 +277,13 @@ export function buildStatusText(
     formatHtmlField("当前会话：", activeSessionText),
     formatHtmlField("最近检查：", snapshot.checkedAt),
     formatHtmlField("问题：", issueText)
-  ].join("\n");
+  ];
+
+  if (runtimeStatusText) {
+    lines.push("", runtimeStatusText);
+  }
+
+  return lines.join("\n");
 }
 
 export function buildWhereText(session: SessionRow | null): string {

@@ -979,10 +979,10 @@ test("runtime cards keep command activity on the status message and final answer
     assert.equal(sent.filter((entry) => entry.text.startsWith("Command")).length, 0);
 
     const statusTexts = getMessageTexts(sent, edited, 100);
-    assert.ok(statusTexts.some((text) => /<b>状态<\/b> · Starting/u.test(text)));
-    assert.ok(statusTexts.some((text) => /<b>状态<\/b> · Running/u.test(text)));
-    assert.ok(statusTexts.some((text) => /<b>状态<\/b> · Completed/u.test(text)));
-    assert.ok(statusTexts.some((text) => /<b>进度<\/b> · pnpm test -&gt; 26\/26 tests passed/u.test(text)));
+    assert.ok(statusTexts.some((text) => /· Starting/u.test(text)));
+    assert.ok(statusTexts.some((text) => /· Running/u.test(text)));
+    assert.ok(statusTexts.some((text) => /· Completed/u.test(text)));
+    assert.ok(statusTexts.some((text) => /pnpm test -&gt; 26\/26 tests passed/u.test(text)));
     assert.equal(statusTexts.some((text) => /Command: /u.test(text)), false);
     assert.equal(statusTexts.some((text) => /Output: /u.test(text)), false);
     assert.equal(statusTexts.some((text) => /Collect protocol evidence/u.test(text)), false);
@@ -1189,7 +1189,7 @@ test("completed turns fall back to thread history when task_complete is missing"
     );
     assert.equal(sent.filter((entry) => isRuntimeStatusText(entry.text)).length, 1);
     assert.ok(sent.some((entry) => entry.text.includes("Recovered from thread history.") && entry.parseMode === "HTML"));
-    assert.ok(edited.some((entry) => /<b>状态<\/b> · Completed/u.test(entry.text)));
+    assert.ok(edited.some((entry) => /· Completed/u.test(entry.text)));
     assert.equal(store.getSessionById(session.sessionId)?.status, "idle");
     assert.equal((service as any).activeTurn, null);
   } finally {
@@ -1537,7 +1537,7 @@ test("runtime card edit failures retry the same message instead of sending a rep
 
     assert.equal(sent.length, 2);
     assert.ok(edited.length >= 1);
-    assert.match(activeTurn.statusCard.lastRenderedText, /<b>状态<\/b> · Running/u);
+    assert.match(activeTurn.statusCard.lastRenderedText, /· Running/u);
     (service as any).runtimeSurfaceController.clearRuntimeCardTimer(activeTurn.statusCard);
   } finally {
     await cleanup();
@@ -1571,7 +1571,7 @@ test("startRealTurn sends an initial runtime status card immediately", async () 
 
     assert.equal(sent.length, 1);
     assert.equal(isRuntimeStatusText(sent[0]?.text ?? ""), true);
-    assert.match(sent[0]?.text ?? "", /<b>状态<\/b> · Starting/u);
+    assert.match(sent[0]?.text ?? "", /· Starting/u);
     assert.match(sent[0]?.text ?? "", /使用 \/inspect 查看完整详情/u);
     assert.equal(sent[0]?.parseMode, "HTML");
     assert.deepEqual(sent[0]?.replyMarkup?.inline_keyboard, []);
@@ -1581,7 +1581,7 @@ test("startRealTurn sends an initial runtime status card immediately", async () 
   }
 });
 
-test("runtime status card renders optional fields on separate lines without a summary row", async () => {
+test("runtime hub omits optional runtime fields that now live under /status", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ chatId: string; messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
 
@@ -1614,11 +1614,9 @@ test("runtime status card renders optional fields on separate lines without a su
     });
 
     assert.equal(sent.length, 1);
-    assert.match(sent[0]?.text ?? "", /<b>会话<\/b> · Session Alpha/u);
-    assert.doesNotMatch(sent[0]?.text ?? "", /<b>Project:<\/b>/u);
-    assert.doesNotMatch(sent[0]?.text ?? "", /<b>概览:<\/b>/u);
-    assert.match(sent[0]?.text ?? "", /<b>Model Reasoning<\/b> · gpt-5 \+ 默认/u);
-    assert.match(sent[0]?.text ?? "", /<b>Plan Mode<\/b> · on/u);
+    assert.match(sent[0]?.text ?? "", /1\. <b>Session Alpha<\/b> \/ Project One · Starting/u);
+    assert.doesNotMatch(sent[0]?.text ?? "", /<b>Model Reasoning<\/b>/u);
+    assert.doesNotMatch(sent[0]?.text ?? "", /<b>Plan Mode<\/b>/u);
     assert.doesNotMatch(sent[0]?.text ?? "", /\|/u);
   } finally {
     await cleanup();
@@ -1673,7 +1671,7 @@ test("status card refreshes when tool progress changes without commentary", asyn
       });
     });
 
-    assert.match(edited.at(-1)?.text ?? "", /<b>进度<\/b> · Searching docs/u);
+    assert.match(edited.at(-1)?.text ?? "", /Searching docs/u);
   } finally {
     await cleanup();
   }
@@ -1736,7 +1734,7 @@ test("status card accumulates fragmented command output before rendering command
     });
 
     const statusTexts = getMessageTexts(sent, edited, 620);
-    assert.match(statusTexts.at(-1) ?? "", /<b>进度<\/b> · pnpm test -&gt; 26\/26 tests passed/u);
+    assert.match(statusTexts.at(-1) ?? "", /pnpm test -&gt; 26\/26 tests passed/u);
     assert.doesNotMatch(statusTexts.at(-1) ?? "", /Command: \$ pnpm test/u);
     assert.doesNotMatch(statusTexts.at(-1) ?? "", /Output: 26\/26 tests passed/u);
   } finally {
@@ -1891,7 +1889,7 @@ test("status card updates only when completed commentary arrives", async () => {
     });
 
     assert.equal(edited.length, 2);
-    assert.match(edited.at(-1)?.text ?? "", /<b>进度<\/b> · 先看项目骨架，再抓入口、配置和主要模块。/u);
+    assert.match(edited.at(-1)?.text ?? "", /先看项目骨架，再抓入口、配置和主要模块。/u);
     const inspect = (service as any).activeTurn.tracker.getInspectSnapshot();
     assert.equal(inspect.completedCommentary.at(-1), "先看项目骨架，再抓入口、配置和主要模块。");
   } finally {
@@ -1962,8 +1960,8 @@ test("status card keeps commentary progress visible when structured thread statu
     });
 
     const latest = edited.at(-1)?.text ?? "";
-    assert.match(latest, /<b>状态<\/b> · Blocked/u);
-    assert.match(latest, /<b>进度<\/b> · 先确认 Codex 当前运行阶段，再决定下一步。/u);
+    assert.match(latest, /· Blocked/u);
+    assert.match(latest, /先确认 Codex 当前运行阶段，再决定下一步。/u);
   } finally {
     await cleanup();
   }
@@ -3566,7 +3564,7 @@ test("runtime errors create a separate error card without polluting the status c
       ...sent.filter((entry) => isRuntimeStatusText(entry.text)).map((entry) => entry.text),
       ...edited.map((entry) => entry.text)
     ];
-    assert.ok(allStatusTexts.some((text) => /<b>状态<\/b> · Failed/u.test(text)));
+    assert.ok(allStatusTexts.some((text) => /· Failed/u.test(text)));
     assert.equal(allStatusTexts.some((text) => /tool crashed/u.test(text)), false);
 
     const errorTexts = getMessageTexts(sent, edited, 301);
@@ -3622,7 +3620,7 @@ test("runtime card rate limits keep the same message and retry later without rep
     assert.equal(sent.length, 1);
     assert.equal(edited.length, 1);
     assert.equal(activeTurn.statusCard.messageId, 700);
-    assert.match(activeTurn.statusCard.pendingText ?? "", /<b>状态<\/b> · Running/u);
+    assert.match(activeTurn.statusCard.pendingText ?? "", /· Running/u);
 
     await withMockedNow("2026-03-10T10:00:10.000Z", async () => {
       await (service as any).handleAppServerNotification("item/started", {
@@ -3641,7 +3639,7 @@ test("runtime card rate limits keep the same message and retry later without rep
 
     assert.equal(sent.length, 1);
     assert.equal(edited.length, 2);
-    assert.match(activeTurn.statusCard.lastRenderedText, /<b>状态<\/b> · Running/u);
+    assert.match(activeTurn.statusCard.lastRenderedText, /· Running/u);
     assert.doesNotMatch(activeTurn.statusCard.lastRenderedText, /Command: \$ pnpm test/u);
     (service as any).runtimeSurfaceController.clearRuntimeCardTimer(activeTurn.statusCard);
   } finally {
@@ -4333,6 +4331,98 @@ test("status command renders structured fields with Telegram HTML", async () => 
   }
 });
 
+test("status command appends live runtime details for the active running session", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ text: string; parseMode?: string }> = [];
+
+  try {
+    const session = authorizeChatWithSession(store, "chat-1");
+    store.writeReadinessSnapshot({
+      state: "ready",
+      checkedAt: "2026-03-10T10:00:00.000Z",
+      details: {
+        codexInstalled: true,
+        codexAuthenticated: true,
+        appServerAvailable: true,
+        telegramTokenValid: true,
+        authorizedUserBound: true,
+        issues: []
+      },
+      appServerPid: "1234"
+    });
+
+    (service as any).turnCoordinator.getActiveInspectActivity = (_sessionId: string) => ({
+      tracker: {
+        getInspectSnapshot: () => ({
+          ...createActivityStatus({
+            activeItemType: "commandExecution",
+            activeItemLabel: "pnpm test",
+            latestProgress: "Running focused runtime checks."
+          }),
+          recentTransitions: [],
+          recentCommandSummaries: [],
+          recentFileChangeSummaries: [],
+          recentMcpSummaries: [],
+          recentWebSearches: [],
+          recentHookSummaries: [],
+          recentNoticeSummaries: [],
+          planSnapshot: [],
+          proposedPlanSnapshot: [],
+          agentSnapshot: [],
+          completedCommentary: ["Running focused runtime checks."],
+          tokenUsage: {
+            totalInputTokens: 10,
+            totalOutputTokens: 5,
+            contextWindow: 100,
+            lastTokenUsage: 15
+          },
+          latestDiffSummary: null,
+          terminalInteractionSummary: null,
+          pendingInteractions: [],
+          answeredInteractions: []
+        })
+      },
+      statusCard: {
+        messageId: 0,
+        surface: "status",
+        key: "status:session-1",
+        parseMode: "HTML",
+        commands: [],
+        planExpanded: false,
+        agentsExpanded: false,
+        pendingText: null,
+        pendingReplyMarkup: null,
+        pendingReason: null,
+        lastRenderedText: "",
+        lastRenderedReplyMarkupKey: null,
+        lastRenderedAtMs: null,
+        rateLimitUntilAtMs: null,
+        timer: null
+      }
+    });
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        sent.push({ text, parseMode: options?.parseMode });
+        return createFakeTelegramMessage(453, text);
+      }
+    };
+
+    await (service as any).routeCommand("chat-1", "status", "");
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]?.parseMode, "HTML");
+    assert.match(sent[0]?.text ?? "", /^<b>服务状态<\/b>/u);
+    assert.match(sent[0]?.text ?? "", /<b>运行状态<\/b>/u);
+    assert.match(sent[0]?.text ?? "", /<b>状态<\/b> · Running/u);
+    assert.match(sent[0]?.text ?? "", /<b>进度<\/b> · Running focused runtime checks\./u);
+    assert.doesNotMatch(sent[0]?.text ?? "", /使用 \/inspect 查看完整详情/u);
+    assert.equal(store.getActiveSession("chat-1")?.sessionId, session.sessionId);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("structured project and session replies use Telegram HTML parse mode", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ text: string; parseMode?: string }> = [];
@@ -4989,7 +5079,7 @@ test("debug journal write failures do not break inspect or turn progress handlin
     assert.ok(sent.some((entry) => isRuntimeStatusText(entry.text)));
     assert.equal(sent.some((entry) => /^Command/u.test(entry.text)), false);
     assert.equal(edited.some((text) => /Command: \$ pnpm test/u.test(text)), false);
-    assert.ok(edited.some((text) => /<b>状态<\/b> · Running/u.test(text)));
+    assert.ok(edited.some((text) => /· Running/u.test(text)));
     assert.equal(inspectMessage?.parseMode, "HTML");
     assert.match(inspectMessage?.text ?? "", /<b>当前任务详情<\/b>/u);
     assert.match(inspectMessage?.text ?? "", /<b>最近命令<\/b>/u);

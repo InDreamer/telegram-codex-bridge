@@ -257,12 +257,14 @@ Readiness / preflight behavior:
 - if voice input is enabled but neither OpenAI transcription nor realtime audio transcription is usable, readiness is treated as `bridge_unhealthy`
 
 Structured activity visibility:
-- the Telegram chat keeps one bridge-owned status card per running turn
-- the bridge exposes current plan state through an inline expand/collapse button on the status card
+- the Telegram chat keeps one bridge-owned runtime hub per visible hub window
+- the hub keeps the focused session first, renders its progress once, and separates other running sessions underneath instead of appending a second detailed status block
+- the bridge exposes current plan state through an inline expand/collapse button on the focused runtime surface
 - the bridge keeps per-command detail out of the main chat flow and still creates separate error cards when needed
 - the bridge updates cards only when visible state changes or when a complete progress unit is available
-- the status-card `State` line is reduced from app-server runtime state, while `Progress` remains commentary-aware user-facing phase text
-- the status card renders bold labels plus a Markdown-aware `Progress` body through Telegram HTML
+- richer runtime rows such as model, directory, token usage, and plan mode move to Telegram `/status`
+- the visible running-state label is reduced from app-server runtime state, while progress text remains commentary-aware user-facing phase text
+- the runtime hub renders bold labels plus Markdown-aware progress text through Telegram HTML
 - raw agent-message deltas and reasoning deltas stay out of the default Telegram flow
 - completed `agentMessage` items with `phase = commentary` are the authoritative commentary source for user-visible progress
 - expanded subagent rows use protocol thread identity for display names, preferring agent nickname over thread title and falling back only when the runtime provides neither

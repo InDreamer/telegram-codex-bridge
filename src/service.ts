@@ -25,6 +25,7 @@ import {
   type PendingThreadArchiveOp
 } from "./service/thread-archive-reconciler.js";
 import {
+  formatVisibleRuntimeState,
   formatRuntimeBlockedReason,
   type ErrorCardState,
   isTelegramDeleteCommitted,
@@ -265,6 +266,7 @@ export class BridgeService {
       safeEditHtmlMessageText: async (chatId, messageId, text, replyMarkup) =>
         this.safeEditHtmlMessageText(chatId, messageId, text, replyMarkup),
       safeDeleteMessage: async (chatId, messageId) => this.safeDeleteMessageResult(chatId, messageId),
+      getActiveRuntimeStatusText: (chatId) => this.buildActiveRuntimeStatusText(chatId),
       reanchorRuntimeAfterBridgeReply: async (chatId, sessionId, reason) =>
         this.reanchorRuntimeAfterBridgeReply(chatId, reason, sessionId)
     });
@@ -2080,6 +2082,32 @@ export class BridgeService {
     return selectedFields
       .map((field) => this.formatRuntimeStatusLineField(field, session, inspect, progressText, blockedReason))
       .filter((value): value is string => Boolean(value));
+  }
+
+  private buildActiveRuntimeStatusText(chatId: string): string | null {
+    if (!this.store) {
+      return null;
+    }
+
+    const activeSession = this.store.getActiveSession(chatId);
+    if (!activeSession) {
+      return null;
+    }
+
+    const activity = this.turnCoordinator.getActiveInspectActivity(activeSession.sessionId);
+    if (!activity) {
+      return null;
+    }
+
+    const inspect = activity.tracker.getInspectSnapshot();
+    return buildRuntimeStatusCard({
+      ...this.getRuntimeCardContext(activeSession.sessionId),
+      language: this.getUiLanguage(),
+      optionalFieldLines: this.buildRuntimeStatusLine(activeSession.sessionId, inspect),
+      state: formatVisibleRuntimeState(inspect),
+      progressText: selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null),
+      includeFooter: false
+    });
   }
 
   private formatRuntimeStatusLineField(

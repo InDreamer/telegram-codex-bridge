@@ -22,10 +22,6 @@ import {
   type RuntimeCommandEntryView
 } from "../telegram/ui.js";
 import {
-  formatHtmlField,
-  formatHtmlHeading
-} from "../telegram/ui-shared.js";
-import {
   DEFAULT_RUNTIME_STATUS_FIELDS,
   type PendingInteractionSummary,
   type RuntimeStatusField,
@@ -786,9 +782,13 @@ export class RuntimeSurfaceController {
           : (sessionIds[0] ?? null);
     }
 
-    const changed = nextFocus !== hubState.focusedSessionId || sessionIds.join("\u0000") !== hubState.sessionIds.join("\u0000");
+    const orderedSessionIds = nextFocus
+      ? [nextFocus, ...sessionIds.filter((sessionId) => sessionId !== nextFocus)]
+      : [...sessionIds];
+    const changed = nextFocus !== hubState.focusedSessionId
+      || orderedSessionIds.join("\u0000") !== hubState.sessionIds.join("\u0000");
     hubState.focusedSessionId = nextFocus;
-    hubState.sessionIds = [...sessionIds];
+    hubState.sessionIds = orderedSessionIds;
     if (changed) {
       hubState.callbackVersion += 1;
     }
@@ -844,89 +844,26 @@ export class RuntimeSurfaceController {
 
   private buildFocusedRuntimeHubSection(
     activeTurn: RuntimeSurfaceActiveTurn | null,
-    visibleState: RuntimeHubVisibleState,
     options?: {
       compact?: boolean;
     }
   ): {
-    text: string;
     planEntries: string[];
     agentEntries: CollabAgentStateSnapshot[];
   } {
     const compact = options?.compact ?? false;
     if (!activeTurn) {
-      const context = visibleState.focusedSessionId
-        ? this.deps.getRuntimeCardContext(visibleState.focusedSessionId)
-        : { sessionName: null, projectName: null };
       return {
-        text: buildRuntimeStatusCard({
-          ...context,
-          language: this.deps.getUiLanguage(),
-          state: "Unavailable",
-          progressText: this.deps.getUiLanguage() === "en"
-            ? "There is no runtime detail to show right now."
-            : "当前没有可展示的运行详情。",
-          progressTextLimit: compact ? 120 : 240
-        }),
         planEntries: [],
         agentEntries: []
       };
     }
 
     const inspect = activeTurn.tracker.getInspectSnapshot();
-    const status = activeTurn.tracker.getStatus();
-    const progressText = status.activeItemType === "agentMessage" && !inspect.completedCommentary.at(-1)
-      ? null
-      : selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null);
     return {
-      text: buildRuntimeStatusCard({
-        ...this.deps.getRuntimeCardContext(activeTurn.sessionId),
-        language: this.deps.getUiLanguage(),
-        optionalFieldLines: compact ? [] : this.deps.buildRuntimeStatusLine(activeTurn.sessionId, inspect),
-        state: formatVisibleRuntimeState(inspect),
-        progressText,
-        progressTextLimit: compact ? 120 : 240,
-        planEntries: compact ? [] : inspect.planSnapshot,
-        planExpanded: compact ? false : visibleState.planExpanded,
-        agentEntries: compact ? [] : inspect.agentSnapshot,
-        agentsExpanded: compact ? false : visibleState.agentsExpanded,
-        expandedPlanEntryLimit: compact ? 3 : 10,
-        expandedPlanEntryTextLimit: compact ? 80 : 200,
-        expandedAgentLimit: compact ? 3 : 10,
-        expandedAgentProgressTextLimit: compact ? 80 : 160
-      }),
       planEntries: inspect.planSnapshot,
       agentEntries: inspect.agentSnapshot
     };
-  }
-
-  private buildRecoveryHubSection(sessionId: string | null): string {
-    const language = this.deps.getUiLanguage();
-    const session = sessionId ? this.deps.getStore()?.getSessionById(sessionId) ?? null : null;
-    if (!session) {
-      return buildRuntimeStatusCard({
-        language,
-        state: "Recovered",
-        progressText: language === "en"
-          ? "The bridge restarted. Pick a session and continue with a new task."
-          : "桥已重启。请选择一个会话并继续新的任务。"
-      });
-    }
-
-    return [
-      formatHtmlHeading(language === "en" ? "Recovered Session" : "恢复后会话"),
-      formatHtmlField(language === "en" ? "Session:" : "会话：", session.displayName),
-      formatHtmlField(language === "en" ? "Project:" : "项目：", session.projectAlias?.trim() || session.projectName),
-      formatHtmlField(
-        language === "en" ? "State:" : "状态：",
-        session.failureReason === "bridge_restart"
-          ? (language === "en" ? "Last turn stopped because the bridge restarted" : "上次任务因桥重启而停止")
-          : session.status
-      ),
-      language === "en"
-        ? "Send a new task to continue from the existing thread context."
-        : "发送新任务会基于已有线程上下文继续。"
-    ].join("\n");
   }
 
   private buildLiveHubRenderPayload(
@@ -965,7 +902,7 @@ export class RuntimeSurfaceController {
             sessionName: context.sessionName ?? "session",
             projectName: context.projectName ?? null,
             state: formatVisibleRuntimeState(inspect),
-            progressText: inspect.completedCommentary.at(-1) ?? null,
+            progressText: selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null),
             isFocused: sessionId === visibleState.focusedSessionId,
             isActiveInputTarget: sessionId === activeSessionId
           };
@@ -973,19 +910,19 @@ export class RuntimeSurfaceController {
         .filter((session): session is NonNullable<typeof session> => Boolean(session));
 
       const focusedTurn = visibleState.focusedSessionId ? (turnMap.get(visibleState.focusedSessionId) ?? null) : null;
-      const focused = this.buildFocusedRuntimeHubSection(focusedTurn, visibleState, {
+      const focused = this.buildFocusedRuntimeHubSection(focusedTurn, {
         compact: options?.compactFocused ?? false
       });
-      const activeContext = activeSessionId ? this.deps.getRuntimeCardContext(activeSessionId) : { sessionName: null };
       const text = buildRuntimeHubMessage({
         language: this.deps.getUiLanguage(),
         windowIndex: hubState.windowIndex,
         totalWindows,
         totalSessions: turns.length,
         sessions,
-        focusedSessionText: focused.text,
-        activeInputTargetName: activeContext.sessionName ?? null,
-        activeInputTargetInWindow: sessions.some((session) => session.sessionId === activeSessionId),
+        planEntries: focused.planEntries,
+        planExpanded: !options?.compactFocused && visibleState.planExpanded,
+        agentEntries: focused.agentEntries,
+        agentsExpanded: !options?.compactFocused && visibleState.agentsExpanded,
         terminalSummaries: hubState.windowIndex === 0 ? this.getOrCreateHubChatState(chatId).terminalSummaries : [],
         isMainHub: hubState.windowIndex === 0,
         sessionProgressTextLimit: options?.sessionProgressTextLimit ?? RUNTIME_HUB_SESSION_PROGRESS_TEXT_LIMIT
@@ -1069,21 +1006,15 @@ export class RuntimeSurfaceController {
         isActiveInputTarget: session.sessionId === (store?.getActiveSession(chatId)?.sessionId ?? null)
       }));
 
-    const activeContext = store?.getActiveSession(chatId)
-      ? this.deps.getRuntimeCardContext(store.getActiveSession(chatId)?.sessionId ?? "")
-      : { sessionName: null };
-    const text = buildRuntimeHubMessage({
-      language: this.deps.getUiLanguage(),
-      windowIndex: 0,
-      totalWindows: 1,
-      totalSessions: sessions.length,
-      sessions,
-      focusedSessionText: this.buildRecoveryHubSection(visibleState.focusedSessionId),
-      activeInputTargetName: activeContext.sessionName ?? null,
-      activeInputTargetInWindow: sessions.some((session) => session.isActiveInputTarget),
-      terminalSummaries: [],
-      isMainHub: true
-    });
+      const text = buildRuntimeHubMessage({
+        language: this.deps.getUiLanguage(),
+        windowIndex: 0,
+        totalWindows: 1,
+        totalSessions: sessions.length,
+        sessions,
+        terminalSummaries: [],
+        isMainHub: true
+      });
 
     return {
       text,

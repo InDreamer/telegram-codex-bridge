@@ -110,6 +110,7 @@ export function buildRuntimeStatusCard(
     expandedPlanEntryTextLimit?: number;
     expandedAgentLimit?: number;
     expandedAgentProgressTextLimit?: number;
+    includeFooter?: boolean;
   }
 ): string {
   const language = options.language ?? "zh";
@@ -137,39 +138,25 @@ export function buildRuntimeStatusCard(
     }
   }
 
-  if (options.planExpanded && options.planEntries && options.planEntries.length > 0) {
-    lines.push("", `<b>${language === "en" ? "Plan:" : "计划清单:"}</b>`);
+  appendExpandedPlanSection(lines, {
+    language,
+    entries: options.planEntries,
+    expanded: options.planExpanded,
+    entryLimit: expandedPlanEntryLimit,
+    entryTextLimit: expandedPlanEntryTextLimit
+  });
 
-    for (const [index, entry] of options.planEntries.slice(0, expandedPlanEntryLimit).entries()) {
-      lines.push(`${index + 1}. ${renderInlineMarkdown(truncateText(entry, expandedPlanEntryTextLimit))}`);
-    }
+  appendExpandedAgentSection(lines, {
+    language,
+    entries: options.agentEntries,
+    expanded: options.agentsExpanded,
+    entryLimit: expandedAgentLimit,
+    entryProgressTextLimit: expandedAgentProgressTextLimit
+  });
 
-    if (options.planEntries.length > expandedPlanEntryLimit) {
-      lines.push(language === "en"
-        ? `... ${options.planEntries.length - expandedPlanEntryLimit} more steps`
-        : `... 还有 ${options.planEntries.length - expandedPlanEntryLimit} 个步骤`);
-    }
+  if (options.includeFooter ?? true) {
+    lines.push(buildRuntimeSurfaceFooter(language));
   }
-
-  if (options.agentsExpanded && options.agentEntries && options.agentEntries.length > 0) {
-    lines.push("", `<b>${language === "en" ? "Agents:" : "Agent:"}</b>`);
-
-    for (const [index, entry] of options.agentEntries.slice(0, expandedAgentLimit).entries()) {
-      lines.push(renderAgentRuntimeLine(entry, index + 1, expandedAgentProgressTextLimit));
-    }
-
-    if (options.agentEntries.length > expandedAgentLimit) {
-      lines.push(language === "en"
-        ? `... ${options.agentEntries.length - expandedAgentLimit} more agents`
-        : `... 还有 ${options.agentEntries.length - expandedAgentLimit} 个 Agent`);
-    }
-  }
-
-  lines.push(
-    language === "en"
-      ? "Use /inspect for full details. Use /interrupt to stop the current turn."
-      : "使用 /inspect 查看完整详情，使用 /interrupt 打断当前操作"
-  );
   return lines.join("\n");
 }
 
@@ -228,15 +215,18 @@ export function buildRuntimeHubMessage(options: {
   totalWindows: number;
   totalSessions: number;
   sessions: RuntimeHubSessionView[];
-  focusedSessionText: string;
-  activeInputTargetName?: string | null;
-  activeInputTargetInWindow: boolean;
+  planEntries?: string[];
+  planExpanded?: boolean;
+  agentEntries?: CollabAgentStateSnapshot[];
+  agentsExpanded?: boolean;
   terminalSummaries?: RuntimeHubTerminalSummaryView[];
   isMainHub: boolean;
   sessionProgressTextLimit?: number;
 }): string {
   const language = options.language ?? "zh";
   const sessionProgressTextLimit = options.sessionProgressTextLimit ?? 120;
+  const focusedSession = options.sessions.find((session) => session.isFocused) ?? options.sessions[0] ?? null;
+  const otherSessions = options.sessions.filter((session) => session.sessionId !== focusedSession?.sessionId);
   const lines: string[] = [
     formatHtmlHeading(language === "en" ? "Runtime Status" : "运行状态"),
     formatHtmlField(
@@ -247,33 +237,39 @@ export function buildRuntimeHubMessage(options: {
     )
   ];
 
-  if (options.activeInputTargetName) {
-    const suffix = options.activeInputTargetInWindow
-      ? ""
-      : language === "en"
-        ? " (outside this hub)"
-        : "（不在当前 Hub）";
-    lines.push(formatHtmlField(
-      language === "en" ? "Input target:" : "输入目标：",
-      `${options.activeInputTargetName}${suffix}`
-    ));
+  if (focusedSession) {
+    lines.push("", `<b>${language === "en" ? "Focused session" : "当前查看中的会话"}</b>`);
+    pushRuntimeHubSession(lines, focusedSession, 1, {
+      language,
+      progressTextLimit: sessionProgressTextLimit,
+      emphasizeMarkers: true
+    });
+
+    appendExpandedPlanSection(lines, {
+      language,
+      entries: options.planEntries,
+      expanded: options.planExpanded,
+      entryLimit: 6,
+      entryTextLimit: 120
+    });
+
+    appendExpandedAgentSection(lines, {
+      language,
+      entries: options.agentEntries,
+      expanded: options.agentsExpanded,
+      entryLimit: 6,
+      entryProgressTextLimit: 100
+    });
   }
 
-  lines.push("", `<b>${language === "en" ? "Running sessions" : "运行中的会话"}</b>`);
-
-  for (const [index, session] of options.sessions.entries()) {
-    const markers = [
-      session.isFocused ? (language === "en" ? "viewing" : "查看中") : null,
-      session.isActiveInputTarget ? (language === "en" ? "current input" : "当前输入") : null
-    ].filter((value): value is string => Boolean(value));
-    const markerText = markers.length > 0 ? ` [${markers.join(" / ")}]` : "";
-    const projectName = session.projectName?.trim() ? ` / ${escapeHtml(session.projectName.trim())}` : "";
-    lines.push(
-      `${index + 1}. <b>${escapeHtml(session.sessionName)}</b>${projectName}${markerText} · ${escapeHtml(session.state)}`
-    );
-
-    if (session.progressText && sessionProgressTextLimit > 0) {
-      lines.push(`   ${renderInlineMarkdown(truncateText(session.progressText, sessionProgressTextLimit))}`);
+  if (otherSessions.length > 0) {
+    lines.push("", `<b>${language === "en" ? "Other running sessions" : "其他运行中的会话"}</b>`);
+    for (const [index, session] of otherSessions.entries()) {
+      pushRuntimeHubSession(lines, session, index + 2, {
+        language,
+        progressTextLimit: sessionProgressTextLimit,
+        emphasizeMarkers: false
+      });
     }
   }
 
@@ -286,8 +282,98 @@ export function buildRuntimeHubMessage(options: {
     }
   }
 
-  lines.push("", options.focusedSessionText);
+  lines.push("", buildRuntimeSurfaceFooter(language));
   return lines.join("\n");
+}
+
+function appendExpandedPlanSection(
+  lines: string[],
+  options: {
+    language: UiLanguage;
+    entries: string[] | undefined;
+    expanded: boolean | undefined;
+    entryLimit: number;
+    entryTextLimit: number;
+  }
+): void {
+  if (!options.expanded || !options.entries || options.entries.length === 0) {
+    return;
+  }
+
+  lines.push("", `<b>${options.language === "en" ? "Plan:" : "计划清单:"}</b>`);
+
+  for (const [index, entry] of options.entries.slice(0, options.entryLimit).entries()) {
+    lines.push(`${index + 1}. ${renderInlineMarkdown(truncateText(entry, options.entryTextLimit))}`);
+  }
+
+  if (options.entries.length > options.entryLimit) {
+    lines.push(options.language === "en"
+      ? `... ${options.entries.length - options.entryLimit} more steps`
+      : `... 还有 ${options.entries.length - options.entryLimit} 个步骤`);
+  }
+}
+
+function appendExpandedAgentSection(
+  lines: string[],
+  options: {
+    language: UiLanguage;
+    entries: CollabAgentStateSnapshot[] | undefined;
+    expanded: boolean | undefined;
+    entryLimit: number;
+    entryProgressTextLimit: number;
+  }
+): void {
+  if (!options.expanded || !options.entries || options.entries.length === 0) {
+    return;
+  }
+
+  lines.push("", `<b>${options.language === "en" ? "Agents:" : "Agent:"}</b>`);
+
+  for (const [index, entry] of options.entries.slice(0, options.entryLimit).entries()) {
+    lines.push(renderAgentRuntimeLine(entry, index + 1, options.entryProgressTextLimit));
+  }
+
+  if (options.entries.length > options.entryLimit) {
+    lines.push(options.language === "en"
+      ? `... ${options.entries.length - options.entryLimit} more agents`
+      : `... 还有 ${options.entries.length - options.entryLimit} 个 Agent`);
+  }
+}
+
+function pushRuntimeHubSession(
+  lines: string[],
+  session: RuntimeHubSessionView,
+  index: number,
+  options: {
+    language: UiLanguage;
+    progressTextLimit: number;
+    emphasizeMarkers: boolean;
+  }
+): void {
+  const markers = [
+    session.isFocused ? (options.language === "en" ? "viewing" : "查看中") : null,
+    session.isActiveInputTarget ? (options.language === "en" ? "current input" : "当前输入") : null
+  ].filter((value): value is string => Boolean(value));
+
+  if (options.emphasizeMarkers && markers.length > 0) {
+    lines.push(`[${markers.join(" / ")}]`);
+  }
+
+  const markerText = !options.emphasizeMarkers && markers.length > 0 ? ` [${markers.join(" / ")}]` : "";
+  const projectName = session.projectName?.trim() ? ` / ${escapeHtml(session.projectName.trim())}` : "";
+  lines.push(
+    `${index}. <b>${escapeHtml(session.sessionName)}</b>${projectName}${markerText} · ${escapeHtml(session.state)}`
+  );
+
+  if (session.progressText && options.progressTextLimit > 0) {
+    lines.push(`   ${renderInlineMarkdown(truncateText(session.progressText, options.progressTextLimit))}`);
+  }
+}
+
+function buildRuntimeSurfaceFooter(language: UiLanguage): string {
+  return language === "en"
+    ? "Use /inspect for full details. Use /interrupt to stop the current turn. Use /status for runtime details."
+    : "使用 /inspect 查看完整详情，使用 /interrupt 打断当前操作，使用 /status 查看运行详情";
 }
 
 export function buildRuntimeHubReplyMarkup(options: {

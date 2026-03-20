@@ -491,6 +491,7 @@ Shows:
 - Telegram connectivity
 - Codex availability
 - active session summary
+- when the active session currently has a live turn, append that session's runtime detail block under the bridge-health summary
 
 ### `/runtime`
 
@@ -551,16 +552,16 @@ Edit versus new message:
 - send new messages for initial final answers, status views, and when a new runtime card first appears
 
 While a turn is running:
-- keep one bridge-owned status card in the chat
+- keep one bridge-owned runtime surface in the chat for each visible runtime hub window
 - current runtime-card titles are `Runtime Status` and `Error`
-- keep only `Session`, `State`, and `Progress` as fixed runtime-card rows
-- render any `/runtime`-selected optional fields as separate rows below those fixed fields
-- when plan state becomes available, expose it through a collapsed button on the status card
+- keep the runtime hub focused on session navigation: render the focused session first, render its progress once, and group the other running sessions underneath
+- keep richer runtime rows such as model, directory, token, and plan-mode fields out of the hub and available through `/status`
+- when plan state becomes available, expose it through a collapsed button on the focused runtime surface
 - the collapsed button shows the current plan step summary and expands inline on demand
-- project `commandExecution` items into the status card instead of sending separate command cards
-- keep the `State` line aligned with reduced Codex runtime state such as running, blocked, and terminal outcomes
-- status card command activity should appear only through the `Progress` section when a visible progress unit exists
-- render the `Progress` body on its own line using Telegram HTML from a safe inline Markdown subset
+- project `commandExecution` items into the runtime surface instead of sending separate command cards
+- keep the visible running-state label aligned with reduced Codex runtime state such as running, blocked, and terminal outcomes
+- command activity should appear only through the visible progress text when a complete progress unit exists
+- render progress text using Telegram HTML from a safe inline Markdown subset
 - keep `Progress` for commentary and other user-readable stage updates rather than using it as the only running-state signal
 - when subagents are expanded inline, show protocol-backed agent names whenever the runtime provides them instead of keeping the thread-id fallback label
 - when subagents are expanded inline, prefer completed commentary over command or tool chatter for the visible per-agent progress text

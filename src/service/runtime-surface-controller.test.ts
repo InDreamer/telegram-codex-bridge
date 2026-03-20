@@ -1201,16 +1201,17 @@ test("RuntimeSurfaceController reanchors and localizes the recovery hub after br
 
     const delivered = await controller.sendRecoveryHub("chat-1", [sessionOne.sessionId, sessionTwo.sessionId]);
     assert.equal(delivered, true);
-    assert.match(sentHtml[0]?.html ?? "", /恢复后会话/u);
+    assert.match(sentHtml[0]?.html ?? "", /当前查看中的会话/u);
+    assert.match(sentHtml[0]?.html ?? "", /Recovered/u);
 
     language = "en";
     store.setActiveSession("chat-1", sessionTwo.sessionId);
     await controller.reanchorRuntimeAfterBridgeReply(null, "chat-1", "language_changed");
 
     assert.equal(sentHtml.length, 2);
-    assert.match(sentHtml[1]?.html ?? "", /Recovered Session/u);
-    assert.match(sentHtml[1]?.html ?? "", /Input target:/u);
-    assert.match(sentHtml[1]?.html ?? "", /current input/u);
+    assert.match(sentHtml[1]?.html ?? "", /Focused session/u);
+    assert.match(sentHtml[1]?.html ?? "", /\[viewing \/ current input\]/u);
+    assert.doesNotMatch(sentHtml[1]?.html ?? "", /Input target:/u);
     assert.deepEqual(deletedMessages, [sentHtml[0]?.messageId ?? 0]);
   } finally {
     await cleanup();
@@ -1545,7 +1546,7 @@ test("RuntimeSurfaceController keeps the visible expanded hub actionable when co
   }
 });
 
-test("RuntimeSurfaceController marks hidden plan sections as collapsed in compact hub renders", async () => {
+test("RuntimeSurfaceController keeps expanded hub plan sections when the slimmer layout stays under the text limit", async () => {
   const activeTurns: unknown[] = [];
   let inspect = createInspectSnapshot({
     planSnapshot: ["Ship the small patch."]
@@ -1620,8 +1621,8 @@ test("RuntimeSurfaceController marks hidden plan sections as collapsed in compac
     const compactEdit = editCalls[editCountBeforeRefresh];
     assert.ok(compactEdit);
     assert.match(compactEdit?.html ?? "", /<b>运行状态<\/b>/u);
-    assert.equal(compactEdit?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "计划清单：1. xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…");
-    assert.match(compactEdit?.replyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data ?? "", /plan:expand/u);
+    assert.equal(compactEdit?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "收起计划清单");
+    assert.match(compactEdit?.replyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data ?? "", /plan:collapse/u);
 
     const runtimeHubStates = (controller as unknown as {
       runtimeHubStates: Map<string, {
@@ -1633,8 +1634,8 @@ test("RuntimeSurfaceController marks hidden plan sections as collapsed in compac
     }).runtimeHubStates;
     const hubState = runtimeHubStates.get("chat-1")?.liveHubs.get(0);
     assert.ok(hubState);
-    assert.equal(hubState?.planExpanded, false);
-    assert.equal(hubState?.visibleState.planExpanded, false);
+    assert.equal(hubState?.planExpanded, true);
+    assert.equal(hubState?.visibleState.planExpanded, true);
   } finally {
     await cleanup();
   }

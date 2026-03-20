@@ -101,6 +101,7 @@ interface SessionProjectCoordinatorDeps {
     replyMarkup?: TelegramInlineKeyboardMarkup
   ) => Promise<TelegramEditResult>;
   safeDeleteMessage: (chatId: string, messageId: number) => Promise<TelegramDeleteResult>;
+  getActiveRuntimeStatusText: (chatId: string) => string | null;
   reanchorRuntimeAfterBridgeReply: (chatId: string, sessionId: string, reason: string) => Promise<void>;
 }
 
@@ -389,7 +390,10 @@ export class SessionProjectCoordinator {
       return;
     }
 
-    await this.deps.safeSendHtmlMessage(chatId, buildStatusText(snapshot, activeSession));
+    await this.deps.safeSendHtmlMessage(
+      chatId,
+      buildStatusText(snapshot, activeSession, this.deps.getActiveRuntimeStatusText(chatId))
+    );
   }
 
   async sendWhere(chatId: string): Promise<void> {
