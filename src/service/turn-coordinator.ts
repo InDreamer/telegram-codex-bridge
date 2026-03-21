@@ -34,6 +34,7 @@ const MAX_RUNNING_SESSIONS_PER_CHAT = 10;
 
 interface ActiveTurnState extends InteractionBrokerActiveTurn {
   startedInPlanMode: boolean;
+  startedInReviewMode: boolean;
   terminalDeliveryPending: boolean;
   finalMessage: string | null;
   effectiveModel: string | null;
@@ -414,7 +415,10 @@ export class TurnCoordinator {
     threadId: string,
     turnId: string,
     turnStatus: string,
-    effectiveConfig?: EffectiveTurnConfig
+    effectiveConfig?: EffectiveTurnConfig,
+    options?: {
+      mode?: "default" | "review";
+    }
   ): Promise<void> {
     const store = this.deps.getStore();
     if (!store) {
@@ -435,6 +439,7 @@ export class TurnCoordinator {
       threadId,
       turnId,
       startedInPlanMode: session.planMode,
+      startedInReviewMode: options?.mode === "review",
       terminalDeliveryPending: false,
       finalMessage: null,
       effectiveModel: resolvedEffectiveConfig.model,
@@ -725,12 +730,25 @@ export class TurnCoordinator {
           const turnArtifacts = await extractTurnArtifactsFromHistory(
             appServer,
             activeTurn.threadId,
-            activeTurn.turnId
+            activeTurn.turnId,
+            {
+              allowReviewFallback: activeTurn.startedInReviewMode
+            }
           );
           if (!finalMessage) {
             finalMessage = turnArtifacts.finalMessage;
           }
           proposedPlan = turnArtifacts.proposedPlan;
+          if (turnArtifacts.reviewArtifactsPresent && (!turnArtifacts.requestedTurnFound || !turnArtifacts.finalMessage)) {
+            await this.deps.logger.info("review turn artifact recovery", {
+              sessionId: activeTurn.sessionId,
+              threadId: activeTurn.threadId,
+              activeTurnId: activeTurn.turnId,
+              historyContainsActiveTurnId: turnArtifacts.requestedTurnFound,
+              fallbackReviewTurnId: turnArtifacts.usedReviewFallback ? turnArtifacts.resolvedTurnId : null,
+              finalMessageSource: turnArtifacts.finalMessageSource
+            });
+          }
         } catch (error) {
           await this.deps.logger.warn("turn artifact recovery failed", {
             sessionId: activeTurn.sessionId,

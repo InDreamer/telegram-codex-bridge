@@ -272,6 +272,7 @@ export interface ThreadResumeResult {
     reasoningEffort?: ReasoningEffort | null;
     turns: Array<{
       id: string;
+      status?: string | null;
       items: Array<{
         type: string;
         text?: string;

@@ -110,6 +110,7 @@ async function createCoordinatorContext(options: {
     threadId: string;
     turnId: string;
     turnStatus: string;
+    mode: "default" | "review";
   }> = [];
   const clearedRecentActivity: string[] = [];
   const appServer = options.appServer ?? {};
@@ -122,8 +123,15 @@ async function createCoordinatorContext(options: {
     fetchAllMcpServerStatuses: async () =>
       options.fetchAllMcpServerStatuses ? await options.fetchAllMcpServerStatuses() : [],
     ensureSessionThread: async () => "thread-source",
-    beginActiveTurn: async (chatId, session, threadId, turnId, turnStatus) => {
-      beginActiveTurnCalls.push({ chatId, sessionId: session.sessionId, threadId, turnId, turnStatus });
+    beginActiveTurn: async (chatId, session, threadId, turnId, turnStatus, options) => {
+      beginActiveTurnCalls.push({
+        chatId,
+        sessionId: session.sessionId,
+        threadId,
+        turnId,
+        turnStatus,
+        mode: options?.mode ?? "default"
+      });
     },
     submitOrQueueRichInput: async (chatId, session, inputs, prompt, promptLabel) => {
       submittedInputs.push({
@@ -368,7 +376,8 @@ test("CodexCommandCoordinator starts review mode in a dedicated session when the
       sessionId: reviewSession!.sessionId,
       threadId: "thread-review-new",
       turnId: "turn-review",
-      turnStatus: "inProgress"
+      turnStatus: "inProgress",
+      mode: "review"
     }]);
   } finally {
     await cleanup();

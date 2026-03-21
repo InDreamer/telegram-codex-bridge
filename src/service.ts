@@ -413,8 +413,8 @@ export class BridgeService {
       fetchAllApps: async (threadId) => this.fetchAllApps(threadId),
       fetchAllMcpServerStatuses: async () => this.fetchAllMcpServerStatuses(),
       ensureSessionThread: async (session) => this.turnCoordinator.ensureSessionThread(session),
-      beginActiveTurn: async (chatId, session, threadId, turnId, turnStatus) =>
-        this.turnCoordinator.beginActiveTurn(chatId, session, threadId, turnId, turnStatus),
+      beginActiveTurn: async (chatId, session, threadId, turnId, turnStatus, options) =>
+        this.turnCoordinator.beginActiveTurn(chatId, session, threadId, turnId, turnStatus, undefined, options),
       submitOrQueueRichInput: async (chatId, session, inputs, prompt, promptLabel) =>
         this.richInputAdapter.submitOrQueueRichInput(chatId, session, inputs, prompt, promptLabel),
       getRunningTurnCapacity: (chatId) => this.turnCoordinator.getRunningTurnCapacity(chatId),

@@ -50,7 +50,10 @@ interface CodexCommandCoordinatorDeps {
     session: SessionRow,
     threadId: string,
     turnId: string,
-    turnStatus: string
+    turnStatus: string,
+    options?: {
+      mode?: "default" | "review";
+    }
   ) => Promise<void>;
   submitOrQueueRichInput: (
     chatId: string,
@@ -626,7 +629,9 @@ export class CodexCommandCoordinator {
       await this.deps.safeSendMessage(chatId, `已创建审查会话：${reviewSession.displayName}`);
     }
 
-    await this.deps.beginActiveTurn(chatId, reviewSession, result.reviewThreadId, result.turn.id, result.turn.status);
+    await this.deps.beginActiveTurn(chatId, reviewSession, result.reviewThreadId, result.turn.id, result.turn.status, {
+      mode: "review"
+    });
   }
 
   async handleFork(chatId: string, args: string): Promise<void> {
