@@ -446,6 +446,39 @@ test("TurnCoordinator completes a normal turn and delivers the recovered final a
   }
 });
 
+test("TurnCoordinator completes with the fallback terminal message when thread history recovery fails", async () => {
+  const { coordinator, store, sentHtmlMessages, finalizedHandoffs, cleanup } = await createCoordinatorContext({
+    appServer: {
+      resumeThread: async () => {
+        throw new Error("app-server request timed out: thread/resume");
+      }
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      displayName: "Session Fallback",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.beginActiveTurn("chat-1", session, "thread-fallback-final", "turn-fallback-final", "inProgress");
+    await coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-fallback-final",
+      turnId: "turn-fallback-final",
+      status: "completed"
+    });
+
+    assert.equal(coordinator.getActiveTurn(), null);
+    assert.equal(store.getSessionById(session.sessionId)?.status, "idle");
+    assert.match(sentHtmlMessages[0]?.html ?? "", /没有可返回的最终答复/u);
+    assert.deepEqual(finalizedHandoffs, [{ chatId: "chat-1", sessionId: session.sessionId }]);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("TurnCoordinator completes plan-mode turns by sending a plan result with implementation action markup", async () => {
   const { coordinator, store, sentHtmlMessages, reanchorReasons, finalizedHandoffs, cleanup } = await createCoordinatorContext({
     appServer: {
@@ -585,9 +618,7 @@ test("TurnCoordinator keeps the final runtime surface until a deferred terminal 
       status: "completed"
     });
 
-    const heldTurn = coordinator.getActiveTurn();
-    assert.ok(heldTurn);
-    assert.equal(heldTurn?.terminalDeliveryPending, true);
+    assert.equal(coordinator.getActiveTurn(), null);
     assert.equal(store.listFinalAnswerViews("chat-1")[0]?.deliveryState, "pending");
     assert.equal(store.countRuntimeNotices(), 1);
     assert.deepEqual(finalizedHandoffs, []);
@@ -595,6 +626,63 @@ test("TurnCoordinator keeps the final runtime surface until a deferred terminal 
     await coordinator.handleDeferredTerminalNoticeVisible("chat-1", session.sessionId, "turn-pending-final");
     assert.equal(coordinator.getActiveTurn(), null);
     assert.deepEqual(finalizedHandoffs, [{ chatId: "chat-1", sessionId: session.sessionId }]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator ignores queued late notifications after a turn reaches terminal handoff", async () => {
+  const syncReasons: string[] = [];
+  const { coordinator, store, cleanup } = await createCoordinatorContext({
+    appServer: {
+      resumeThread: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return {
+          thread: {
+            id: "thread-late",
+            turns: [{
+              id: "turn-late",
+              items: [{
+                type: "agentMessage",
+                phase: "final_answer",
+                text: "Recovered final answer"
+              }]
+            }]
+          }
+        };
+      }
+    }
+  });
+
+  const originalSyncRuntimeCards = (coordinator as any).deps.syncRuntimeCards;
+  (coordinator as any).deps.syncRuntimeCards = async (...args: unknown[]) => {
+    syncReasons.push((args[4] as { reason: string }).reason);
+    await originalSyncRuntimeCards(...args);
+  };
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      displayName: "Session Late",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.beginActiveTurn("chat-1", session, "thread-late", "turn-late", "inProgress");
+    const completed = coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-late",
+      turnId: "turn-late",
+      status: "completed"
+    });
+    const late = coordinator.handleAppServerNotification("thread/status/changed", {
+      threadId: "thread-late",
+      status: "active"
+    });
+
+    await Promise.all([completed, late]);
+
+    assert.deepEqual(syncReasons, ["turn_initialized", "turn_completed"]);
+    assert.equal(coordinator.getActiveTurn(), null);
   } finally {
     await cleanup();
   }

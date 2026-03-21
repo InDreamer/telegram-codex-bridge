@@ -1773,15 +1773,40 @@ export class BridgeService {
     }
 
     this.appServer.onNotification((notification) => {
-      void this.handleAppServerNotification(notification.method, notification.params);
+      void this.handleAppServerNotification(notification.method, notification.params).catch((error) => {
+        void this.logAppServerHandlerFailure("notification", {
+          method: notification.method
+        }, error);
+      });
     });
 
     this.appServer.onServerRequest((request) => {
-      void this.handleAppServerServerRequest(request);
+      void this.handleAppServerServerRequest(request).catch((error) => {
+        void this.logAppServerHandlerFailure("server_request", {
+          method: request.method,
+          id: `${request.id}`
+        }, error);
+      });
     });
 
     this.appServer.onExit((error) => {
-      void this.handleAppServerExit(error);
+      void this.handleAppServerExit(error).catch((restartError) => {
+        void this.logAppServerHandlerFailure("exit", {
+          error: `${error}`
+        }, restartError);
+      });
+    });
+  }
+
+  private async logAppServerHandlerFailure(
+    kind: "notification" | "server_request" | "exit",
+    meta: Record<string, unknown>,
+    error: unknown
+  ): Promise<void> {
+    await this.logger.error("app-server handler failed", {
+      kind,
+      ...meta,
+      error: `${error}`
     });
   }
 

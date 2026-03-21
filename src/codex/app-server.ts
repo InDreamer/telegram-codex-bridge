@@ -45,6 +45,13 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
 }
 
+interface RequestOptions {
+  timeoutMs?: number;
+  terminateOnTimeout?: boolean;
+}
+
+const THREAD_HISTORY_REQUEST_TIMEOUT_MS = 15_000;
+
 interface ThreadStartParams {
   cwd: string;
   approvalPolicy: "never";
@@ -491,9 +498,12 @@ export class CodexAppServerClient {
     return await this.request<ThreadStartResult>("thread/start", buildThreadStartParams(options));
   }
 
-  async resumeThread(threadId: string): Promise<ThreadResumeResult> {
+  async resumeThread(threadId: string, options?: RequestOptions): Promise<ThreadResumeResult> {
     return await this.request<ThreadResumeResult>("thread/resume", {
       threadId
+    }, {
+      timeoutMs: options?.timeoutMs ?? THREAD_HISTORY_REQUEST_TIMEOUT_MS,
+      terminateOnTimeout: options?.terminateOnTimeout ?? true
     });
   }
 
@@ -532,10 +542,13 @@ export class CodexAppServerClient {
     return await this.request<ThreadListResult>("thread/list", params);
   }
 
-  async readThread(threadId: string, includeTurns = false): Promise<ThreadReadResult> {
+  async readThread(threadId: string, includeTurns = false, options?: RequestOptions): Promise<ThreadReadResult> {
     return await this.request<ThreadReadResult>("thread/read", {
       threadId,
       includeTurns
+    }, {
+      timeoutMs: options?.timeoutMs ?? THREAD_HISTORY_REQUEST_TIMEOUT_MS,
+      terminateOnTimeout: options?.terminateOnTimeout ?? true
     });
   }
 
@@ -769,7 +782,7 @@ export class CodexAppServerClient {
     await this.request("turn/steer", options);
   }
 
-  async request<T>(method: string, params: unknown): Promise<T> {
+  async request<T>(method: string, params: unknown, options?: RequestOptions): Promise<T> {
     if (!this.child) {
       throw new Error("app-server child is not running");
     }
@@ -782,10 +795,20 @@ export class CodexAppServerClient {
     });
 
     return await new Promise<T>((resolve, reject) => {
+      const timeoutMs = options?.timeoutMs ?? this.startupTimeoutMs;
       const timer = setTimeout(() => {
+        const pending = this.pending.get(requestId);
+        if (!pending) {
+          return;
+        }
+
         this.pending.delete(requestId);
-        reject(new Error(`app-server request timed out: ${method}`));
-      }, this.startupTimeoutMs);
+        const timeoutError = new Error(`app-server request timed out: ${method}`);
+        reject(timeoutError);
+        if (options?.terminateOnTimeout ?? true) {
+          this.terminateUnresponsiveChild(timeoutError);
+        }
+      }, timeoutMs);
 
       this.pending.set(requestId, {
         resolve: (value) => resolve(value as T),
@@ -850,6 +873,35 @@ export class CodexAppServerClient {
     this.initialized = false;
     this.stderrStream?.end();
     this.stderrStream = null;
+  }
+
+  private terminateUnresponsiveChild(error: Error): void {
+    if (!this.child) {
+      return;
+    }
+
+    const child = this.child;
+    this.child = null;
+    this.initialized = false;
+    void this.logger.warn("terminating unresponsive app-server child", {
+      error: `${error}`,
+      pid: child.pid ?? null
+    });
+
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      return;
+    }
+
+    const killTimer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // Ignore races where the child exits before the hard kill fires.
+      }
+    }, 250);
+    killTimer.unref?.();
   }
 
   onNotification(handler: NotificationHandler): () => void {

@@ -6373,6 +6373,52 @@ test("app-server exit fails unresolved interactions and clears pending text mode
   }
 });
 
+test("app-server notification listeners catch async failures instead of leaking rejections", async () => {
+  const { service, cleanup } = await createServiceContext();
+  const { logger, error } = createCapturingLogger();
+  let notificationHandler: ((notification: { method: string; params?: unknown }) => void) | null = null;
+
+  try {
+    (service as any).logger = logger;
+    (service as any).turnCoordinator = {
+      handleAppServerNotification: async () => {
+        throw new Error("notification boom");
+      }
+    };
+    (service as any).appServer = {
+      onNotification: (handler: (notification: { method: string; params?: unknown }) => void) => {
+        notificationHandler = handler;
+        return () => {};
+      },
+      onServerRequest: () => () => {},
+      onExit: () => () => {}
+    };
+
+    (service as any).attachAppServerListeners();
+    if (!notificationHandler) {
+      throw new Error("expected notification handler");
+    }
+    const handler = notificationHandler as (notification: { method: string; params?: unknown }) => void;
+
+    handler({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        status: "completed"
+      }
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(error.length, 1);
+    assert.equal(error[0]?.message, "app-server handler failed");
+    assert.match(`${JSON.stringify(error[0]?.meta ?? {})}`, /notification/u);
+    assert.match(`${JSON.stringify(error[0]?.meta ?? {})}`, /notification boom/u);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("MCP form interactions submit typed accept payloads", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ chatId: string; text: string; options?: any }> = [];

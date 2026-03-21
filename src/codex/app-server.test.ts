@@ -387,3 +387,30 @@ test("phase6 mcp account and background-terminal requests use the expected metho
     }
   ]);
 });
+
+test("CodexAppServerClient terminates the child when a request times out", async () => {
+  const client = new CodexAppServerClient("codex", "/tmp/app-server-timeout.log", testLogger, 5);
+  const killSignals: string[] = [];
+
+  (client as any).child = {
+    pid: 123,
+    stdin: {
+      write: (_payload: string, _encoding: string, callback?: (error?: Error | null) => void) => {
+        setImmediate(() => callback?.(null));
+      }
+    },
+    kill: (signal: string) => {
+      killSignals.push(signal);
+      return true;
+    }
+  };
+
+  await assert.rejects(
+    client.request("thread/resume", { threadId: "thread-timeout" }, { timeoutMs: 5 }),
+    /app-server request timed out: thread\/resume/u
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(killSignals, ["SIGTERM"]);
+  assert.equal(client.isRunning, false);
+});

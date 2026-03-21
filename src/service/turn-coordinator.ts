@@ -150,6 +150,9 @@ export class TurnCoordinator {
   private readonly recentActivityBySessionId = new Map<string, RecentActivityEntry>();
   private readonly activeTurnsBySessionId = new Map<string, ActiveTurnState>();
   private readonly activeTurnSessionIdsByThreadId = new Map<string, string>();
+  private readonly notificationQueuesByKey = new Map<string, Promise<void>>();
+  private readonly terminalTurnIdsByThreadId = new Map<string, string>();
+  private readonly pendingTerminalRuntimeHandoffsBySessionId = new Map<string, ActiveTurnState>();
 
   constructor(private readonly deps: TurnCoordinatorDeps) {}
 
@@ -418,6 +421,8 @@ export class TurnCoordinator {
       return;
     }
 
+    this.abandonPendingTerminalRuntimeHandoffs(chatId);
+
     const resolvedEffectiveConfig = effectiveConfig ?? {
       model: session.selectedModel ?? null,
       reasoningEffort: session.selectedReasoningEffort ?? null,
@@ -580,6 +585,40 @@ export class TurnCoordinator {
 
   async handleAppServerNotification(method: string, params: unknown): Promise<void> {
     const classified = classifyNotification(method, params);
+    const queueKey = this.getNotificationQueueKey(classified);
+    if (!queueKey) {
+      await this.handleAppServerNotificationNow(method, params, classified);
+      return;
+    }
+
+    const previous = this.notificationQueuesByKey.get(queueKey) ?? Promise.resolve();
+    let queued!: Promise<void>;
+    queued = previous
+      .catch(() => {})
+      .then(() => this.handleAppServerNotificationNow(method, params, classified))
+      .finally(() => {
+        if (this.notificationQueuesByKey.get(queueKey) === queued) {
+          this.notificationQueuesByKey.delete(queueKey);
+        }
+      });
+    this.notificationQueuesByKey.set(queueKey, queued);
+    await queued;
+  }
+
+  private async handleAppServerNotificationNow(
+    method: string,
+    params: unknown,
+    classified: ReturnType<typeof classifyNotification>
+  ): Promise<void> {
+    if (this.shouldIgnoreTerminalNotification(classified)) {
+      await this.deps.logger.info("ignored terminal turn notification", {
+        method,
+        classifiedKind: classified.kind,
+        threadId: classified.threadId ?? null,
+        turnId: classified.turnId ?? null
+      });
+      return;
+    }
 
     if (classified.kind === "server_request_resolved") {
       await this.deps.interactionBroker.handleServerRequestResolvedNotification(classified.threadId, classified.requestId);
@@ -670,38 +709,71 @@ export class TurnCoordinator {
         .filter((candidate) => candidate.chatId === activeTurn.chatId)
         .length === 1;
       activeTurn.terminalDeliveryPending = holdTerminalRuntimeSurface;
+      if (holdTerminalRuntimeSurface) {
+        this.pendingTerminalRuntimeHandoffsBySessionId.set(activeTurn.sessionId, activeTurn);
+      }
+
+      this.markTerminalTurn(activeTurn);
+      store.markSessionSuccessful(activeTurn.sessionId);
+      this.unregisterActiveTurn(activeTurn);
 
       let finalMessage = activeTurn.finalMessage;
       let proposedPlan: string | null = null;
       const appServer = this.deps.getAppServer();
-      if (appServer) {
-        const turnArtifacts = await extractTurnArtifactsFromHistory(
-          appServer,
-          activeTurn.threadId,
-          activeTurn.turnId
-        );
-        if (!finalMessage) {
-          finalMessage = turnArtifacts.finalMessage;
+      if (appServer && (!finalMessage || activeTurn.startedInPlanMode)) {
+        try {
+          const turnArtifacts = await extractTurnArtifactsFromHistory(
+            appServer,
+            activeTurn.threadId,
+            activeTurn.turnId
+          );
+          if (!finalMessage) {
+            finalMessage = turnArtifacts.finalMessage;
+          }
+          proposedPlan = turnArtifacts.proposedPlan;
+        } catch (error) {
+          await this.deps.logger.warn("turn artifact recovery failed", {
+            sessionId: activeTurn.sessionId,
+            threadId: activeTurn.threadId,
+            turnId: activeTurn.turnId,
+            error: `${error}`
+          });
         }
-        proposedPlan = turnArtifacts.proposedPlan;
       }
-      store.markSessionSuccessful(activeTurn.sessionId);
-      const delivery = activeTurn.startedInPlanMode && proposedPlan
-        ? await this.sendPlanResult(activeTurn, proposedPlan)
-        : await this.sendFinalAnswer(activeTurn, finalMessage);
+
+      let delivery: TerminalDeliveryResult;
+      try {
+        delivery = activeTurn.startedInPlanMode && proposedPlan
+          ? await this.sendPlanResult(activeTurn, proposedPlan)
+          : await this.sendFinalAnswer(activeTurn, finalMessage);
+      } catch (error) {
+        await this.deps.logger.error("terminal delivery failed", {
+          sessionId: activeTurn.sessionId,
+          threadId: activeTurn.threadId,
+          turnId: activeTurn.turnId,
+          error: `${error}`
+        });
+        delivery = {
+          answerId: `delivery-failed:${activeTurn.turnId}`,
+          kind: activeTurn.startedInPlanMode ? "plan_result" : "final_answer",
+          visible: false,
+          resultVisible: false,
+          deferredNoticeVisible: false
+        };
+      }
 
       if (holdTerminalRuntimeSurface && delivery.visible) {
-        await this.completeTerminalRuntimeHandoff(activeTurn);
+        await this.completePendingTerminalRuntimeHandoff(activeTurn);
         return;
       }
 
       if (!holdTerminalRuntimeSurface) {
-        this.unregisterActiveTurn(activeTurn);
         this.deps.disposeRuntimeCards(activeTurn);
       }
       return;
     }
 
+    this.markTerminalTurn(activeTurn);
     this.unregisterActiveTurn(activeTurn);
 
     if (classified.status === "interrupted") {
@@ -760,21 +832,27 @@ export class TurnCoordinator {
       return;
     }
 
-    const activeTurn = this.getActiveTurnBySessionId(sessionId);
-    if (!activeTurn || activeTurn.chatId !== chatId || activeTurn.turnId !== turnId || !activeTurn.terminalDeliveryPending) {
+    const pendingTurn = this.pendingTerminalRuntimeHandoffsBySessionId.get(sessionId);
+    if (!pendingTurn || pendingTurn.chatId !== chatId || pendingTurn.turnId !== turnId || !pendingTurn.terminalDeliveryPending) {
       return;
     }
 
-    await this.completeTerminalRuntimeHandoff(activeTurn);
+    await this.completePendingTerminalRuntimeHandoff(pendingTurn);
   }
 
-  private async completeTerminalRuntimeHandoff(activeTurn: ActiveTurnState): Promise<void> {
+  private async completePendingTerminalRuntimeHandoff(activeTurn: ActiveTurnState): Promise<void> {
     if (!activeTurn.terminalDeliveryPending) {
       return;
     }
 
     activeTurn.terminalDeliveryPending = false;
-    this.unregisterActiveTurn(activeTurn);
+    const pending = this.pendingTerminalRuntimeHandoffsBySessionId.get(activeTurn.sessionId);
+    if (pending !== activeTurn) {
+      this.deps.disposeRuntimeCards(activeTurn);
+      return;
+    }
+
+    this.pendingTerminalRuntimeHandoffsBySessionId.delete(activeTurn.sessionId);
     this.deps.disposeRuntimeCards(activeTurn);
     await this.deps.finalizeTerminalRuntimeHandoff(activeTurn.chatId, activeTurn.sessionId);
   }
@@ -1092,6 +1170,7 @@ export class TurnCoordinator {
       this.unregisterActiveTurn(previous);
     }
 
+    this.terminalTurnIdsByThreadId.delete(activeTurn.threadId);
     this.activeTurnsBySessionId.set(activeTurn.sessionId, activeTurn);
     this.activeTurnSessionIdsByThreadId.set(activeTurn.threadId, activeTurn.sessionId);
   }
@@ -1106,6 +1185,53 @@ export class TurnCoordinator {
       if (sessionId === activeTurn.sessionId) {
         this.activeTurnSessionIdsByThreadId.delete(threadId);
       }
+    }
+  }
+
+  private getNotificationQueueKey(classified: ReturnType<typeof classifyNotification>): string | null {
+    if (classified.threadId) {
+      return `thread:${classified.threadId}`;
+    }
+    if (classified.turnId) {
+      return `turn:${classified.turnId}`;
+    }
+    return null;
+  }
+
+  private shouldIgnoreTerminalNotification(classified: ReturnType<typeof classifyNotification>): boolean {
+    if (!classified.threadId) {
+      return false;
+    }
+
+    const terminalTurnId = this.terminalTurnIdsByThreadId.get(classified.threadId);
+    if (!terminalTurnId) {
+      return false;
+    }
+
+    if (this.activeTurnSessionIdsByThreadId.has(classified.threadId)) {
+      return false;
+    }
+
+    if (classified.turnId && classified.turnId !== terminalTurnId) {
+      return false;
+    }
+
+    return true;
+  }
+
+  private markTerminalTurn(activeTurn: ActiveTurnState): void {
+    this.terminalTurnIdsByThreadId.set(activeTurn.threadId, activeTurn.turnId);
+  }
+
+  private abandonPendingTerminalRuntimeHandoffs(chatId: string): void {
+    for (const [sessionId, pendingTurn] of this.pendingTerminalRuntimeHandoffsBySessionId.entries()) {
+      if (pendingTurn.chatId !== chatId) {
+        continue;
+      }
+
+      pendingTurn.terminalDeliveryPending = false;
+      this.pendingTerminalRuntimeHandoffsBySessionId.delete(sessionId);
+      this.deps.disposeRuntimeCards(pendingTurn);
     }
   }
 
@@ -1138,7 +1264,33 @@ export class TurnCoordinator {
   private findActiveTurnForNotification(
     classified: ReturnType<typeof classifyNotification>
   ): ActiveTurnState | null {
-    return this.findActiveTurnForInteraction(classified.threadId, classified.turnId);
+    if (classified.threadId || classified.turnId) {
+      if (classified.threadId) {
+        const byThread = this.getActiveTurnByThreadId(classified.threadId);
+        if (byThread) {
+          return byThread;
+        }
+      }
+
+      if (classified.turnId) {
+        for (const activeTurn of this.activeTurnsBySessionId.values()) {
+          if (activeTurn.turnId === classified.turnId) {
+            return activeTurn;
+          }
+        }
+      }
+
+      if (
+        (classified.kind === "thread_started" || classified.kind === "thread_name_updated")
+        && this.activeTurnsBySessionId.size === 1
+      ) {
+        return this.getActiveTurn();
+      }
+
+      return null;
+    }
+
+    return this.activeTurnsBySessionId.size === 1 ? this.getActiveTurn() : null;
   }
 
   private findActiveTurnForRequestParams(params: unknown): ActiveTurnState | null {
