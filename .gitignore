@@ -9,6 +9,7 @@ coverage
 .env
 .env.*
 .vscode
+.factory
 .worktrees
 artifacts/
 __pycache__/

@@ -158,6 +158,7 @@ Rules:
 - selecting a project always creates a new session
 - `/new` never resumes or switches to an old session
 - `/new` may be used even when another session is already running; the newly created session becomes the active foreground session
+- a newly created idle session does not appear in the runtime hub until it starts its first real running turn
 - `/new` always recreates the picker as a fresh bridge-owned message at the bottom of chat
 - the bridge keeps at most one valid project picker per chat; any older picker becomes stale
 
@@ -560,12 +561,16 @@ Edit versus new message:
 - send new messages for initial final answers, status views, and when a new runtime card first appears
 
 While a turn is running:
-- keep one bridge-owned runtime surface in the chat for each visible runtime hub window
+- keep one bridge-owned runtime surface in the chat for each visible runtime hub
 - current runtime-card titles are `Runtime Status` and `Error`
-- keep the runtime hub focused on session navigation: render the focused session first, render its progress once, and group the other running sessions underneath
+- each live runtime hub is a stable five-slot container; sessions join a slot only when they first become truly running and keep that slot after they finish
+- show at most one `当前查看中的会话` section on the hub that owns the active viewed session; hide that section entirely when the active session has not joined any hub yet
+- show `其他运行中的会话` and `最近结束的会话` from that hub's own slots only
+- keep completed hubs visible in chat and render their header as `Hub：x/y · 已完成`
+- use a fixed one-row slot selector with `1..5` for occupied slots and `·` for empty positions; ended slots remain selectable
 - keep richer runtime rows such as model, directory, token, and plan-mode fields out of the hub and available through `/status`
-- when plan state becomes available, expose it through a collapsed button on the focused runtime surface
-- the collapsed button shows the current plan step summary and expands inline on demand
+- when plan state becomes available, expose it through a collapsed button on the viewed runtime surface
+- the collapsed Chinese plan label is fixed `计划清单`, `收起计划清单`, and plan/agent controls share one row when both are present
 - project `commandExecution` items into the runtime surface instead of sending separate command cards
 - keep the visible running-state label aligned with reduced Codex runtime state such as running, blocked, and terminal outcomes
 - command activity should appear only through the visible progress text when a complete progress unit exists

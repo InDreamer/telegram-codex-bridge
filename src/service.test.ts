@@ -988,8 +988,8 @@ test("runtime cards keep command activity on the status message and final answer
     assert.equal(statusTexts.some((text) => /Collect protocol evidence/u.test(text)), false);
     assert.ok(
       [...sent, ...edited].some((entry) =>
-        entry.messageId === 100 &&
-        entry.replyMarkup?.inline_keyboard?.[0]?.[0]?.text === "计划清单：Wire inspect renderer"
+        entry.messageId === 100
+        && entry.replyMarkup?.inline_keyboard?.flat().some((button: { text: string }) => button.text === "计划清单")
       )
     );
 
@@ -1083,7 +1083,7 @@ test("status card removes command toggles and treats old command callbacks as ex
     assert.doesNotMatch(collapsed?.text ?? "", /Latest command/u);
     assert.doesNotMatch(collapsed?.text ?? "", /Command: \$ pnpm test/u);
     assert.doesNotMatch(collapsed?.text ?? "", /Earlier commands/u);
-    assert.deepEqual(collapsed?.replyMarkup?.inline_keyboard, []);
+    assert.deepEqual(collapsed?.replyMarkup?.inline_keyboard?.[0]?.map((button: { text: string }) => button.text), ["1", "·", "·", "·", "·"]);
 
     const editCountBeforeCallbacks = edited.length;
 
@@ -1574,7 +1574,7 @@ test("startRealTurn sends an initial runtime status card immediately", async () 
     assert.match(sent[0]?.text ?? "", /· Starting/u);
     assert.match(sent[0]?.text ?? "", /使用 \/inspect 查看完整详情/u);
     assert.equal(sent[0]?.parseMode, "HTML");
-    assert.deepEqual(sent[0]?.replyMarkup?.inline_keyboard, []);
+    assert.deepEqual(sent[0]?.replyMarkup?.inline_keyboard?.[0]?.map((button: { text: string }) => button.text), ["1", "·", "·", "·", "·"]);
     assert.equal((service as any).activeTurn.statusCard.messageId, 800);
   } finally {
     await cleanup();
@@ -2027,7 +2027,8 @@ test("status card expands the current plan inline and keeps only the latest plan
 
     const collapsed = edited.at(-1) ?? sent.at(-1);
     assert.equal(collapsed?.parseMode, "HTML");
-    assert.equal(collapsed?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "计划清单：Collect protocol evidence");
+    assert.deepEqual(collapsed?.replyMarkup?.inline_keyboard?.[0]?.map((button: { text: string }) => button.text), ["1", "·", "·", "·", "·"]);
+    assert.equal(collapsed?.replyMarkup?.inline_keyboard?.[1]?.[0]?.text, "计划清单");
     assert.doesNotMatch(collapsed?.text ?? "", /<b>当前计划<\/b>/u);
     assert.doesNotMatch(collapsed?.text ?? "", /<b>Current Plan:<\/b>/u);
 
@@ -2070,7 +2071,7 @@ test("status card expands the current plan inline and keeps only the latest plan
     assert.match(edited.at(-1)?.text ?? "", /1\. Collect protocol evidence \(pending\)/u);
     assert.match(edited.at(-1)?.text ?? "", /2\. Wire inspect renderer \(pending\)/u);
     assert.ok((edited.at(-1)?.text ?? "").indexOf("<b>进度</b>") < (edited.at(-1)?.text ?? "").indexOf("<b>计划清单:</b>"));
-    assert.equal(edited.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "收起计划清单");
+    assert.equal(edited.at(-1)?.replyMarkup?.inline_keyboard?.[1]?.[0]?.text, "收起计划清单");
 
     await withMockedNow("2026-03-10T10:00:11.000Z", async () => {
       await (service as any).handleAppServerNotification("turn/plan/updated", {
@@ -2103,7 +2104,7 @@ test("status card expands the current plan inline and keeps only the latest plan
 
     assert.equal(callbackAnswers.at(-1), undefined);
     assert.doesNotMatch(edited.at(-1)?.text ?? "", /<b>计划清单:<\/b>/u);
-    assert.equal(edited.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "计划清单：Wire inspect renderer");
+    assert.equal(edited.at(-1)?.replyMarkup?.inline_keyboard?.[1]?.[0]?.text, "计划清单");
   } finally {
     await cleanup();
   }
@@ -2179,7 +2180,7 @@ test("status card does not expose proposed-plan drafts through the checklist but
 
     const collapsed = edited.at(-1) ?? sent.at(-1);
     assert.equal(collapsed?.parseMode, "HTML");
-    assert.deepEqual(collapsed?.replyMarkup?.inline_keyboard, []);
+    assert.deepEqual(collapsed?.replyMarkup?.inline_keyboard?.[0]?.map((button: { text: string }) => button.text), ["1", "·", "·", "·", "·"]);
     assert.doesNotMatch(collapsed?.text ?? "", /Telegram 命令体验优化（轻量一周版）/u);
   } finally {
     await cleanup();
@@ -2677,7 +2678,7 @@ test("status card shows running subagents behind an agent button and expands the
     });
 
     const collapsed = edited.at(-1) ?? sent.at(-1);
-    assert.equal(collapsed?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "Agent：1 个运行中");
+    assert.equal(collapsed?.replyMarkup?.inline_keyboard?.[1]?.[0]?.text, "Agent：1 个运行中");
 
     await withMockedNow("2026-03-10T11:00:03.000Z", async () => {
       await (service as any).handleCallback({
@@ -2696,7 +2697,7 @@ test("status card shows running subagents behind an agent button and expands the
     assert.equal(callbackAnswers.at(-1), undefined);
     assert.match(edited.at(-1)?.text ?? "", /<b>Agent:<\/b>/u);
     assert.match(edited.at(-1)?.text ?? "", /Booting/u);
-    assert.equal(edited.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "收起 Agent");
+    assert.equal(edited.at(-1)?.replyMarkup?.inline_keyboard?.[1]?.[0]?.text, "收起 Agent");
 
     await withMockedNow("2026-03-10T11:00:05.000Z", async () => {
       await (service as any).handleAppServerNotification("thread/started", {
@@ -2817,7 +2818,7 @@ test("status card shows running subagents behind an agent button and expands the
 
     assert.equal(callbackAnswers.at(-1), undefined);
     assert.doesNotMatch(edited.at(-1)?.text ?? "", /<b>Agents:<\/b>/u);
-    assert.equal(edited.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "Agent：1 个运行中");
+    assert.equal(edited.at(-1)?.replyMarkup?.inline_keyboard?.[1]?.[0]?.text, "Agent：1 个运行中");
   } finally {
     await cleanup();
   }
@@ -2899,7 +2900,7 @@ test("status card replays cached subagent identity when the thread identity arri
       });
     });
 
-    assert.equal((edited.at(-1) ?? sent.at(-1))?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "Agent：1 个运行中");
+    assert.equal((edited.at(-1) ?? sent.at(-1))?.replyMarkup?.inline_keyboard?.[1]?.[0]?.text, "Agent：1 个运行中");
 
     await withMockedNow("2026-03-10T11:12:04.000Z", async () => {
       await (service as any).handleCallback({
@@ -3257,7 +3258,7 @@ test("status card ignores stale thread read identity after newer notification", 
 
     const activeTurn = (service as any).activeTurn;
     await (service as any).runtimeSurfaceController.flushRuntimeCardRender(activeTurn, activeTurn.statusCard);
-    assert.equal((edited.at(-1) ?? sent.at(-1))?.replyMarkup?.inline_keyboard?.[0]?.[0]?.text, "Agent：1 个运行中");
+    assert.equal((edited.at(-1) ?? sent.at(-1))?.replyMarkup?.inline_keyboard?.[1]?.[0]?.text, "Agent：1 个运行中");
 
     const inspect = activeTurn.tracker.getInspectSnapshot();
     assert.equal(inspect.agentSnapshot[0]?.label, "Noether");
@@ -4541,11 +4542,10 @@ test("use command shows a separate current input session when another session ke
 
     assert.equal(sent[1]?.parseMode, "HTML");
     assert.equal(sent[1]?.text, "<b>已切换到项目：</b> Project Idle");
-    assert.match(sent[2]?.text ?? "", /<b>当前输入会话<\/b>/u);
-    assert.match(sent[2]?.text ?? "", /\[当前输入\]\n1?\.?\s*<b>Project Idle<\/b> \/ Project Idle · 空闲/u);
-    assert.match(sent[2]?.text ?? "", /<b>当前查看中的运行会话<\/b>/u);
-    assert.match(sent[2]?.text ?? "", /\[查看中\]/u);
-    assert.doesNotMatch(sent[2]?.text ?? "", /\[查看中 \/ 当前输入\]/u);
+    assert.doesNotMatch(sent[2]?.text ?? "", /<b>当前输入会话<\/b>/u);
+    assert.doesNotMatch(sent[2]?.text ?? "", /<b>当前查看中的会话<\/b>/u);
+    assert.match(sent[2]?.text ?? "", /<b>其他运行中的会话<\/b>/u);
+    assert.match(sent[2]?.text ?? "", /1\. <b>Project One<\/b> \/ Project One · Running/u);
     assert.deepEqual(deleted, [initialStatusMessageId]);
     assert.equal(store.getActiveSession("chat-1")?.sessionId, idleSession.sessionId);
     assert.equal(store.getSessionById(runningSession.sessionId)?.status, "running");
@@ -5325,7 +5325,7 @@ test("runtime card flow writes dedicated per-surface trace logs with rendered co
     assert.match(statusLog, /"message":"state_transition"/u);
     assert.match(statusLog, /"message":"render_requested"/u);
     assert.match(statusLog, /Checking Telegram session flow rendering\./u);
-    assert.match(statusLog, /计划清单：Trace plan card/u);
+    assert.match(statusLog, /"text":"计划清单"/u);
     assert.match(statusLog, /Trace plan card \(inProgress\)/u);
     assert.match(statusLog, /"renderedText":"<b>(Runtime Status|运行状态)/u);
 

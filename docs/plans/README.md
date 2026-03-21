@@ -10,6 +10,9 @@ Recently closed repo-wide slimming tracker:
 
 - `2026-03-18-v5-project-slimming-plan.md` - verified V5 closeout tracker for the main service, UI, and store slimming wave
 
+Current task-scoped plans:
+- `2026-03-21-runtime-hub-slot-model-implementation-plan.md` - planned slot-based runtime-hub redesign, completed-hub retention, and hub-card UI alignment
+
 Examples include:
 - design plans
 - implementation plans

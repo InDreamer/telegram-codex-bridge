@@ -51,11 +51,13 @@ The bridge must not mirror the raw runtime notification stream into Telegram.
 It should:
 - listen to the mixed runtime notification stream
 - reduce that stream into compact user-facing runtime surfaces
-- keep one bridge-owned runtime hub per visible hub window instead of rendering a second detailed status block inside the hub
-- keep the hub focused on session navigation: show the focused session first, show its progress once, and separate the remaining running sessions underneath
+- keep one bridge-owned runtime hub per visible hub instead of rendering a second detailed status block inside the hub
+- model each live hub as a stable five-slot container, admitting a session only when it first becomes truly running and retaining that slot after terminal completion
+- render `当前查看中的会话` only on the hub that owns the active viewed session, then derive `其他运行中的会话` and `最近结束的会话` from that hub's remaining slots
+- retain completed hubs in memory while the bridge process stays alive and render their header as `Hub：x/y · 已完成`
 - move richer runtime rows such as model, directory, token usage, and plan mode out of the hub and into Telegram `/status`
 - render any operator-selected optional runtime fields as one row per field instead of a single pipe-delimited summary line
-- expose current plan state through a collapsed button on the focused runtime surface rather than a separate plan card
+- expose current plan state through a collapsed button on the viewed runtime surface rather than a separate plan card
 - project command activity into the runtime surface rather than creating per-command messages
 - surface command activity only through the visible progress text when a complete progress unit exists
 - keep the visible running-state label aligned with reduced app-server runtime state such as active, blocked, and terminal turn outcomes
@@ -75,7 +77,7 @@ It should:
 - when the active root turn reaches a terminal state, expire every unresolved interaction for that Telegram session, including subagent-thread requests
 - if the app-server child exits mid-turn, fail every unresolved interaction for that Telegram session and clear any pending free-text interaction mode before reconnecting
 - keep runtime hub and restart-recovery surfaces in the selected bridge UI language; a `/language` change must refresh the currently visible bridge-owned runtime surface, including the recovery hub
-- compact runtime hub renders before they approach Telegram's message-size ceiling by collapsing expanded plan or agent sections and then falling back to a shorter focused-session summary when needed
+- compact runtime hub renders before they approach Telegram's message-size ceiling by collapsing expanded plan or agent sections and then falling back to a shorter viewed-session summary when needed
 - when a hub edit fails for a non-rate-limit reason, prefer sending a fresh bridge-owned hub message instead of retrying the dead message forever
 - capture the final assistant message emitted before `turn/completed`
 - send the final assistant message as a separate Telegram message after turn completion

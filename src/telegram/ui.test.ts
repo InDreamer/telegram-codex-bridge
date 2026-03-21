@@ -562,7 +562,7 @@ test("buildRuntimeStatusCard keeps only fixed runtime fields and renders progres
   assert.doesNotMatch(text, /<b>Project:<\/b>/u);
 });
 
-test("buildRuntimeStatusReplyMarkup prefers the in-progress step over earlier pending steps", () => {
+test("buildRuntimeStatusReplyMarkup uses a fixed collapsed plan label", () => {
   const replyMarkup = buildRuntimeStatusReplyMarkup({
     sessionId: "session-1",
     planEntries: [
@@ -574,7 +574,7 @@ test("buildRuntimeStatusReplyMarkup prefers the in-progress step over earlier pe
     agentsExpanded: false
   });
 
-  assert.equal(replyMarkup?.inline_keyboard[0]?.[0]?.text, "计划清单：Wire inspect renderer");
+  assert.equal(replyMarkup?.inline_keyboard[0]?.[0]?.text, "计划清单");
   assert.equal(replyMarkup?.inline_keyboard.at(-1)?.[0]?.text, "查看详情");
   assert.equal(replyMarkup?.inline_keyboard.at(-1)?.[1]?.text, "中断操作");
   assert.deepEqual(parseCallbackData(replyMarkup?.inline_keyboard.at(-1)?.[0]?.callback_data ?? ""), {
@@ -587,20 +587,12 @@ test("buildRuntimeStatusReplyMarkup prefers the in-progress step over earlier pe
   });
 });
 
-test("buildRuntimeHubReplyMarkup omits inspect and interrupt action buttons", () => {
+test("buildRuntimeHubReplyMarkup renders a fixed five-slot selector row without inspect buttons", () => {
   const replyMarkup = buildRuntimeHubReplyMarkup({
     token: "hubtoken",
     callbackVersion: 2,
-    sessions: [{
-      sessionId: "session-1",
-      sessionName: "Session Alpha",
-      projectName: "Project One",
-      state: "Running",
-      progressText: null,
-      isFocused: true,
-      isActiveInputTarget: true
-    }],
-    focusedSessionId: "session-1",
+    slotSessionIds: ["session-1", "session-2", null, "session-4", null],
+    focusedSessionId: "session-2",
     planEntries: ["Collect protocol evidence (pending)"],
     planExpanded: false,
     agentEntries: [{
@@ -613,10 +605,16 @@ test("buildRuntimeHubReplyMarkup omits inspect and interrupt action buttons", ()
     agentsExpanded: false
   });
 
-  const buttonLabels = replyMarkup.inline_keyboard.flat().map((button) => button.text);
-  assert.deepEqual(buttonLabels.includes("查看详情"), false);
-  assert.deepEqual(buttonLabels.includes("中断操作"), false);
-  assert.deepEqual(buttonLabels, ["计划清单：Collect protocol evidence", "Agent：1 个运行中"]);
+  assert.deepEqual(replyMarkup.inline_keyboard[0]?.map((button) => button.text), ["1", "2", "·", "4", "·"]);
+  assert.deepEqual(replyMarkup.inline_keyboard[1]?.map((button) => button.text), ["计划清单", "Agent：1 个运行中"]);
+  assert.deepEqual(parseCallbackData(replyMarkup.inline_keyboard[0]?.[1]?.callback_data ?? ""), {
+    kind: "hub_select",
+    token: "hubtoken",
+    version: 2,
+    slot: 2
+  });
+  const buttonLabels = replyMarkup.inline_keyboard.flat().map((button) => button.text).join("\n");
+  assert.doesNotMatch(buttonLabels, /查看详情|中断操作|Session Alpha|Project One/u);
 });
 
 test("buildRuntimeStatusCard renders expanded running agents inline", () => {
@@ -734,37 +732,41 @@ test("buildRuntimeStatusCard can omit the footer", () => {
   );
 });
 
-test("buildRuntimeHubMessage separates focused and other sessions without an input-target row", () => {
+test("buildRuntimeHubMessage renders slot-based live sections with stable slot numbers", () => {
   const text = buildRuntimeHubMessage({
     language: "zh",
     windowIndex: 0,
-    totalWindows: 1,
-    totalSessions: 3,
-    sessions: [
+    totalWindows: 2,
+    currentViewedSession: {
+      sessionId: "session-3",
+      sessionName: "telegram-codex-bridge",
+      projectName: "telegram-codex-bridge",
+      state: "Running",
+      progressText: "验证已经有积极信号了。",
+      slot: 3,
+      isFocused: true,
+      isActiveInputTarget: false
+    },
+    otherSessions: [
       {
         sessionId: "session-1",
-        sessionName: "telegram-codex-bridge",
-        projectName: "telegram-codex-bridge",
-        state: "Running",
-        progressText: "验证已经有积极信号了。",
-        isFocused: true,
-        isActiveInputTarget: true
-      },
-      {
-        sessionId: "session-2",
         sessionName: "algo-research",
         projectName: "algo-research",
         state: "Running",
         progressText: "测试结果里有一个很有价值的现状信号。",
+        slot: 1,
         isFocused: false,
         isActiveInputTarget: false
-      },
+      }
+    ],
+    recentEndedSessions: [
       {
-        sessionId: "session-3",
+        sessionId: "session-2",
         sessionName: "app-server-test-client",
         projectName: "app-server-test-client",
-        state: "Running",
-        progressText: "这个 crate 很聚焦。",
+        state: "已完成",
+        progressText: null,
+        slot: 2,
         isFocused: false,
         isActiveInputTarget: false
       }
@@ -773,17 +775,48 @@ test("buildRuntimeHubMessage separates focused and other sessions without an inp
     planExpanded: false,
     agentEntries: [],
     agentsExpanded: false,
-    isMainHub: true
+    completed: false
   });
 
-  assert.match(text, /<b>当前查看中的运行会话<\/b>/u);
-  assert.match(text, /\[查看中 \/ 当前输入\]/u);
-  assert.match(text, /1\. <b>telegram-codex-bridge<\/b> \/ telegram-codex-bridge · Running/u);
+  assert.match(text, /<b>Hub：<\/b> 1\/2/u);
+  assert.match(text, /<b>当前查看中的会话<\/b>/u);
+  assert.match(text, /3\. <b>telegram-codex-bridge<\/b> \/ telegram-codex-bridge · Running/u);
   assert.match(text, /<b>其他运行中的会话<\/b>/u);
-  assert.match(text, /2\. <b>algo-research<\/b> \/ algo-research · Running/u);
-  assert.doesNotMatch(text, /输入目标/u);
+  assert.match(text, /1\. <b>algo-research<\/b> \/ algo-research · Running/u);
+  assert.match(text, /<b>最近结束的会话<\/b>/u);
+  assert.match(text, /2\. <b>app-server-test-client<\/b> \/ app-server-test-client · 已完成/u);
+  assert.doesNotMatch(text, /\[查看中/u);
   assert.doesNotMatch(text, /<b>当前输入会话<\/b>/u);
   assert.match(text, /使用 \/inspect 查看完整详情，使用 \/interrupt 打断当前操作，使用 \/status 查看运行详情/u);
+});
+
+test("buildRuntimeHubMessage hides empty slot sections and marks completed hubs", () => {
+  const text = buildRuntimeHubMessage({
+    language: "zh",
+    windowIndex: 1,
+    totalWindows: 2,
+    currentViewedSession: null,
+    otherSessions: [],
+    recentEndedSessions: [
+      {
+        sessionId: "session-1",
+        sessionName: "algo-research",
+        projectName: "algo-research",
+        state: "已完成",
+        progressText: null,
+        slot: 1,
+        isFocused: false,
+        isActiveInputTarget: false
+      }
+    ],
+    completed: true
+  });
+
+  assert.match(text, /<b>Hub：<\/b> 2\/2 · 已完成/u);
+  assert.match(text, /<b>最近结束的会话<\/b>/u);
+  assert.match(text, /1\. <b>algo-research<\/b> \/ algo-research · 已完成/u);
+  assert.doesNotMatch(text, /当前查看中的会话/u);
+  assert.doesNotMatch(text, /其他运行中的会话/u);
 });
 
 test("buildRuntimeHubMessage renders a separate current input session when the foreground session is idle", () => {

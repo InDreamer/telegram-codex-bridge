@@ -79,6 +79,7 @@ export interface RuntimeHubSessionView {
   projectName?: string | null;
   state: string;
   progressText?: string | null;
+  slot?: number | null;
   isFocused: boolean;
   isActiveInputTarget: boolean;
 }
@@ -213,8 +214,8 @@ export function buildRuntimeHubMessage(options: {
   language?: UiLanguage;
   windowIndex: number;
   totalWindows: number;
-  totalSessions: number;
-  sessions: RuntimeHubSessionView[];
+  totalSessions?: number;
+  sessions?: RuntimeHubSessionView[];
   activeInputSession?: RuntimeHubSessionView | null;
   sessionCollectionKind?: "running" | "generic";
   planEntries?: string[];
@@ -222,34 +223,106 @@ export function buildRuntimeHubMessage(options: {
   agentEntries?: CollabAgentStateSnapshot[];
   agentsExpanded?: boolean;
   terminalSummaries?: RuntimeHubTerminalSummaryView[];
-  isMainHub: boolean;
+  currentViewedSession?: RuntimeHubSessionView | null;
+  otherSessions?: RuntimeHubSessionView[];
+  recentEndedSessions?: RuntimeHubSessionView[];
+  isMainHub?: boolean;
+  completed?: boolean;
   sessionProgressTextLimit?: number;
 }): string {
   const language = options.language ?? "zh";
-  const sessionCollectionKind = options.sessionCollectionKind ?? "running";
   const sessionProgressTextLimit = options.sessionProgressTextLimit ?? 120;
-  const focusedSession = options.sessions.find((session) => session.isFocused) ?? options.sessions[0] ?? null;
-  const otherSessions = options.sessions.filter((session) => session.sessionId !== focusedSession?.sessionId);
-  const activeInputSession = options.activeInputSession
-    && !options.sessions.some((session) => session.sessionId === options.activeInputSession?.sessionId)
-    ? options.activeInputSession
-    : null;
-  const lines: string[] = [
-    formatHtmlHeading(language === "en" ? "Runtime Status" : "运行状态"),
-    formatHtmlField(
+  const usesSlotSections = options.completed !== undefined
+    || options.currentViewedSession !== undefined
+    || options.otherSessions !== undefined
+    || options.recentEndedSessions !== undefined;
+  const lines: string[] = [formatHtmlHeading(language === "en" ? "Runtime Status" : "运行状态")];
+
+  if (usesSlotSections) {
+    lines.push(formatHtmlField(
       language === "en" ? "Hub:" : "Hub：",
       language === "en"
-        ? `${options.windowIndex + 1}/${Math.max(1, options.totalWindows)} · ${options.totalSessions} session${options.totalSessions === 1 ? "" : "s"}`
-        : `${options.windowIndex + 1}/${Math.max(1, options.totalWindows)} · ${options.totalSessions} 个会话`
-    )
-  ];
+        ? `${options.windowIndex + 1}/${Math.max(1, options.totalWindows)}${options.completed ? " · Completed" : ""}`
+        : `${options.windowIndex + 1}/${Math.max(1, options.totalWindows)}${options.completed ? " · 已完成" : ""}`
+    ));
+
+    if (options.currentViewedSession) {
+      lines.push("", `<b>${language === "en" ? "Current viewed session" : "当前查看中的会话"}</b>`);
+      pushRuntimeHubSession(lines, options.currentViewedSession, null, {
+        language,
+        progressTextLimit: sessionProgressTextLimit,
+        emphasizeMarkers: false,
+        showMarkers: false
+      });
+
+      appendExpandedPlanSection(lines, {
+        language,
+        entries: options.planEntries,
+        expanded: options.planExpanded,
+        entryLimit: 6,
+        entryTextLimit: 120
+      });
+
+      appendExpandedAgentSection(lines, {
+        language,
+        entries: options.agentEntries,
+        expanded: options.agentsExpanded,
+        entryLimit: 6,
+        entryProgressTextLimit: 100
+      });
+    }
+
+    if ((options.otherSessions?.length ?? 0) > 0) {
+      lines.push("", `<b>${language === "en" ? "Other running sessions" : "其他运行中的会话"}</b>`);
+      for (const session of options.otherSessions ?? []) {
+        pushRuntimeHubSession(lines, session, null, {
+          language,
+          progressTextLimit: sessionProgressTextLimit,
+          emphasizeMarkers: false,
+          showMarkers: false
+        });
+      }
+    }
+
+    if ((options.recentEndedSessions?.length ?? 0) > 0) {
+      lines.push("", `<b>${language === "en" ? "Recent ended sessions" : "最近结束的会话"}</b>`);
+      for (const session of options.recentEndedSessions ?? []) {
+        pushRuntimeHubSession(lines, session, null, {
+          language,
+          progressTextLimit: 0,
+          emphasizeMarkers: false,
+          showMarkers: false
+        });
+      }
+    }
+
+    lines.push("", buildRuntimeSurfaceFooter(language));
+    return lines.join("\n");
+  }
+
+  const sessionCollectionKind = options.sessionCollectionKind ?? "running";
+  const sessions = options.sessions ?? [];
+  const focusedSession = sessions.find((session) => session.isFocused) ?? sessions[0] ?? null;
+  const otherSessions = sessions.filter((session) => session.sessionId !== focusedSession?.sessionId);
+  const activeInputSession = options.activeInputSession
+    && !sessions.some((session) => session.sessionId === options.activeInputSession?.sessionId)
+    ? options.activeInputSession
+    : null;
+
+  lines.push(formatHtmlField(
+    language === "en" ? "Hub:" : "Hub：",
+    language === "en"
+      ? `${options.windowIndex + 1}/${Math.max(1, options.totalWindows)} · ${(options.totalSessions ?? sessions.length)} session${(options.totalSessions ?? sessions.length) === 1 ? "" : "s"}`
+      : `${options.windowIndex + 1}/${Math.max(1, options.totalWindows)} · ${options.totalSessions ?? sessions.length} 个会话`
+  ));
 
   if (activeInputSession) {
     lines.push("", `<b>${language === "en" ? "Current input session" : "当前输入会话"}</b>`);
     pushRuntimeHubSession(lines, activeInputSession, null, {
       language,
       progressTextLimit: sessionProgressTextLimit,
-      emphasizeMarkers: true
+      emphasizeMarkers: true,
+      showMarkers: true
     });
   }
 
@@ -262,7 +335,8 @@ export function buildRuntimeHubMessage(options: {
     pushRuntimeHubSession(lines, focusedSession, 1, {
       language,
       progressTextLimit: sessionProgressTextLimit,
-      emphasizeMarkers: true
+      emphasizeMarkers: true,
+      showMarkers: true
     });
 
     appendExpandedPlanSection(lines, {
@@ -292,7 +366,8 @@ export function buildRuntimeHubMessage(options: {
       pushRuntimeHubSession(lines, session, index + 2, {
         language,
         progressTextLimit: sessionProgressTextLimit,
-        emphasizeMarkers: false
+        emphasizeMarkers: false,
+        showMarkers: true
       });
     }
   }
@@ -372,12 +447,15 @@ function pushRuntimeHubSession(
     language: UiLanguage;
     progressTextLimit: number;
     emphasizeMarkers: boolean;
+    showMarkers: boolean;
   }
 ): void {
-  const markers = [
-    session.isFocused ? (options.language === "en" ? "viewing" : "查看中") : null,
-    session.isActiveInputTarget ? (options.language === "en" ? "current input" : "当前输入") : null
-  ].filter((value): value is string => Boolean(value));
+  const markers = options.showMarkers
+    ? [
+      session.isFocused ? (options.language === "en" ? "viewing" : "查看中") : null,
+      session.isActiveInputTarget ? (options.language === "en" ? "current input" : "当前输入") : null
+    ].filter((value): value is string => Boolean(value))
+    : [];
 
   if (options.emphasizeMarkers && markers.length > 0) {
     lines.push(`[${markers.join(" / ")}]`);
@@ -385,7 +463,8 @@ function pushRuntimeHubSession(
 
   const markerText = !options.emphasizeMarkers && markers.length > 0 ? ` [${markers.join(" / ")}]` : "";
   const projectName = session.projectName?.trim() ? ` / ${escapeHtml(session.projectName.trim())}` : "";
-  const prefix = index === null ? "" : `${index}. `;
+  const displayIndex = session.slot ?? index;
+  const prefix = displayIndex === null || displayIndex === undefined ? "" : `${displayIndex}. `;
   lines.push(
     `${prefix}<b>${escapeHtml(session.sessionName)}</b>${projectName}${markerText} · ${escapeHtml(session.state)}`
   );
@@ -405,7 +484,8 @@ export function buildRuntimeHubReplyMarkup(options: {
   token: string;
   callbackVersion: number;
   language?: UiLanguage;
-  sessions: RuntimeHubSessionView[];
+  sessions?: RuntimeHubSessionView[];
+  slotSessionIds?: Array<string | null>;
   focusedSessionId: string | null;
   planEntries?: string[];
   planExpanded?: boolean;
@@ -415,8 +495,52 @@ export function buildRuntimeHubReplyMarkup(options: {
   const language = options.language ?? "zh";
   const rows: TelegramInlineKeyboardMarkup["inline_keyboard"] = [];
 
-  if (options.sessions.length > 1) {
-    const sessionButtons = options.sessions.map((session, index) => ({
+  if (options.slotSessionIds) {
+    const slotSessionIds = options.slotSessionIds.slice(0, 5);
+    while (slotSessionIds.length < 5) {
+      slotSessionIds.push(null);
+    }
+
+    rows.push(slotSessionIds.map((sessionId, index) => ({
+      text: sessionId ? String(index + 1) : "·",
+      callback_data: encodeHubSelectCallback(options.token, options.callbackVersion, index + 1)
+    })));
+
+    const secondaryButtons: TelegramInlineKeyboardMarkup["inline_keyboard"][number] = [];
+    if (options.focusedSessionId && (options.planEntries?.length ?? 0) > 0) {
+      secondaryButtons.push({
+        text: options.planExpanded
+          ? (language === "en" ? "Hide Plan" : "收起计划清单")
+          : buildCollapsedPlanButtonLabel(options.planEntries ?? [], language),
+        callback_data: options.planExpanded
+          ? encodePlanCollapseCallback(options.focusedSessionId)
+          : encodePlanExpandCallback(options.focusedSessionId)
+      });
+    }
+
+    if (options.focusedSessionId && (options.agentEntries?.length ?? 0) > 0) {
+      secondaryButtons.push({
+        text: options.agentsExpanded
+          ? (language === "en" ? "Hide Agents" : "收起 Agent")
+          : buildCollapsedAgentButtonLabel(options.agentEntries ?? [], language),
+        callback_data: options.agentsExpanded
+          ? encodeAgentCollapseCallback(options.focusedSessionId)
+          : encodeAgentExpandCallback(options.focusedSessionId)
+      });
+    }
+
+    if (secondaryButtons.length > 0) {
+      rows.push(secondaryButtons);
+    }
+
+    return {
+      inline_keyboard: rows
+    };
+  }
+
+  const sessions = options.sessions ?? [];
+  if (sessions.length > 1) {
+    const sessionButtons = sessions.map((session, index) => ({
       text: session.isFocused
         ? `${language === "en" ? "Viewing" : "查看中"} · ${truncateText(session.sessionName, 18)}`
         : session.isActiveInputTarget
@@ -427,26 +551,31 @@ export function buildRuntimeHubReplyMarkup(options: {
     rows.push(...chunkButtons(sessionButtons, 2));
   }
 
+  const secondaryButtons: TelegramInlineKeyboardMarkup["inline_keyboard"][number] = [];
   if (options.focusedSessionId && (options.planEntries?.length ?? 0) > 0) {
-    rows.push([{
+    secondaryButtons.push({
       text: options.planExpanded
         ? (language === "en" ? "Hide Plan" : "收起计划清单")
         : buildCollapsedPlanButtonLabel(options.planEntries ?? [], language),
       callback_data: options.planExpanded
         ? encodePlanCollapseCallback(options.focusedSessionId)
         : encodePlanExpandCallback(options.focusedSessionId)
-    }]);
+    });
   }
 
   if (options.focusedSessionId && (options.agentEntries?.length ?? 0) > 0) {
-    rows.push([{
+    secondaryButtons.push({
       text: options.agentsExpanded
         ? (language === "en" ? "Hide Agents" : "收起 Agent")
         : buildCollapsedAgentButtonLabel(options.agentEntries ?? [], language),
       callback_data: options.agentsExpanded
         ? encodeAgentCollapseCallback(options.focusedSessionId)
         : encodeAgentExpandCallback(options.focusedSessionId)
-    }]);
+    });
+  }
+
+  if (secondaryButtons.length > 0) {
+    rows.push(secondaryButtons);
   }
 
   // Hubs stay as a compact multi-session navigator. Detailed inspect/interrupt
@@ -1383,15 +1512,8 @@ function formatRuntimeStatusOptionalLabelZh(label: string): string {
   }
 }
 
-function buildCollapsedPlanButtonLabel(entries: string[], language: UiLanguage = "zh"): string {
-  const currentEntry = selectCurrentPlanEntry(entries);
-  if (!currentEntry) {
-    return language === "en" ? "Show Plan" : "查看计划清单";
-  }
-
-  return language === "en"
-    ? `Plan: ${truncateText(stripPlanEntryStatus(currentEntry), 40)}`
-    : `计划清单：${truncateText(stripPlanEntryStatus(currentEntry), 40)}`;
+function buildCollapsedPlanButtonLabel(_entries: string[], language: UiLanguage = "zh"): string {
+  return language === "en" ? "Plan" : "计划清单";
 }
 
 function buildCollapsedAgentButtonLabel(entries: CollabAgentStateSnapshot[], language: UiLanguage = "zh"): string {

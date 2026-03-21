@@ -257,14 +257,17 @@ Readiness / preflight behavior:
 - if voice input is enabled but neither OpenAI transcription nor realtime audio transcription is usable, readiness is treated as `bridge_unhealthy`
 
 Structured activity visibility:
-- the Telegram chat keeps one bridge-owned runtime hub per visible hub window
-- the hub keeps the focused session first, renders its progress once, and separates other running sessions underneath instead of appending a second detailed status block
-- when the current input target has no running turn yet, the main hub shows that session in a separate current-input block above the running-session sections instead of pretending another running session is the foreground target
-- the bridge exposes current plan state through an inline expand/collapse button on the focused runtime surface
+- the Telegram chat keeps one bridge-owned runtime hub per visible hub
+- each live hub owns five stable slots, fills them left to right, and keeps ended sessions in their original slot
+- a newly created idle session does not appear in the live hub until its first running turn assigns it a slot
+- the hub shows at most one `当前查看中的会话`, then renders hub-local `其他运行中的会话` and `最近结束的会话`
+- completed hubs remain visible in chat and render `Hub：x/y · 已完成`
+- the bridge exposes current plan state through an inline expand/collapse button on the viewed runtime surface
 - the bridge keeps per-command detail out of the main chat flow and still creates separate error cards when needed
 - the bridge updates cards only when visible state changes or when a complete progress unit is available
 - richer runtime rows such as model, directory, token usage, and plan mode move to Telegram `/status`
 - the visible running-state label is reduced from app-server runtime state, while progress text remains commentary-aware user-facing phase text
+- the slot selector uses one fixed row of `1..5` plus `·`; the collapsed Chinese plan label is `计划清单` and `Plan`/`Agent` share one row when both are present
 - the runtime hub renders bold labels plus Markdown-aware progress text through Telegram HTML
 - raw agent-message deltas and reasoning deltas stay out of the default Telegram flow
 - completed `agentMessage` items with `phase = commentary` are the authoritative commentary source for user-visible progress

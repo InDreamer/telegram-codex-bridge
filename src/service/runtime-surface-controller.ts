@@ -55,8 +55,7 @@ const INSPECT_PLAIN_TEXT_FALLBACK_LIMIT = 3500;
 const FAILED_EDIT_RETRY_MS = 5000;
 const FAILED_HUB_DELETE_RETRY_MS = 5000;
 const MAX_RETAINED_HUB_DELETE_FAILURES = 3;
-const RUNTIME_HUB_WINDOW_SIZE = 5;
-const RUNTIME_HUB_TERMINAL_SUMMARY_LIMIT = 3;
+const RUNTIME_HUB_SLOT_COUNT = 5;
 const RUNTIME_HUB_TEXT_SOFT_LIMIT = 3200;
 const RUNTIME_HUB_SESSION_PROGRESS_TEXT_LIMIT = 120;
 const RUNTIME_HUB_COMPACT_SESSION_PROGRESS_TEXT_LIMIT = 80;
@@ -102,17 +101,18 @@ interface RuntimeSurfaceInspectRenderPayload {
   note: string | null;
 }
 
-interface RuntimeHubTerminalSummary {
-  sessionId: string;
-  sessionName: string;
-  projectName: string | null;
-  state: string;
+type RuntimeHubTerminalState = "completed" | "failed" | "interrupted";
+
+interface RuntimeHubSlotState {
+  sessionId: string | null;
+  terminalState: RuntimeHubTerminalState | null;
 }
 
 interface RuntimeHubVisibleState {
   callbackVersion: number;
   focusedSessionId: string | null;
   sessionIds: string[];
+  slotSessionIds: Array<string | null>;
   planExpanded: boolean;
   agentsExpanded: boolean;
 }
@@ -123,6 +123,7 @@ interface RuntimeHubState {
   kind: "live" | "recovery";
   destroyed: boolean;
   windowIndex: number;
+  slots: RuntimeHubSlotState[];
   messageId: number;
   requestedGeneration: number;
   committedGeneration: number;
@@ -157,8 +158,7 @@ interface RetainedHubMessage {
 interface RuntimeHubChatState {
   liveHubs: Map<number, RuntimeHubState>;
   recoveryHub: RuntimeHubState | null;
-  runningOrder: string[];
-  terminalSummaries: RuntimeHubTerminalSummary[];
+  currentHubIndex: number | null;
   retainedMessages: RetainedHubMessage[];
   operationQueue: Promise<void>;
 }
@@ -242,8 +242,7 @@ export class RuntimeSurfaceController {
       state = {
         liveHubs: new Map(),
         recoveryHub: null,
-        runningOrder: [],
-        terminalSummaries: [],
+        currentHubIndex: null,
         retainedMessages: [],
         operationQueue: Promise.resolve()
       };
@@ -294,10 +293,15 @@ export class RuntimeSurfaceController {
     windowIndex: number,
     options?: { messageId?: number }
   ): RuntimeHubState {
+    const slots = Array.from({ length: RUNTIME_HUB_SLOT_COUNT }, (): RuntimeHubSlotState => ({
+      sessionId: null,
+      terminalState: null
+    }));
     const visibleState: RuntimeHubVisibleState = {
       callbackVersion: 0,
       focusedSessionId: null,
       sessionIds: [],
+      slotSessionIds: slots.map((slot) => slot.sessionId),
       planExpanded: false,
       agentsExpanded: false
     };
@@ -308,6 +312,7 @@ export class RuntimeSurfaceController {
       kind,
       destroyed: false,
       windowIndex,
+      slots,
       messageId: options?.messageId ?? 0,
       requestedGeneration: 0,
       committedGeneration: 0,
@@ -336,6 +341,7 @@ export class RuntimeSurfaceController {
       callbackVersion: state.callbackVersion,
       focusedSessionId: state.focusedSessionId,
       sessionIds: [...state.sessionIds],
+      slotSessionIds: [...state.slotSessionIds],
       planExpanded: state.planExpanded,
       agentsExpanded: state.agentsExpanded
     };
@@ -345,7 +351,10 @@ export class RuntimeSurfaceController {
     return {
       callbackVersion: hubState.callbackVersion,
       focusedSessionId: hubState.focusedSessionId,
-      sessionIds: [...hubState.sessionIds],
+      sessionIds: hubState.kind === "recovery"
+        ? [...hubState.sessionIds]
+        : this.getHubOccupiedSessionIds(hubState),
+      slotSessionIds: hubState.slots.map((slot) => slot.sessionId),
       planExpanded: hubState.planExpanded,
       agentsExpanded: hubState.agentsExpanded
     };
@@ -372,7 +381,44 @@ export class RuntimeSurfaceController {
       && left.focusedSessionId === right.focusedSessionId
       && left.planExpanded === right.planExpanded
       && left.agentsExpanded === right.agentsExpanded
-      && left.sessionIds.join("\u0000") === right.sessionIds.join("\u0000");
+      && left.sessionIds.join("\u0000") === right.sessionIds.join("\u0000")
+      && left.slotSessionIds.join("\u0000") === right.slotSessionIds.join("\u0000");
+  }
+
+  private isTerminalTurnStatus(status: ActivityStatus["turnStatus"]): boolean {
+    return status === "completed" || status === "failed" || status === "interrupted";
+  }
+
+  private getHubOccupiedSessionIds(hubState: RuntimeHubState): string[] {
+    return hubState.slots
+      .map((slot) => slot.sessionId)
+      .filter((sessionId): sessionId is string => Boolean(sessionId));
+  }
+
+  private getHubOccupiedSlotCount(hubState: RuntimeHubState): number {
+    return this.getHubOccupiedSessionIds(hubState).length;
+  }
+
+  private getHubEmptySlotIndex(hubState: RuntimeHubState): number {
+    return hubState.slots.findIndex((slot) => !slot.sessionId);
+  }
+
+  private getOrderedLiveHubs(chatState: RuntimeHubChatState): RuntimeHubState[] {
+    return [...chatState.liveHubs.values()].sort((left, right) => left.windowIndex - right.windowIndex);
+  }
+
+  private findLiveHubSlot(
+    chatState: RuntimeHubChatState,
+    sessionId: string
+  ): { hubState: RuntimeHubState; slotIndex: number } | null {
+    for (const hubState of this.getOrderedLiveHubs(chatState)) {
+      const slotIndex = hubState.slots.findIndex((slot) => slot.sessionId === sessionId);
+      if (slotIndex >= 0) {
+        return { hubState, slotIndex };
+      }
+    }
+
+    return null;
   }
 
   private clearRetainedHubTimer(retained: RetainedHubMessage): void {
@@ -740,56 +786,104 @@ export class RuntimeSurfaceController {
     return replyMarkup ? { text, replyMarkup } : { text };
   }
 
-  private getOrderedActiveTurns(chatId: string, excludedSessionId?: string | null): RuntimeSurfaceActiveTurn[] {
-    const chatState = this.getOrCreateHubChatState(chatId);
-    const turnMap = new Map(
-      this.deps
-        .listActiveTurns()
-        .filter((activeTurn) => activeTurn.chatId === chatId && activeTurn.sessionId !== excludedSessionId)
-        .map((activeTurn) => [activeTurn.sessionId, activeTurn] as const)
+  private getActiveTurnsForChat(chatId: string, excludedSessionId?: string | null): RuntimeSurfaceActiveTurn[] {
+    return this.deps.listActiveTurns().filter((activeTurn) =>
+      activeTurn.chatId === chatId && activeTurn.sessionId !== excludedSessionId
     );
+  }
 
-    chatState.runningOrder = chatState.runningOrder.filter((sessionId) => turnMap.has(sessionId));
-    for (const activeTurn of turnMap.values()) {
-      if (!chatState.runningOrder.includes(activeTurn.sessionId)) {
-        chatState.runningOrder.push(activeTurn.sessionId);
+  private getRunningTurnsForChat(chatId: string, excludedSessionId?: string | null): RuntimeSurfaceActiveTurn[] {
+    return this.getActiveTurnsForChat(chatId, excludedSessionId).filter((activeTurn) =>
+      !this.isTerminalTurnStatus(activeTurn.tracker.getStatus().turnStatus)
+    );
+  }
+
+  private getNextLiveHubIndex(chatState: RuntimeHubChatState): number {
+    return (this.getOrderedLiveHubs(chatState).at(-1)?.windowIndex ?? -1) + 1;
+  }
+
+  private resolveCurrentLiveHubContext(chatState: RuntimeHubChatState): RuntimeHubState | null {
+    if (chatState.currentHubIndex !== null) {
+      const currentHub = chatState.liveHubs.get(chatState.currentHubIndex) ?? null;
+      if (currentHub) {
+        return currentHub;
       }
     }
 
-    return chatState.runningOrder
-      .map((sessionId) => turnMap.get(sessionId) ?? null)
-      .filter((activeTurn): activeTurn is RuntimeSurfaceActiveTurn => Boolean(activeTurn));
+    return this.getOrderedLiveHubs(chatState).at(-1) ?? null;
+  }
+
+  private isLiveHubCompleted(hubState: RuntimeHubState, runningSessionIds: ReadonlySet<string>): boolean {
+    return this.getHubOccupiedSlotCount(hubState) > 0
+      && !hubState.slots.some((slot) => slot.sessionId && runningSessionIds.has(slot.sessionId));
+  }
+
+  private ensureLiveHubSlotAssignments(chatId: string, runningTurns: RuntimeSurfaceActiveTurn[]): void {
+    const chatState = this.getOrCreateHubChatState(chatId);
+    const activeSessionId = this.deps.getStore()?.getActiveSession(chatId)?.sessionId ?? null;
+    const activeSessionHub = activeSessionId ? this.findLiveHubSlot(chatState, activeSessionId) : null;
+    if (activeSessionHub) {
+      chatState.currentHubIndex = activeSessionHub.hubState.windowIndex;
+    }
+
+    const runningSessionIds = new Set(runningTurns.map((turn) => turn.sessionId));
+    for (const activeTurn of runningTurns) {
+      const existing = this.findLiveHubSlot(chatState, activeTurn.sessionId);
+      if (existing) {
+        existing.hubState.slots[existing.slotIndex]!.terminalState = null;
+        continue;
+      }
+
+      let hubState = this.resolveCurrentLiveHubContext(chatState);
+      if (!hubState
+        || this.isLiveHubCompleted(hubState, runningSessionIds)
+        || this.getHubEmptySlotIndex(hubState) < 0) {
+        hubState = this.createRuntimeHubState(chatId, "live", this.getNextLiveHubIndex(chatState), {
+          messageId: this.claimRetainedHubMessageId(chatId)
+        });
+        chatState.liveHubs.set(hubState.windowIndex, hubState);
+      }
+
+      const emptySlotIndex = this.getHubEmptySlotIndex(hubState);
+      if (emptySlotIndex < 0) {
+        continue;
+      }
+
+      hubState.slots[emptySlotIndex] = {
+        sessionId: activeTurn.sessionId,
+        terminalState: null
+      };
+      hubState.callbackVersion += 1;
+      chatState.currentHubIndex = hubState.windowIndex;
+    }
   }
 
   private updateHubFocus(
     hubState: RuntimeHubState,
-    sessionIds: string[],
     preferredSessionId: string | null,
     activeSessionId: string | null,
     options?: {
       forcePreferred?: boolean;
     }
   ): boolean {
+    const sessionIds = hubState.kind === "recovery"
+      ? [...hubState.sessionIds]
+      : this.getHubOccupiedSessionIds(hubState);
     let nextFocus = hubState.focusedSessionId;
     // Foreground actions may force the requested session into view, but ordinary
     // background progress should not steal focus from the session the operator is already watching.
     if (options?.forcePreferred && preferredSessionId && sessionIds.includes(preferredSessionId)) {
       nextFocus = preferredSessionId;
+    } else if (activeSessionId && sessionIds.includes(activeSessionId)) {
+      nextFocus = activeSessionId;
     } else if (!nextFocus || !sessionIds.includes(nextFocus)) {
       nextFocus = preferredSessionId && sessionIds.includes(preferredSessionId)
         ? preferredSessionId
-        : activeSessionId && sessionIds.includes(activeSessionId)
-          ? activeSessionId
-          : (sessionIds[0] ?? null);
+        : (sessionIds[0] ?? null);
     }
 
-    const orderedSessionIds = nextFocus
-      ? [nextFocus, ...sessionIds.filter((sessionId) => sessionId !== nextFocus)]
-      : [...sessionIds];
-    const changed = nextFocus !== hubState.focusedSessionId
-      || orderedSessionIds.join("\u0000") !== hubState.sessionIds.join("\u0000");
+    const changed = nextFocus !== hubState.focusedSessionId;
     hubState.focusedSessionId = nextFocus;
-    hubState.sessionIds = orderedSessionIds;
     if (changed) {
       hubState.callbackVersion += 1;
     }
@@ -797,11 +891,12 @@ export class RuntimeSurfaceController {
   }
 
   private getSingleSessionHubActiveTurn(hubState: RuntimeHubState): RuntimeSurfaceActiveTurn | null {
-    if (hubState.kind !== "live" || hubState.sessionIds.length !== 1) {
+    const sessionIds = this.getHubOccupiedSessionIds(hubState);
+    if (hubState.kind !== "live" || sessionIds.length !== 1) {
       return null;
     }
 
-    const sessionId = hubState.sessionIds[0];
+    const sessionId = sessionIds[0];
     if (!sessionId) {
       return null;
     }
@@ -813,7 +908,7 @@ export class RuntimeSurfaceController {
     hubState: RuntimeHubState,
     activeTurn: RuntimeSurfaceActiveTurn | null
   ): void {
-    if (hubState.kind !== "live" || hubState.messageId !== 0 || hubState.sessionIds.length !== 1 || !activeTurn) {
+    if (hubState.kind !== "live" || hubState.messageId !== 0 || this.getHubOccupiedSlotCount(hubState) !== 1 || !activeTurn) {
       return;
     }
 
@@ -829,7 +924,8 @@ export class RuntimeSurfaceController {
     this.commitRuntimeHubVisibleState(hubState, {
       callbackVersion: hubState.callbackVersion,
       focusedSessionId: hubState.focusedSessionId,
-      sessionIds: hubState.sessionIds,
+      sessionIds: this.getHubOccupiedSessionIds(hubState),
+      slotSessionIds: hubState.slots.map((slot) => slot.sessionId),
       planExpanded: activeTurn.statusCard.planExpanded,
       agentsExpanded: activeTurn.statusCard.agentsExpanded
     });
@@ -853,7 +949,7 @@ export class RuntimeSurfaceController {
     agentEntries: CollabAgentStateSnapshot[];
   } {
     const compact = options?.compact ?? false;
-    if (!activeTurn) {
+    if (!activeTurn || this.isTerminalTurnStatus(activeTurn.tracker.getStatus().turnStatus)) {
       return {
         planEntries: [],
         agentEntries: []
@@ -864,6 +960,52 @@ export class RuntimeSurfaceController {
     return {
       planEntries: inspect.planSnapshot,
       agentEntries: inspect.agentSnapshot
+    };
+  }
+
+  private formatLiveHubTerminalState(state: RuntimeHubTerminalState): string {
+    const language = this.deps.getUiLanguage();
+    switch (state) {
+      case "completed":
+        return language === "en" ? "Completed" : "已完成";
+      case "failed":
+        return language === "en" ? "Failed" : "失败";
+      case "interrupted":
+        return language === "en" ? "Interrupted" : "已中断";
+    }
+  }
+
+  private buildLiveHubSessionView(
+    slot: RuntimeHubSlotState,
+    slotIndex: number,
+    turnMap: ReadonlyMap<string, RuntimeSurfaceActiveTurn>,
+    focusedSessionId: string | null
+  ): RuntimeHubSessionView | null {
+    const sessionId = slot.sessionId;
+    if (!sessionId) {
+      return null;
+    }
+
+    const context = this.deps.getRuntimeCardContext(sessionId);
+    const activeTurn = turnMap.get(sessionId) ?? null;
+    const inspect = activeTurn?.tracker.getInspectSnapshot() ?? null;
+    const state = slot.terminalState
+      ? this.formatLiveHubTerminalState(slot.terminalState)
+      : inspect
+        ? formatVisibleRuntimeState(inspect)
+        : (this.deps.getStore()?.getSessionById(sessionId)?.status ?? "idle");
+
+    return {
+      sessionId,
+      sessionName: context.sessionName ?? "session",
+      projectName: context.projectName ?? null,
+      state,
+      progressText: slot.terminalState || !inspect
+        ? null
+        : selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null),
+      slot: slotIndex + 1,
+      isFocused: sessionId === focusedSessionId,
+      isActiveInputTarget: false
     };
   }
 
@@ -881,37 +1023,62 @@ export class RuntimeSurfaceController {
     const render = (
       visibleState: RuntimeHubVisibleState,
       options?: {
-      compactFocused?: boolean;
-      sessionProgressTextLimit?: number;
-    }): {
+        compactFocused?: boolean;
+        sessionProgressTextLimit?: number;
+      }
+    ): {
       text: string;
       replyMarkup: TelegramInlineKeyboardMarkup;
       visibleState: RuntimeHubVisibleState;
     } => {
       const turnMap = new Map(turns.map((activeTurn) => [activeTurn.sessionId, activeTurn] as const));
+      const runningSessionIds = new Set(
+        turns
+          .filter((activeTurn) => !this.isTerminalTurnStatus(activeTurn.tracker.getStatus().turnStatus))
+          .map((activeTurn) => activeTurn.sessionId)
+      );
       const activeSessionId = this.deps.getStore()?.getActiveSession(chatId)?.sessionId ?? null;
-      const sessions = visibleState.sessionIds
-        .map((sessionId) => {
-          const activeTurn = turnMap.get(sessionId);
-          if (!activeTurn) {
+      const currentViewedSlotIndex = activeSessionId
+        ? hubState.slots.findIndex((slot) => slot.sessionId === activeSessionId)
+        : -1;
+      const currentViewedSession = currentViewedSlotIndex >= 0
+        ? this.buildLiveHubSessionView(
+          hubState.slots[currentViewedSlotIndex]!,
+          currentViewedSlotIndex,
+          turnMap,
+          visibleState.focusedSessionId
+        )
+        : null;
+      const otherRunningSessions = hubState.slots
+        .map((slot, slotIndex) => {
+          if (!slot.sessionId || slot.terminalState || !runningSessionIds.has(slot.sessionId)) {
             return null;
           }
-          const context = this.deps.getRuntimeCardContext(sessionId);
-          const inspect = activeTurn.tracker.getInspectSnapshot();
-          return {
-            sessionId,
-            sessionName: context.sessionName ?? "session",
-            projectName: context.projectName ?? null,
-            state: formatVisibleRuntimeState(inspect),
-            progressText: selectStatusProgressText(inspect, inspect.completedCommentary.at(-1) ?? null),
-            isFocused: sessionId === visibleState.focusedSessionId,
-            isActiveInputTarget: sessionId === activeSessionId
-          };
+          if (slot.sessionId === currentViewedSession?.sessionId) {
+            return null;
+          }
+          return this.buildLiveHubSessionView(slot, slotIndex, turnMap, visibleState.focusedSessionId);
         })
-        .filter((session): session is NonNullable<typeof session> => Boolean(session));
-      const activeInputSession = hubState.windowIndex === 0
-        ? this.buildSeparateHubActiveInputSession(chatId, new Set(turnMap.keys()))
-        : null;
+        .filter((session): session is RuntimeHubSessionView => Boolean(session));
+      const recentEndedSessions = hubState.slots
+        .map((slot, slotIndex) => {
+          if (!slot.sessionId) {
+            return null;
+          }
+
+          const persistedStatus = this.deps.getStore()?.getSessionById(slot.sessionId)?.status ?? null;
+          const endedWithoutTerminalSlotState = !runningSessionIds.has(slot.sessionId)
+            && (persistedStatus === "failed" || persistedStatus === "interrupted");
+
+          if (!slot.terminalState && !endedWithoutTerminalSlotState) {
+            return null;
+          }
+          if (slot.sessionId === currentViewedSession?.sessionId) {
+            return null;
+          }
+          return this.buildLiveHubSessionView(slot, slotIndex, turnMap, visibleState.focusedSessionId);
+        })
+        .filter((session): session is RuntimeHubSessionView => Boolean(session));
 
       const focusedTurn = visibleState.focusedSessionId ? (turnMap.get(visibleState.focusedSessionId) ?? null) : null;
       const focused = this.buildFocusedRuntimeHubSection(focusedTurn, {
@@ -921,16 +1088,14 @@ export class RuntimeSurfaceController {
         language: this.deps.getUiLanguage(),
         windowIndex: hubState.windowIndex,
         totalWindows,
-        totalSessions: turns.length,
-        sessions,
-        activeInputSession,
-        sessionCollectionKind: "running",
+        currentViewedSession,
+        otherSessions: otherRunningSessions,
+        recentEndedSessions,
         planEntries: focused.planEntries,
         planExpanded: !options?.compactFocused && visibleState.planExpanded,
         agentEntries: focused.agentEntries,
         agentsExpanded: !options?.compactFocused && visibleState.agentsExpanded,
-        terminalSummaries: hubState.windowIndex === 0 ? this.getOrCreateHubChatState(chatId).terminalSummaries : [],
-        isMainHub: hubState.windowIndex === 0,
+        completed: this.isLiveHubCompleted(hubState, runningSessionIds),
         sessionProgressTextLimit: options?.sessionProgressTextLimit ?? RUNTIME_HUB_SESSION_PROGRESS_TEXT_LIMIT
       });
 
@@ -940,12 +1105,12 @@ export class RuntimeSurfaceController {
           token: hubState.token,
           callbackVersion: visibleState.callbackVersion,
           language: this.deps.getUiLanguage(),
-          sessions,
-          focusedSessionId: visibleState.focusedSessionId,
+          slotSessionIds: visibleState.slotSessionIds,
+          focusedSessionId: currentViewedSession?.sessionId ?? null,
           planEntries: focused.planEntries,
-          planExpanded: visibleState.planExpanded,
+          planExpanded: !options?.compactFocused && visibleState.planExpanded,
           agentEntries: focused.agentEntries,
-          agentsExpanded: visibleState.agentsExpanded
+          agentsExpanded: !options?.compactFocused && visibleState.agentsExpanded
         }),
         visibleState: this.cloneRuntimeHubVisibleState(visibleState)
       };
@@ -1127,14 +1292,22 @@ export class RuntimeSurfaceController {
     }
   ): Promise<void> {
     const chatState = this.getOrCreateHubChatState(chatId);
-    const turns = this.getOrderedActiveTurns(chatId, excludedSessionId);
-    const activeSessionId = this.deps.getStore()?.getActiveSession(chatId)?.sessionId ?? null;
+    const turns = this.getActiveTurnsForChat(chatId, excludedSessionId);
+    const runningTurns = turns.filter((activeTurn) => !this.isTerminalTurnStatus(activeTurn.tracker.getStatus().turnStatus));
+    this.ensureLiveHubSlotAssignments(chatId, runningTurns);
 
-    if (turns.length === 0) {
-      for (const hubState of chatState.liveHubs.values()) {
-        await this.deleteHubState(hubState);
+    for (const [windowIndex, hubState] of [...chatState.liveHubs.entries()]) {
+      if (this.getHubOccupiedSlotCount(hubState) > 0) {
+        continue;
       }
-      chatState.liveHubs.clear();
+      await this.deleteHubState(hubState);
+      chatState.liveHubs.delete(windowIndex);
+      if (chatState.currentHubIndex === windowIndex) {
+        chatState.currentHubIndex = null;
+      }
+    }
+
+    if (chatState.liveHubs.size === 0) {
       return;
     }
 
@@ -1143,19 +1316,18 @@ export class RuntimeSurfaceController {
       chatState.recoveryHub = null;
     }
 
-    const totalWindows = Math.ceil(turns.length / RUNTIME_HUB_WINDOW_SIZE);
-    for (let windowIndex = 0; windowIndex < totalWindows; windowIndex += 1) {
-      const sessionIds = turns
-        .slice(windowIndex * RUNTIME_HUB_WINDOW_SIZE, (windowIndex + 1) * RUNTIME_HUB_WINDOW_SIZE)
-        .map((activeTurn) => activeTurn.sessionId);
-      const hubState = chatState.liveHubs.get(windowIndex)
-        ?? this.createRuntimeHubState(chatId, "live", windowIndex, {
-          messageId: this.claimRetainedHubMessageId(chatId)
-        });
-      this.updateHubFocus(hubState, sessionIds, preferredSessionId ?? null, activeSessionId, {
+    const activeSessionId = this.deps.getStore()?.getActiveSession(chatId)?.sessionId ?? null;
+    const activeSessionHub = activeSessionId ? this.findLiveHubSlot(chatState, activeSessionId) : null;
+    if (activeSessionHub) {
+      chatState.currentHubIndex = activeSessionHub.hubState.windowIndex;
+    }
+
+    const orderedHubs = this.getOrderedLiveHubs(chatState);
+    const totalWindows = orderedHubs.length;
+    for (const hubState of orderedHubs) {
+      this.updateHubFocus(hubState, preferredSessionId ?? null, activeSessionId, {
         forcePreferred: options?.forcePreferredFocus ?? false
       });
-      chatState.liveHubs.set(windowIndex, hubState);
       const singleSessionTurn = this.getSingleSessionHubActiveTurn(hubState);
       this.hydrateSingleSessionHubStateFromTurn(hubState, singleSessionTurn);
       const rendered = this.buildLiveHubRenderPayload(chatId, hubState, totalWindows, turns);
@@ -1171,14 +1343,6 @@ export class RuntimeSurfaceController {
         reason,
         visibleState: rendered.visibleState
       });
-    }
-
-    for (const [windowIndex, hubState] of [...chatState.liveHubs.entries()]) {
-      if (windowIndex < totalWindows) {
-        continue;
-      }
-      await this.deleteHubState(hubState);
-      chatState.liveHubs.delete(windowIndex);
     }
   }
 
@@ -1204,7 +1368,8 @@ export class RuntimeSurfaceController {
     const hubState = chatState.recoveryHub ?? this.createRuntimeHubState(chatId, "recovery", 0, {
       messageId: this.claimRetainedHubMessageId(chatId)
     });
-    this.updateHubFocus(hubState, sessionIds, activeSessionId, activeSessionId);
+    hubState.sessionIds = [...sessionIds];
+    this.updateHubFocus(hubState, activeSessionId, activeSessionId, { forcePreferred: true });
     chatState.recoveryHub = hubState;
     const rendered = this.buildRecoveryHubRenderPayload(chatId, hubState);
     await this.requestHubRender(hubState, rendered.text, rendered.replyMarkup, {
@@ -1258,15 +1423,30 @@ export class RuntimeSurfaceController {
       return;
     }
 
-    const sessionId = hubState.visibleState.sessionIds[slot];
+    const sessionId = hubState.kind === "live"
+      ? hubState.visibleState.slotSessionIds[slot - 1] ?? null
+      : hubState.visibleState.sessionIds[slot] ?? null;
     const store = this.deps.getStore();
-    if (!store || !sessionId || !store.getSessionById(sessionId)) {
+    if (!store) {
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      return;
+    }
+    if (hubState.kind === "live" && !sessionId) {
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId);
+      return;
+    }
+
+    const session = sessionId ? store.getSessionById(sessionId) : null;
+    if (!session || session.archived || session.telegramChatId !== hubState.chatId) {
       await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
       return;
     }
 
-    store.setActiveSession(hubState.chatId, sessionId);
-    hubState.focusedSessionId = sessionId;
+    store.setActiveSession(hubState.chatId, session.sessionId);
+    hubState.focusedSessionId = session.sessionId;
+    if (hubState.kind === "live") {
+      this.getOrCreateHubChatState(hubState.chatId).currentHubIndex = hubState.windowIndex;
+    }
     hubState.planExpanded = false;
     hubState.agentsExpanded = false;
     hubState.callbackVersion += 1;
@@ -1497,11 +1677,12 @@ export class RuntimeSurfaceController {
   }
 
   private syncSingleSessionHubState(hubState: RuntimeHubState): void {
-    if (hubState.destroyed || hubState.kind !== "live" || hubState.sessionIds.length !== 1 || hubState.messageId === 0) {
+    const sessionIds = this.getHubOccupiedSessionIds(hubState);
+    if (hubState.destroyed || hubState.kind !== "live" || sessionIds.length !== 1 || hubState.messageId === 0) {
       return;
     }
 
-    const sessionId = hubState.sessionIds[0];
+    const sessionId = sessionIds[0];
     if (!sessionId) {
       return;
     }
@@ -1532,9 +1713,9 @@ export class RuntimeSurfaceController {
     await this.refreshLiveRuntimeHubs(chatId, reason, activeTurn?.sessionId ?? null);
   }
 
-  async completeTerminalRuntimeHandoff(chatId: string, sessionId: string): Promise<void> {
+  async completeTerminalRuntimeHandoff(chatId: string, _sessionId: string): Promise<void> {
     await this.runHubChatOperation(chatId, async () => {
-      await this.refreshLiveRuntimeHubsNow(chatId, "terminal_handoff_completed", null, sessionId);
+      await this.refreshLiveRuntimeHubsNow(chatId, "terminal_handoff_completed");
     });
   }
 
@@ -1722,21 +1903,11 @@ export class RuntimeSurfaceController {
 
     if (nextStatus.turnStatus === "completed" || nextStatus.turnStatus === "failed" || nextStatus.turnStatus === "interrupted") {
       const chatState = this.getOrCreateHubChatState(activeTurn.chatId);
-      chatState.runningOrder = chatState.runningOrder.filter((sessionId) => sessionId !== activeTurn.sessionId);
-      const context = this.deps.getRuntimeCardContext(activeTurn.sessionId);
-      chatState.terminalSummaries = [
-        {
-          sessionId: activeTurn.sessionId,
-          sessionName: context.sessionName ?? activeTurn.sessionId,
-          projectName: context.projectName ?? null,
-          state: nextStatus.turnStatus === "completed"
-            ? "Completed"
-            : nextStatus.turnStatus === "interrupted"
-              ? "Interrupted"
-              : "Failed"
-        },
-        ...chatState.terminalSummaries.filter((entry) => entry.sessionId !== activeTurn.sessionId)
-      ].slice(0, RUNTIME_HUB_TERMINAL_SUMMARY_LIMIT);
+      const slotBinding = this.findLiveHubSlot(chatState, activeTurn.sessionId);
+      if (slotBinding) {
+        slotBinding.hubState.slots[slotBinding.slotIndex]!.terminalState = nextStatus.turnStatus;
+        chatState.currentHubIndex = slotBinding.hubState.windowIndex;
+      }
 
       const keepLastCompletedHubVisible = classified?.kind === "turn_completed"
         && classified.status === "completed"
@@ -2099,9 +2270,9 @@ export class RuntimeSurfaceController {
         forcePreferredFocus: true
       });
 
-      const targetHub = [...chatState.liveHubs.values()].find((hubState) =>
-        targetSessionId ? hubState.sessionIds.includes(targetSessionId) : false
-      ) ?? chatState.liveHubs.get(0) ?? [...chatState.liveHubs.values()][0];
+      const targetHub = (targetSessionId
+        ? this.findLiveHubSlot(chatState, targetSessionId)?.hubState
+        : null) ?? this.resolveCurrentLiveHubContext(chatState);
 
       if (!targetHub) {
         return;
@@ -2116,10 +2287,9 @@ export class RuntimeSurfaceController {
       return;
     }
 
-    const visibleSessionIds = recoveryHub.sessionIds.filter((sessionId) => store?.getSessionById(sessionId));
+    recoveryHub.sessionIds = recoveryHub.sessionIds.filter((sessionId) => store?.getSessionById(sessionId));
     this.updateHubFocus(
       recoveryHub,
-      visibleSessionIds,
       targetSessionId,
       store?.getActiveSession(chatId)?.sessionId ?? null,
       { forcePreferred: true }
@@ -2140,8 +2310,8 @@ export class RuntimeSurfaceController {
       ? this.buildLiveHubRenderPayload(
         hubState.chatId,
         hubState,
-        this.getOrCreateHubChatState(hubState.chatId).liveHubs.size,
-        this.getOrderedActiveTurns(hubState.chatId)
+        this.getOrderedLiveHubs(this.getOrCreateHubChatState(hubState.chatId)).length,
+        this.getActiveTurnsForChat(hubState.chatId)
       )
       : this.buildRecoveryHubRenderPayload(hubState.chatId, hubState);
     const sent = await this.deps.safeSendHtmlMessageResult(hubState.chatId, rendered.text, rendered.replyMarkup);
