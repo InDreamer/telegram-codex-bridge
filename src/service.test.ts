@@ -4955,6 +4955,48 @@ test("new command still opens the picker while the active session is running", a
   }
 });
 
+test("repeated new command deletes the older picker and sends a fresh picker", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
+  const deleted: number[] = [];
+  const paths = (service as any).paths as BridgePaths;
+
+  try {
+    authorizeChat(store, "chat-1");
+    const projectPath = join(paths.homeDir, "Repo", "repeat-new-project");
+    await mkdir(projectPath, { recursive: true });
+    await writeFile(join(projectPath, "package.json"), "{}\n", "utf8");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const message = createFakeTelegramMessage(1200 + sent.length, text);
+        sent.push({ messageId: message.message_id, text, parseMode: options?.parseMode, replyMarkup: options?.replyMarkup });
+        return message;
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string) => {
+        return createFakeTelegramMessage(messageId, text);
+      },
+      deleteMessage: async (_chatId: string, messageId: number) => {
+        deleted.push(messageId);
+        return true;
+      }
+    };
+
+    await (service as any).routeCommand("chat-1", "new", "");
+    const firstPickerMessageId = sent[0]?.messageId;
+    assert.ok(firstPickerMessageId);
+
+    await (service as any).routeCommand("chat-1", "new", "");
+
+    assert.equal(sent.length, 2);
+    assert.match(sent[0]?.text ?? "", /选择要新建会话的项目/u);
+    assert.match(sent[1]?.text ?? "", /选择要新建会话的项目/u);
+    assert.deepEqual(deleted, [firstPickerMessageId]);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("inspect renders structured activity details while running and after completion", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ text: string; parseMode?: string }> = [];

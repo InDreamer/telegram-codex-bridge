@@ -165,7 +165,7 @@ export class SessionProjectCoordinator {
     this.pickerStates.set(chatId, pickerState);
 
     const rendered = buildProjectPickerMessage(picker);
-    await this.replaceInteractivePickerMessage(chatId, pickerState, {
+    await this.recreateInteractivePickerMessage(chatId, pickerState, {
       text: rendered.text,
       replyMarkup: rendered.replyMarkup
     });
@@ -234,7 +234,7 @@ export class SessionProjectCoordinator {
 
     if (!refreshed.hasNewResults) {
       const noNewProjects = buildNoNewProjectsMessage();
-      await this.replaceInteractivePickerMessage(chatId, pickerState, {
+      await this.recreateInteractivePickerMessage(chatId, pickerState, {
         text: noNewProjects.text,
         replyMarkup: noNewProjects.replyMarkup
       });
@@ -248,7 +248,7 @@ export class SessionProjectCoordinator {
     }
 
     const rendered = buildProjectPickerMessage(refreshed.picker);
-    await this.replaceInteractivePickerMessage(chatId, pickerState, {
+    await this.recreateInteractivePickerMessage(chatId, pickerState, {
       text: rendered.text,
       replyMarkup: rendered.replyMarkup
     });
@@ -356,10 +356,7 @@ export class SessionProjectCoordinator {
 
     pickerState.awaitingManualProjectPath = false;
     const rendered = buildProjectPickerMessage(pickerState.picker);
-    if (messageId && messageId > 0) {
-      pickerState.interactiveMessageId = messageId;
-    }
-    await this.replaceInteractivePickerMessage(chatId, pickerState, {
+    await this.recreateInteractivePickerMessage(chatId, pickerState, {
       text: rendered.text,
       replyMarkup: rendered.replyMarkup
     });
@@ -920,6 +917,31 @@ export class SessionProjectCoordinator {
 
     pickerState.interactiveMessageId = sent.message_id;
     await this.cleanupSupersededInteractiveMessage(chatId, previousMessageId, sent.message_id);
+    return sent.message_id;
+  }
+
+  private async recreateInteractivePickerMessage(
+    chatId: string,
+    pickerState: PickerState,
+    message: {
+      text: string;
+      replyMarkup?: TelegramInlineKeyboardMarkup;
+      html?: boolean;
+    }
+  ): Promise<number | null> {
+    const previousMessageId = pickerState.interactiveMessageId;
+    if (previousMessageId && previousMessageId > 0) {
+      await this.deps.safeDeleteMessage(chatId, previousMessageId);
+    }
+
+    const sent = message.html
+      ? await this.deps.safeSendHtmlMessageResult(chatId, message.text, message.replyMarkup)
+      : await this.deps.safeSendMessageResult(chatId, message.text, message.replyMarkup);
+    if (!sent) {
+      return previousMessageId ?? null;
+    }
+
+    pickerState.interactiveMessageId = sent.message_id;
     return sent.message_id;
   }
 

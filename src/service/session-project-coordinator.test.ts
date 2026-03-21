@@ -55,6 +55,10 @@ async function createCoordinatorContext() {
     error: async () => {}
   });
   const reanchorCalls: Array<{ chatId: string; sessionId: string; reason: string }> = [];
+  const sentMessages: Array<{ messageId: number; text: string; html: boolean }> = [];
+  const deletedMessages: number[] = [];
+  const editedMessages: Array<{ messageId: number; text: string; html: boolean }> = [];
+  let nextMessageId = 100;
 
   const coordinator = new SessionProjectCoordinator({
     logger: { warn: async () => {} },
@@ -68,13 +72,40 @@ async function createCoordinatorContext() {
     registerPendingThreadArchiveOp: () => 0,
     markPendingThreadArchiveCommit: async () => {},
     dropPendingThreadArchiveOp: () => {},
-    safeSendMessage: async () => true,
-    safeSendMessageResult: async () => ({ message_id: 100 }),
-    safeSendHtmlMessage: async () => true,
-    safeSendHtmlMessageResult: async () => ({ message_id: 101 }),
-    safeEditMessageText: async () => ({ outcome: "edited" }),
-    safeEditHtmlMessageText: async () => ({ outcome: "edited" }),
-    safeDeleteMessage: async () => ({ outcome: "deleted" }),
+    safeSendMessage: async (_chatId, text) => {
+      sentMessages.push({ messageId: nextMessageId, text, html: false });
+      nextMessageId += 1;
+      return true;
+    },
+    safeSendMessageResult: async (_chatId, text) => {
+      const messageId = nextMessageId;
+      sentMessages.push({ messageId, text, html: false });
+      nextMessageId += 1;
+      return { message_id: messageId };
+    },
+    safeSendHtmlMessage: async (_chatId, text) => {
+      sentMessages.push({ messageId: nextMessageId, text, html: true });
+      nextMessageId += 1;
+      return true;
+    },
+    safeSendHtmlMessageResult: async (_chatId, text) => {
+      const messageId = nextMessageId;
+      sentMessages.push({ messageId, text, html: true });
+      nextMessageId += 1;
+      return { message_id: messageId };
+    },
+    safeEditMessageText: async (_chatId, messageId, text) => {
+      editedMessages.push({ messageId, text, html: false });
+      return { outcome: "edited" };
+    },
+    safeEditHtmlMessageText: async (_chatId, messageId, text) => {
+      editedMessages.push({ messageId, text, html: true });
+      return { outcome: "edited" };
+    },
+    safeDeleteMessage: async (_chatId, messageId) => {
+      deletedMessages.push(messageId);
+      return { outcome: "deleted" };
+    },
     getActiveRuntimeStatusText: () => null,
     reanchorRuntimeAfterBridgeReply: async (chatId, sessionId, reason) => {
       reanchorCalls.push({ chatId, sessionId, reason });
@@ -85,6 +116,10 @@ async function createCoordinatorContext() {
     coordinator,
     store,
     reanchorCalls,
+    sentMessages,
+    deletedMessages,
+    editedMessages,
+    paths,
     cleanup: async () => {
       store.close();
       await rm(root, { recursive: true, force: true });
@@ -103,6 +138,13 @@ function authorizeChat(store: BridgeStateStore, chatId: string): void {
   const candidate = store.listPendingAuthorizations()[0];
   assert.ok(candidate);
   store.confirmPendingAuthorization(candidate);
+}
+
+async function createDiscoveredProject(root: string, name: string): Promise<string> {
+  const projectPath = join(root, "Repo", name);
+  await mkdir(projectPath, { recursive: true });
+  await mkdir(join(projectPath, ".git"), { recursive: true });
+  return projectPath;
 }
 
 test("SessionProjectCoordinator reanchors runtime hubs after project picker creates a new session", async () => {
@@ -164,6 +206,108 @@ test("SessionProjectCoordinator reanchors runtime hubs after manual-path confirm
       sessionId: created.sessionId,
       reason: "session_created"
     }]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("handleNew deletes the previous picker and sends a fresh picker message", async () => {
+  const {
+    coordinator,
+    store,
+    sentMessages,
+    deletedMessages,
+    editedMessages,
+    paths,
+    cleanup
+  } = await createCoordinatorContext();
+
+  try {
+    authorizeChat(store, "chat-1");
+    await createDiscoveredProject(paths.homeDir, "picker-project");
+
+    await coordinator.handleNew("chat-1");
+    const firstPickerMessageId = sentMessages[0]?.messageId;
+    assert.ok(firstPickerMessageId);
+
+    await coordinator.handleNew("chat-1");
+
+    assert.equal(sentMessages.length, 2);
+    assert.match(sentMessages[0]?.text ?? "", /选择要新建会话的项目/u);
+    assert.match(sentMessages[1]?.text ?? "", /选择要新建会话的项目/u);
+    assert.deepEqual(deletedMessages, [firstPickerMessageId]);
+    assert.deepEqual(editedMessages, []);
+    assert.equal((coordinator as any).pickerStates.get("chat-1")?.interactiveMessageId, sentMessages[1]?.messageId);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("returnToProjectPicker deletes the current picker and sends a fresh picker message", async () => {
+  const {
+    coordinator,
+    store,
+    sentMessages,
+    deletedMessages,
+    editedMessages,
+    paths,
+    cleanup
+  } = await createCoordinatorContext();
+
+  try {
+    authorizeChat(store, "chat-1");
+    await createDiscoveredProject(paths.homeDir, "picker-project");
+
+    await coordinator.handleNew("chat-1");
+    const firstPickerMessageId = sentMessages[0]?.messageId;
+    assert.ok(firstPickerMessageId);
+
+    await coordinator.enterManualPathMode("chat-1", firstPickerMessageId);
+    const currentInteractiveMessageId = (coordinator as any).pickerStates.get("chat-1")?.interactiveMessageId;
+    assert.ok(currentInteractiveMessageId);
+
+    await coordinator.returnToProjectPicker("chat-1", currentInteractiveMessageId);
+
+    assert.equal(sentMessages.length, 2);
+    assert.match(sentMessages[1]?.text ?? "", /选择要新建会话的项目/u);
+    assert.deepEqual(deletedMessages, [currentInteractiveMessageId]);
+    assert.equal(editedMessages[0]?.messageId, firstPickerMessageId);
+    assert.equal((coordinator as any).pickerStates.get("chat-1")?.interactiveMessageId, sentMessages[1]?.messageId);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("stale picker message ids expire after a newer picker is sent", async () => {
+  const {
+    coordinator,
+    store,
+    sentMessages,
+    deletedMessages,
+    paths,
+    cleanup
+  } = await createCoordinatorContext();
+
+  try {
+    authorizeChat(store, "chat-1");
+    await createDiscoveredProject(paths.homeDir, "picker-project");
+
+    await coordinator.handleNew("chat-1");
+    const firstPickerMessageId = sentMessages[0]?.messageId;
+    const firstProjectKey = [...((coordinator as any).pickerStates.get("chat-1")?.picker.projectMap.keys() ?? [])][0];
+    assert.ok(firstPickerMessageId);
+    assert.ok(firstProjectKey);
+
+    await coordinator.handleNew("chat-1");
+    const secondPickerMessageId = sentMessages[1]?.messageId;
+    assert.ok(secondPickerMessageId);
+
+    await coordinator.handleProjectPick("chat-1", firstPickerMessageId, firstProjectKey);
+
+    assert.equal(store.getActiveSession("chat-1"), null);
+    assert.deepEqual(deletedMessages, [firstPickerMessageId]);
+    assert.equal(sentMessages.at(-1)?.text, "这个按钮已过期，请重新操作。");
+    assert.equal((coordinator as any).pickerStates.get("chat-1")?.interactiveMessageId, secondPickerMessageId);
   } finally {
     await cleanup();
   }
