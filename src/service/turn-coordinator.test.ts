@@ -501,24 +501,32 @@ test("TurnCoordinator delivers review results when review mode exits without a p
   }
 });
 
-test("TurnCoordinator delivers review outer turn results from the durable inner turn", async () => {
+test("TurnCoordinator prefers trailing review findings over the exited-review summary line", async () => {
   const { coordinator, store, sentHtmlMessages, finalizedHandoffs, cleanup } = await createCoordinatorContext({
     appServer: {
       resumeThread: async () => ({
         thread: {
           id: "thread-review",
           turns: [{
-            id: "turn-review-inner",
-            status: "completed",
+            id: "turn-review",
             items: [
               {
+                type: "agentMessage",
+                phase: "final_answer",
+                text: ""
+              },
+              {
                 type: "exitedReviewMode",
-                review: "The review found a missing regression test for split-turn recovery."
+                review: "The patch fixes one split-turn review case."
               },
               {
                 type: "agentMessage",
                 phase: null,
-                text: "The review found a missing regression test for split-turn recovery."
+                text: [
+                  "The patch fixes one split-turn review case, but it can now return stale results from an older review in the same thread.",
+                  "",
+                  "- [P1] Correlate review fallback with the current review run"
+                ].join("\n")
               }
             ]
           }]
@@ -535,12 +543,67 @@ test("TurnCoordinator delivers review outer turn results from the durable inner 
       projectPath: "/tmp/project-one"
     });
 
-    await coordinator.beginActiveTurn("chat-1", session, "thread-review", "turn-review-outer", "inProgress", undefined, {
+    await coordinator.beginActiveTurn("chat-1", session, "thread-review", "turn-review", "inProgress");
+    await coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-review",
+      turnId: "turn-review",
+      status: "completed"
+    });
+
+    assert.equal(coordinator.getActiveTurn(), null);
+    assert.equal(sentHtmlMessages.length, 1);
+    assert.match(sentHtmlMessages[0]?.html ?? "", /Correlate review fallback with the current review run/u);
+    assert.doesNotMatch(sentHtmlMessages[0]?.html ?? "", /^The patch fixes one split-turn review case\.$/u);
+    assert.deepEqual(finalizedHandoffs, [{ chatId: "chat-1", sessionId: session.sessionId }]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator delivers review outer turn results from the durable inner turn", async () => {
+  let resumeCount = 0;
+  const { coordinator, store, sentHtmlMessages, finalizedHandoffs, cleanup } = await createCoordinatorContext({
+    appServer: {
+      resumeThread: async () => {
+        resumeCount += 1;
+        return {
+          thread: {
+            id: "thread-review",
+            turns: resumeCount === 1 ? [] : [{
+              id: "019d0fe8-e2bd-73a3-886a-2a2c7444045b",
+              status: "completed",
+              items: [
+                {
+                  type: "exitedReviewMode",
+                  review: "The review found a missing regression test for split-turn recovery."
+                },
+                {
+                  type: "agentMessage",
+                  phase: null,
+                  text: "The review found a missing regression test for split-turn recovery."
+                }
+              ]
+            }]
+          }
+        } as any;
+      }
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      displayName: "Session Review",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.beginActiveTurn("chat-1", session, "thread-review", "019d0fe8-dc95-7b10-91c6-e462e5f731d7", "inProgress", undefined, {
       mode: "review"
     });
     await coordinator.handleAppServerNotification("turn/completed", {
       threadId: "thread-review",
-      turnId: "turn-review-outer",
+      turnId: "019d0fe8-dc95-7b10-91c6-e462e5f731d7",
       status: "completed"
     });
 
@@ -554,26 +617,275 @@ test("TurnCoordinator delivers review outer turn results from the durable inner 
   }
 });
 
+test("TurnCoordinator delivers split-turn review findings from live review items even before durable history catches up", async () => {
+  const { coordinator, store, sentHtmlMessages, finalizedHandoffs, cleanup } = await createCoordinatorContext({
+    appServer: {
+      resumeThread: async () => ({
+        thread: {
+          id: "thread-review",
+          turns: []
+        }
+      } as any)
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      displayName: "Session Review",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.beginActiveTurn("chat-1", session, "thread-review", "outer-turn", "inProgress", undefined, {
+      mode: "review"
+    });
+    await coordinator.handleAppServerNotification("item/completed", {
+      threadId: "thread-review",
+      turnId: "inner-turn",
+      item: {
+        id: "review-exit",
+        type: "exitedReviewMode",
+        review: "The patch fixes one split-turn review case."
+      }
+    });
+    await coordinator.handleAppServerNotification("item/completed", {
+      threadId: "thread-review",
+      turnId: "inner-turn",
+      item: {
+        id: "review-message",
+        type: "agentMessage",
+        phase: null,
+        text: [
+          "The patch fixes one split-turn review case, but it can now return stale results from an older review in the same thread.",
+          "",
+          "- [P1] Correlate review fallback without UUIDv7 ordering assumptions"
+        ].join("\n")
+      }
+    });
+    await coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-review",
+      turnId: "outer-turn",
+      status: "completed"
+    });
+
+    assert.equal(coordinator.getActiveTurn(), null);
+    assert.equal(sentHtmlMessages.length, 1);
+    assert.match(sentHtmlMessages[0]?.html ?? "", /Correlate review fallback without UUIDv7 ordering assumptions/u);
+    assert.doesNotMatch(sentHtmlMessages[0]?.html ?? "", /没有可返回的最终答复/u);
+    assert.deepEqual(finalizedHandoffs, [{ chatId: "chat-1", sessionId: session.sessionId }]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator uses the observed live review turn id instead of UUID ordering assumptions", async () => {
+  let resumeCount = 0;
+  const { coordinator, store, sentHtmlMessages, finalizedHandoffs, cleanup } = await createCoordinatorContext({
+    appServer: {
+      resumeThread: async () => {
+        resumeCount += 1;
+        return {
+          thread: {
+            id: "thread-review",
+            turns: resumeCount === 1
+              ? []
+              : [{
+                id: "inner-turn",
+                status: "completed",
+                items: [
+                  {
+                    type: "exitedReviewMode",
+                    review: ""
+                  },
+                  {
+                    type: "agentMessage",
+                    phase: null,
+                    text: "The review finished without inline findings but included a trailing summary."
+                  }
+                ]
+              }]
+          }
+        } as any;
+      }
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      displayName: "Session Review",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.beginActiveTurn("chat-1", session, "thread-review", "outer-turn", "inProgress", undefined, {
+      mode: "review"
+    });
+    await coordinator.handleAppServerNotification("item/completed", {
+      threadId: "thread-review",
+      turnId: "inner-turn",
+      item: {
+        id: "review-exit",
+        type: "exitedReviewMode",
+        review: ""
+      }
+    });
+    await coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-review",
+      turnId: "outer-turn",
+      status: "completed"
+    });
+
+    assert.equal(coordinator.getActiveTurn(), null);
+    assert.equal(sentHtmlMessages.length, 1);
+    assert.match(sentHtmlMessages[0]?.html ?? "", /included a trailing summary/u);
+    assert.doesNotMatch(sentHtmlMessages[0]?.html ?? "", /没有可返回的最终答复/u);
+    assert.deepEqual(finalizedHandoffs, [{ chatId: "chat-1", sessionId: session.sessionId }]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator ignores subagent turns when tracking review result candidates", async () => {
+  const { coordinator, store, sentHtmlMessages, finalizedHandoffs, cleanup } = await createCoordinatorContext({
+    appServer: {
+      resumeThread: async () => ({
+        thread: {
+          id: "thread-review",
+          turns: []
+        }
+      } as any)
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      displayName: "Session Review",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.beginActiveTurn("chat-1", session, "thread-review", "outer-turn", "inProgress", undefined, {
+      mode: "review"
+    });
+    await coordinator.handleAppServerNotification("item/started", {
+      threadId: "thread-review",
+      turnId: "outer-turn",
+      item: {
+        id: "collab-1",
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        receiverThreadIds: ["thread-sub-1"],
+        agentsStates: {
+          "thread-sub-1": {
+            status: "pendingInit",
+            message: "Booting"
+          }
+        }
+      }
+    });
+    await coordinator.handleAppServerNotification("turn/started", {
+      threadId: "thread-sub-1",
+      turn: { id: "turn-sub-1" }
+    });
+    await coordinator.handleAppServerNotification("item/completed", {
+      threadId: "thread-sub-1",
+      turnId: "turn-sub-1",
+      item: {
+        id: "subagent-final",
+        type: "agentMessage",
+        phase: null,
+        text: "This subagent text must not be delivered as the review result."
+      }
+    });
+    await coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-review",
+      turnId: "outer-turn",
+      status: "completed"
+    });
+
+    assert.equal(coordinator.getActiveTurn(), null);
+    assert.equal(sentHtmlMessages.length, 1);
+    assert.match(sentHtmlMessages[0]?.html ?? "", /没有可返回的最终答复/u);
+    assert.doesNotMatch(sentHtmlMessages[0]?.html ?? "", /subagent text must not be delivered/u);
+    assert.deepEqual(finalizedHandoffs, [{ chatId: "chat-1", sessionId: session.sessionId }]);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("TurnCoordinator delivers review outer turn trailing agent text when the durable inner review is empty", async () => {
+  let resumeCount = 0;
+  const { coordinator, store, sentHtmlMessages, finalizedHandoffs, cleanup } = await createCoordinatorContext({
+    appServer: {
+      resumeThread: async () => {
+        resumeCount += 1;
+        return {
+          thread: {
+            id: "thread-review",
+            turns: resumeCount === 1 ? [] : [{
+              id: "019d0fe8-e2bd-73a3-886a-2a2c7444045b",
+              status: "completed",
+              items: [
+                {
+                  type: "exitedReviewMode",
+                  review: ""
+                },
+                {
+                  type: "agentMessage",
+                  phase: null,
+                  text: "The review finished without inline findings but included a trailing summary."
+                }
+              ]
+            }]
+          }
+        } as any;
+      }
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      displayName: "Session Review",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.beginActiveTurn("chat-1", session, "thread-review", "019d0fe8-dc95-7b10-91c6-e462e5f731d7", "inProgress", undefined, {
+      mode: "review"
+    });
+    await coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-review",
+      turnId: "019d0fe8-dc95-7b10-91c6-e462e5f731d7",
+      status: "completed"
+    });
+
+    assert.equal(coordinator.getActiveTurn(), null);
+    assert.equal(sentHtmlMessages.length, 1);
+    assert.match(sentHtmlMessages[0]?.html ?? "", /included a trailing summary/u);
+    assert.doesNotMatch(sentHtmlMessages[0]?.html ?? "", /没有可返回的最终答复/u);
+    assert.deepEqual(finalizedHandoffs, [{ chatId: "chat-1", sessionId: session.sessionId }]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator does not reuse an older completed review when the current review result turn is still missing", async () => {
   const { coordinator, store, sentHtmlMessages, finalizedHandoffs, cleanup } = await createCoordinatorContext({
     appServer: {
       resumeThread: async () => ({
         thread: {
           id: "thread-review",
           turns: [{
-            id: "turn-review-inner",
+            id: "turn-review-old",
             status: "completed",
-            items: [
-              {
-                type: "exitedReviewMode",
-                review: ""
-              },
-              {
-                type: "agentMessage",
-                phase: null,
-                text: "The review finished without inline findings but included a trailing summary."
-              }
-            ]
+            items: [{
+              type: "exitedReviewMode",
+              review: "This stale review must not be delivered for the new run."
+            }]
           }]
         }
       } as any)
@@ -588,19 +900,286 @@ test("TurnCoordinator delivers review outer turn trailing agent text when the du
       projectPath: "/tmp/project-one"
     });
 
-    await coordinator.beginActiveTurn("chat-1", session, "thread-review", "turn-review-outer", "inProgress", undefined, {
+    await coordinator.beginActiveTurn("chat-1", session, "thread-review", "019d0fe8-dc95-7b10-91c6-e462e5f731d7", "inProgress", undefined, {
       mode: "review"
     });
     await coordinator.handleAppServerNotification("turn/completed", {
       threadId: "thread-review",
-      turnId: "turn-review-outer",
+      turnId: "019d0fe8-dc95-7b10-91c6-e462e5f731d7",
       status: "completed"
     });
 
     assert.equal(coordinator.getActiveTurn(), null);
     assert.equal(sentHtmlMessages.length, 1);
-    assert.match(sentHtmlMessages[0]?.html ?? "", /included a trailing summary/u);
-    assert.doesNotMatch(sentHtmlMessages[0]?.html ?? "", /没有可返回的最终答复/u);
+    assert.match(sentHtmlMessages[0]?.html ?? "", /没有可返回的最终答复/u);
+    assert.doesNotMatch(sentHtmlMessages[0]?.html ?? "", /stale review must not be delivered/u);
+    assert.deepEqual(finalizedHandoffs, [{ chatId: "chat-1", sessionId: session.sessionId }]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator captures early review notifications that arrive before baseline history capture completes", async () => {
+  let resumeCount = 0;
+  let releaseBaselineCapture!: () => void;
+  const baselineCaptureGate = new Promise<void>((resolve) => {
+    releaseBaselineCapture = resolve;
+  });
+  const { coordinator, store, sentHtmlMessages, finalizedHandoffs, cleanup } = await createCoordinatorContext({
+    appServer: {
+      resumeThread: async () => {
+        resumeCount += 1;
+        if (resumeCount === 1) {
+          await baselineCaptureGate;
+        }
+        return {
+          thread: {
+            id: "thread-review",
+            turns: []
+          }
+        } as any;
+      }
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      displayName: "Session Review",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    const beginActiveTurn = coordinator.beginActiveTurn(
+      "chat-1",
+      session,
+      "thread-review",
+      "outer-turn",
+      "inProgress",
+      undefined,
+      { mode: "review" }
+    );
+    await coordinator.handleAppServerNotification("item/completed", {
+      threadId: "thread-review",
+      turnId: "inner-turn",
+      item: {
+        id: "review-message",
+        type: "exitedReviewMode",
+        review: "",
+      }
+    });
+    await coordinator.handleAppServerNotification("item/completed", {
+      threadId: "thread-review",
+      turnId: "inner-turn",
+      item: {
+        id: "review-message",
+        type: "agentMessage",
+        phase: null,
+        text: "Early review completion should not be dropped."
+      }
+    });
+    const completed = coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-review",
+      turnId: "outer-turn",
+      status: "completed"
+    });
+    releaseBaselineCapture();
+    await Promise.all([beginActiveTurn, completed]);
+
+    assert.equal(coordinator.getActiveTurn(), null);
+    assert.equal(store.getSessionById(session.sessionId)?.status, "idle");
+    assert.equal(sentHtmlMessages.length, 1);
+    assert.match(sentHtmlMessages[0]?.html ?? "", /Early review completion should not be dropped/u);
+    assert.deepEqual(finalizedHandoffs, [{ chatId: "chat-1", sessionId: session.sessionId }]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator ignores delayed pre-existing review turns when resolving preferred review history turns", async () => {
+  let resumeCount = 0;
+  const { coordinator, store, sentHtmlMessages, finalizedHandoffs, cleanup } = await createCoordinatorContext({
+    appServer: {
+      resumeThread: async () => {
+        resumeCount += 1;
+        if (resumeCount === 1) {
+          return {
+            thread: {
+              id: "thread-review",
+              turns: [{
+                id: "turn-review-old",
+                status: "completed",
+                items: [{
+                  type: "exitedReviewMode",
+                  review: "Old review output must not win preferred-turn recovery."
+                }]
+              }]
+            }
+          } as any;
+        }
+
+        return {
+          thread: {
+            id: "thread-review",
+            turns: [
+              {
+                id: "turn-review-old",
+                status: "completed",
+                items: [{
+                  type: "exitedReviewMode",
+                  review: "Old review output must not win preferred-turn recovery."
+                }]
+              },
+              {
+                id: "outer-turn",
+                status: "completed",
+                items: [{
+                  type: "exitedReviewMode",
+                  review: "Fresh review output from this run."
+                }]
+              }
+            ]
+          }
+        } as any;
+      }
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      displayName: "Session Review",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.beginActiveTurn("chat-1", session, "thread-review", "outer-turn", "inProgress", undefined, {
+      mode: "review"
+    });
+    await coordinator.handleAppServerNotification("item/completed", {
+      threadId: "thread-review",
+      turnId: "turn-review-old",
+      item: {
+        id: "stale-review-exit",
+        type: "exitedReviewMode",
+        review: "Old review output must not win preferred-turn recovery."
+      }
+    });
+    await coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-review",
+      turnId: "outer-turn",
+      status: "completed"
+    });
+
+    assert.equal(coordinator.getActiveTurn(), null);
+    assert.equal(sentHtmlMessages.length, 1);
+    assert.match(sentHtmlMessages[0]?.html ?? "", /Fresh review output from this run/u);
+    assert.doesNotMatch(sentHtmlMessages[0]?.html ?? "", /Old review output must not win preferred-turn recovery/u);
+    assert.deepEqual(finalizedHandoffs, [{ chatId: "chat-1", sessionId: session.sessionId }]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator disables review fallback and preferred history reuse when baseline capture fails", async () => {
+  let resumeCount = 0;
+  const { coordinator, store, sentHtmlMessages, finalizedHandoffs, cleanup } = await createCoordinatorContext({
+    appServer: {
+      resumeThread: async () => {
+        resumeCount += 1;
+        if (resumeCount === 1) {
+          throw new Error("baseline capture timed out");
+        }
+
+        return {
+          thread: {
+            id: "thread-review",
+            turns: [{
+              id: "turn-review-old",
+              status: "completed",
+              items: [{
+                type: "exitedReviewMode",
+                review: "Old review output must not be reused after baseline failure."
+              }]
+            }]
+          }
+        } as any;
+      }
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      displayName: "Session Review",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.beginActiveTurn("chat-1", session, "thread-review", "outer-turn", "inProgress", undefined, {
+      mode: "review"
+    });
+    await coordinator.handleAppServerNotification("turn/started", {
+      threadId: "thread-review",
+      turn: { id: "turn-review-old" }
+    });
+    await coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-review",
+      turnId: "outer-turn",
+      status: "completed"
+    });
+
+    assert.equal(coordinator.getActiveTurn(), null);
+    assert.equal(sentHtmlMessages.length, 1);
+    assert.match(sentHtmlMessages[0]?.html ?? "", /没有可返回的最终答复/u);
+    assert.doesNotMatch(
+      sentHtmlMessages[0]?.html ?? "",
+      /Old review output must not be reused after baseline failure/u
+    );
+    assert.deepEqual(finalizedHandoffs, [{ chatId: "chat-1", sessionId: session.sessionId }]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator keeps non-review trailing agent text out of final-answer recovery", async () => {
+  const { coordinator, store, sentHtmlMessages, finalizedHandoffs, cleanup } = await createCoordinatorContext({
+    appServer: {
+      resumeThread: async () => ({
+        thread: {
+          id: "thread-non-review",
+          turns: [{
+            id: "turn-non-review",
+            items: [{
+              type: "agentMessage",
+              phase: null,
+              text: "This intermediate text should stay hidden from Telegram."
+            }]
+          }]
+        }
+      } as any)
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      displayName: "Session Non Review",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.beginActiveTurn("chat-1", session, "thread-non-review", "turn-non-review", "inProgress");
+    await coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-non-review",
+      turnId: "turn-non-review",
+      status: "completed"
+    });
+
+    assert.equal(coordinator.getActiveTurn(), null);
+    assert.equal(sentHtmlMessages.length, 1);
+    assert.match(sentHtmlMessages[0]?.html ?? "", /没有可返回的最终答复/u);
+    assert.doesNotMatch(sentHtmlMessages[0]?.html ?? "", /This intermediate text should stay hidden/u);
     assert.deepEqual(finalizedHandoffs, [{ chatId: "chat-1", sessionId: session.sessionId }]);
   } finally {
     await cleanup();

@@ -37,6 +37,17 @@ interface ActiveTurnState extends InteractionBrokerActiveTurn {
   startedInReviewMode: boolean;
   terminalDeliveryPending: boolean;
   finalMessage: string | null;
+  reviewTurnIdsKnownAtStart: Set<string>;
+  reviewBaselineCapturePromise: Promise<void> | null;
+  reviewBaselineCaptureSucceeded: boolean;
+  observedReviewCandidateTurnId: string | null;
+  observedReviewResultTurnId: string | null;
+  observedReviewArtifactsByTurnId: Map<string, {
+    finalAnswer: string | null;
+    trailingMessage: string | null;
+    review: string | null;
+    hasExitedReviewMode: boolean;
+  }>;
   effectiveModel: string | null;
   effectiveReasoningEffort: ReasoningEffort | null;
   effectiveReasoningEffortPinned: boolean;
@@ -442,6 +453,12 @@ export class TurnCoordinator {
       startedInReviewMode: options?.mode === "review",
       terminalDeliveryPending: false,
       finalMessage: null,
+      reviewTurnIdsKnownAtStart: new Set(),
+      reviewBaselineCapturePromise: null,
+      reviewBaselineCaptureSucceeded: !options?.mode || options.mode !== "review",
+      observedReviewCandidateTurnId: null,
+      observedReviewResultTurnId: null,
+      observedReviewArtifactsByTurnId: new Map(),
       effectiveModel: resolvedEffectiveConfig.model,
       effectiveReasoningEffort: resolvedEffectiveConfig.reasoningEffort,
       effectiveReasoningEffortPinned: resolvedEffectiveConfig.reasoningEffortPinned,
@@ -464,6 +481,12 @@ export class TurnCoordinator {
       surfaceQueue: Promise.resolve()
     };
     this.registerActiveTurn(activeTurn);
+    if (activeTurn.startedInReviewMode) {
+      activeTurn.reviewBaselineCapturePromise = this.seedKnownReviewTurnIds(activeTurn)
+        .then((success) => {
+          activeTurn.reviewBaselineCaptureSucceeded = success;
+        });
+    }
 
     this.setRecentActivity(session.sessionId, {
       tracker: activeTurn.tracker,
@@ -669,6 +692,7 @@ export class TurnCoordinator {
       activeTurn.effectiveModel = classified.toModel;
     }
 
+    this.captureReviewArtifacts(activeTurn, classified);
     activeTurn.tracker.apply(classified);
     await this.logSubagentIdentityEvents(activeTurn, activeTurn.tracker.drainSubagentIdentityEvents());
     for (const agent of activeTurn.tracker.getInspectSnapshot().agentSnapshot) {
@@ -724,26 +748,38 @@ export class TurnCoordinator {
 
       let finalMessage = activeTurn.finalMessage;
       let proposedPlan: string | null = null;
+      const observedReviewMessage = this.resolveObservedReviewMessage(activeTurn);
       const appServer = this.deps.getAppServer();
-      if (appServer && (!finalMessage || activeTurn.startedInPlanMode)) {
+      if (appServer && (activeTurn.startedInReviewMode || !finalMessage || activeTurn.startedInPlanMode)) {
         try {
+          await activeTurn.reviewBaselineCapturePromise;
+          const allowReviewFallback = activeTurn.startedInReviewMode && activeTurn.reviewBaselineCaptureSucceeded;
+          const preferredTurnId = allowReviewFallback
+            ? activeTurn.observedReviewResultTurnId ?? activeTurn.observedReviewCandidateTurnId
+            : null;
           const turnArtifacts = await extractTurnArtifactsFromHistory(
             appServer,
             activeTurn.threadId,
             activeTurn.turnId,
             {
-              allowReviewFallback: activeTurn.startedInReviewMode
+              allowReviewFallback,
+              knownReviewTurnIdsAtStart: [...activeTurn.reviewTurnIdsKnownAtStart],
+              preferredTurnId
             }
           );
-          if (!finalMessage) {
+          proposedPlan = turnArtifacts.proposedPlan;
+          if (activeTurn.startedInReviewMode) {
+            finalMessage = turnArtifacts.finalMessage ?? observedReviewMessage ?? finalMessage;
+          } else if (!finalMessage) {
             finalMessage = turnArtifacts.finalMessage;
           }
-          proposedPlan = turnArtifacts.proposedPlan;
           if (turnArtifacts.reviewArtifactsPresent && (!turnArtifacts.requestedTurnFound || !turnArtifacts.finalMessage)) {
             await this.deps.logger.info("review turn artifact recovery", {
               sessionId: activeTurn.sessionId,
               threadId: activeTurn.threadId,
               activeTurnId: activeTurn.turnId,
+              observedReviewCandidateTurnId: activeTurn.observedReviewCandidateTurnId,
+              observedReviewTurnId: activeTurn.observedReviewResultTurnId,
               historyContainsActiveTurnId: turnArtifacts.requestedTurnFound,
               fallbackReviewTurnId: turnArtifacts.usedReviewFallback ? turnArtifacts.resolvedTurnId : null,
               finalMessageSource: turnArtifacts.finalMessageSource
@@ -757,6 +793,9 @@ export class TurnCoordinator {
             error: `${error}`
           });
         }
+      }
+      if (activeTurn.startedInReviewMode && !finalMessage) {
+        finalMessage = observedReviewMessage;
       }
 
       let delivery: TerminalDeliveryResult;
@@ -1348,6 +1387,105 @@ export class TurnCoordinator {
       );
     }
   }
+
+  private captureReviewArtifacts(
+    activeTurn: ActiveTurnState,
+    classified: ReturnType<typeof classifyNotification>
+  ): void {
+    if (!activeTurn.startedInReviewMode || classified.threadId !== activeTurn.threadId) {
+      return;
+    }
+
+    if (classified.kind === "turn_started" && classified.turnId && classified.turnId !== activeTurn.turnId) {
+      activeTurn.observedReviewCandidateTurnId = classified.turnId;
+      return;
+    }
+
+    if (classified.kind !== "item_completed" || !classified.turnId) {
+      return;
+    }
+
+    const observed = this.getObservedReviewArtifacts(activeTurn, classified.turnId);
+    if (classified.itemType === "agentMessage") {
+      if (classified.itemPhase === "final_answer" && hasMeaningfulText(classified.itemText)) {
+        observed.finalAnswer = classified.itemText;
+      } else if (classified.itemPhase !== "commentary" && hasMeaningfulText(classified.itemText)) {
+        observed.trailingMessage = classified.itemText;
+      }
+      return;
+    }
+
+    if (classified.itemType === "exitedReviewMode") {
+      observed.hasExitedReviewMode = true;
+      if (hasMeaningfulText(classified.itemReview)) {
+        observed.review = classified.itemReview;
+      }
+      activeTurn.observedReviewResultTurnId = classified.turnId;
+    }
+  }
+
+  private getObservedReviewArtifacts(
+    activeTurn: ActiveTurnState,
+    turnId: string
+  ): {
+    finalAnswer: string | null;
+    trailingMessage: string | null;
+    review: string | null;
+    hasExitedReviewMode: boolean;
+  } {
+    const existing = activeTurn.observedReviewArtifactsByTurnId.get(turnId);
+    if (existing) {
+      return existing;
+    }
+
+    const created = {
+      finalAnswer: null,
+      trailingMessage: null,
+      review: null,
+      hasExitedReviewMode: false
+    };
+    activeTurn.observedReviewArtifactsByTurnId.set(turnId, created);
+    return created;
+  }
+
+  private resolveObservedReviewMessage(activeTurn: ActiveTurnState): string | null {
+    const resultTurnId = activeTurn.observedReviewResultTurnId ?? activeTurn.observedReviewCandidateTurnId;
+    if (!resultTurnId) {
+      return null;
+    }
+
+    const observed = activeTurn.observedReviewArtifactsByTurnId.get(resultTurnId);
+    if (!observed) {
+      return null;
+    }
+
+    return observed.finalAnswer ?? observed.trailingMessage ?? observed.review ?? null;
+  }
+
+  private async seedKnownReviewTurnIds(activeTurn: ActiveTurnState): Promise<boolean> {
+    const appServer = this.deps.getAppServer();
+    if (!appServer) {
+      return false;
+    }
+
+    try {
+      const resumed = await appServer.resumeThread(activeTurn.threadId);
+      for (const turn of resumed.thread.turns) {
+        if (turn.items.some((item) => item.type === "exitedReviewMode")) {
+          activeTurn.reviewTurnIdsKnownAtStart.add(turn.id);
+        }
+      }
+      return true;
+    } catch (error) {
+      await this.deps.logger.warn("review turn baseline capture failed", {
+        sessionId: activeTurn.sessionId,
+        threadId: activeTurn.threadId,
+        turnId: activeTurn.turnId,
+        error: `${error}`
+      });
+      return false;
+    }
+  }
 }
 
 function isMissingRemoteThreadError(error: unknown): boolean {
@@ -1427,4 +1565,8 @@ function summarizeActivityStatusList(values: string[]): string[] {
 
 function summarizeTextPreview(text: string | null | undefined, limit = 160): string {
   return normalizeAndTruncate(text, limit, "...") ?? "";
+}
+
+function hasMeaningfulText(value: string | null | undefined): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }

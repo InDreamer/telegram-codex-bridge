@@ -28,19 +28,33 @@ export async function extractTurnArtifactsFromHistory(
   turnId: string,
   options?: {
     allowReviewFallback?: boolean;
+    knownReviewTurnIdsAtStart?: readonly string[] | null;
+    preferredTurnId?: string | null;
   }
 ): Promise<TurnArtifactsFromHistory> {
   const resumed = await appServer.resumeThread(threadId);
+  const knownReviewTurnIdsAtStart = new Set(options?.knownReviewTurnIdsAtStart ?? []);
   const targetTurn = resumed.thread.turns.find((turn) => turn.id === turnId) ?? null;
+  const preferredTurnCandidate = options?.preferredTurnId
+    ? resumed.thread.turns.find((turn) => turn.id === options.preferredTurnId) ?? null
+    : null;
+  const preferredTurn = preferredTurnCandidate && !knownReviewTurnIdsAtStart.has(preferredTurnCandidate.id)
+    ? preferredTurnCandidate
+    : null;
   const requestedTurnFound = targetTurn !== null;
   const fallbackTurn = !requestedTurnFound && options?.allowReviewFallback
-    ? findMostRecentCompletedReviewTurn(resumed.thread.turns)
+    ? findMostRecentCompletedReviewTurn(
+      resumed.thread.turns,
+      knownReviewTurnIdsAtStart
+    )
     : null;
-  const resolvedTurn = targetTurn ?? fallbackTurn;
-  const extracted = resolvedTurn ? extractArtifactsFromTurn(resolvedTurn) : null;
-  const reviewArtifactsPresent = requestedTurnFound
-    ? turnContainsReviewArtifacts(targetTurn)
-    : fallbackTurn !== null;
+  const resolvedTurn = preferredTurn ?? targetTurn ?? fallbackTurn;
+  const reviewArtifactsPresent = resolvedTurn !== null && turnContainsReviewArtifacts(resolvedTurn);
+  const extracted = resolvedTurn
+    ? extractArtifactsFromTurn(resolvedTurn, {
+      allowTrailingAgentMessage: reviewArtifactsPresent
+    })
+    : null;
 
   if (!resolvedTurn) {
     return {
@@ -59,13 +73,18 @@ export async function extractTurnArtifactsFromHistory(
     finalMessageSource: extracted?.finalMessageSource ?? null,
     proposedPlan: extracted?.proposedPlan ?? null,
     requestedTurnFound,
-    usedReviewFallback: fallbackTurn !== null,
+    usedReviewFallback: fallbackTurn !== null || (preferredTurn !== null && preferredTurn.id !== turnId),
     reviewArtifactsPresent,
     resolvedTurnId: resolvedTurn.id
   };
 }
 
-function extractArtifactsFromTurn(targetTurn: HistoryTurn): {
+function extractArtifactsFromTurn(
+  targetTurn: HistoryTurn,
+  options?: {
+    allowTrailingAgentMessage?: boolean;
+  }
+): {
   finalMessage: string | null;
   finalMessageSource: FinalMessageSource;
   proposedPlan: string | null;
@@ -76,9 +95,11 @@ function extractArtifactsFromTurn(targetTurn: HistoryTurn): {
   const reviewExitItem = [...targetTurn.items].reverse().find(
     (item) => item.type === "exitedReviewMode" && hasMeaningfulText(item.review)
   );
-  const trailingAgentMessage = [...targetTurn.items].reverse().find(
-    (item) => item.type === "agentMessage" && item.phase !== "commentary" && hasMeaningfulText(item.text)
-  );
+  const trailingAgentMessage = options?.allowTrailingAgentMessage
+    ? [...targetTurn.items].reverse().find(
+      (item) => item.type === "agentMessage" && item.phase !== "commentary" && hasMeaningfulText(item.text)
+    )
+    : null;
   const planItem = [...targetTurn.items].reverse().find(
     (item) => item.type === "plan" && typeof item.text === "string"
   );
@@ -91,18 +112,18 @@ function extractArtifactsFromTurn(targetTurn: HistoryTurn): {
     };
   }
 
-  if (reviewExitItem) {
-    return {
-      finalMessage: reviewExitItem.review ?? null,
-      finalMessageSource: "review_exit",
-      proposedPlan: planItem?.text ?? null
-    };
-  }
-
   if (trailingAgentMessage) {
     return {
       finalMessage: trailingAgentMessage.text ?? null,
       finalMessageSource: "agent_message",
+      proposedPlan: planItem?.text ?? null
+    };
+  }
+
+  if (reviewExitItem) {
+    return {
+      finalMessage: reviewExitItem.review ?? null,
+      finalMessageSource: "review_exit",
       proposedPlan: planItem?.text ?? null
     };
   }
@@ -113,15 +134,21 @@ function extractArtifactsFromTurn(targetTurn: HistoryTurn): {
     proposedPlan: planItem?.text ?? null
   };
 }
-
-function findMostRecentCompletedReviewTurn(turns: HistoryTurn[]): HistoryTurn | null {
-  return [...turns].reverse().find(
-    (turn) => (turn.status ?? "completed") === "completed" && turnContainsReviewArtifacts(turn)
-  ) ?? null;
-}
-
 function turnContainsReviewArtifacts(turn: HistoryTurn): boolean {
   return turn.items.some((item) => item.type === "exitedReviewMode");
+}
+
+function findMostRecentCompletedReviewTurn(
+  turns: HistoryTurn[],
+  knownReviewTurnIdsAtStart: ReadonlySet<string>
+): HistoryTurn | null {
+  return [...turns].reverse().find((turn) => {
+    if ((turn.status ?? "completed") !== "completed" || !turnContainsReviewArtifacts(turn)) {
+      return false;
+    }
+
+    return !knownReviewTurnIdsAtStart.has(turn.id);
+  }) ?? null;
 }
 
 function hasMeaningfulText(value: string | null | undefined): value is string {
