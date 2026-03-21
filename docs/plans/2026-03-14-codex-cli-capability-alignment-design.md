@@ -1,5 +1,11 @@
 # V3 Codex CLI Capability Alignment Design
 
+> Truth status:
+> - Current truth? No
+> - Use for: implementation rationale, sequencing, and handoff history
+> - Verify current behavior in: current product/architecture/operations docs and current code
+
+
 **Date:** 2026-03-14
 
 **Status**

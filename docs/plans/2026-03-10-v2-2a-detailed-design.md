@@ -1,5 +1,11 @@
 # Telegram Codex Bridge V2 Phase 2A Detailed Design
 
+> Truth status:
+> - Current truth? No
+> - Use for: implementation rationale, sequencing, and handoff history
+> - Verify current behavior in: current product/architecture/operations docs and current code
+
+
 Status: Proposed design for implementation handoff
 Date: 2026-03-10
 Scope: V2 Phase 2A only

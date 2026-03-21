@@ -1,5 +1,11 @@
 # Telegram Codex Bridge V2 实施计划
 
+> Truth status:
+> - Current truth? No
+> - Use for: implementation rationale, sequencing, and handoff history
+> - Verify current behavior in: current product/architecture/operations docs and current code
+
+
 状态：2A Ready for execution；2B/2C 需在开工前补齐阶段实施细则
 日期：2026-03-10
 适用范围：V2 全量实施编排（以 2A 先行）

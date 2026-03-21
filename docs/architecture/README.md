@@ -10,6 +10,7 @@ Read this directory when you need to answer:
 - how the bridge is supposed to run internally
 - how state and recovery are supposed to work
 - how runtime delivery differs from final-answer delivery
-- how the current codebase is split after the V5 slimming wave
+- how the current codebase is split after the current service/UI/store extraction waves
 
 If you need to confirm actual implementation, verify against the relevant `src/` files.
+For many Telegram-facing runtime behaviors, the narrow owner now lives under `src/service/` rather than only under `src/telegram/`.

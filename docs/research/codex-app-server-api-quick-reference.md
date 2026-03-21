@@ -1,9 +1,9 @@
 # Codex App-Server API Quick Reference
 
-Last refreshed: 2026-03-17
+Last refreshed: 2026-03-21
 
 Version basis:
-- local host `codex-cli 0.115.0`
+- local host `codex-cli 0.116.0`
 
 Read this after:
 - `docs/research/codex-app-server-authoritative-reference.md`
@@ -365,6 +365,12 @@ Handshake order:
 
 These are present in the current schema and should be considered available unless the host CLI changes.
 
+Additional thread utilities present in the current schema:
+- `thread/unsubscribe`
+- `thread/loaded/list`
+- `thread/increment_elicitation`
+- `thread/decrement_elicitation`
+
 Realtime:
 - `thread/realtime/start`
 - `thread/realtime/appendAudio`
@@ -439,7 +445,7 @@ Experimental or platform-specific:
 - High-value fields:
   - `status.type`
   - `status.activeFlags` when `status.type = active`
-- Shape note on `codex-cli 0.115.0`:
+- Shape note on `codex-cli 0.116.0`:
   - current runtime notifications send `status` as a structured object such as `{ "type": "active", "activeFlags": [] }` or `{ "type": "idle" }`
 - Repo status:
   - used today
@@ -536,12 +542,13 @@ Model and config:
 - `configWarning`
 - `deprecationNotice`
 
-Account and app:
+Account, app, and MCP auth:
 - `account/updated`
 - `account/rateLimits/updated`
 - `account/login/completed`
 - `app/list/updated`
 - `skills/changed`
+- `mcpServer/oauthLogin/completed`
 
 Other runtime:
 - `item/autoApprovalReview/started`
@@ -719,7 +726,11 @@ Used today by the bridge:
   - `thread/compacted`
 - legacy compatibility events such as `codex/event/task_complete`
 
-Not used today by the bridge, but present in current schema:
+Not used today by the bridge, but present in current schema, including:
+- `thread/unsubscribe`
+- `thread/loaded/list`
+- `thread/increment_elicitation`
+- `thread/decrement_elicitation`
 - filesystem RPC family
 - `command/exec`
 - `plugin/read`

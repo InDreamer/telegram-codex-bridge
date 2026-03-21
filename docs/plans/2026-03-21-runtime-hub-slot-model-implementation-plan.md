@@ -1,15 +1,14 @@
 # Runtime Hub Slot-Model Implementation Plan
 
+> Truth status:
+> - Current truth? No
+> - Use for: implementation rationale, sequencing, and handoff history for the runtime-hub slot model
+> - Verified current behavior here? No; the main outcome landed later and current docs/code now outrank this plan
+> - For shipped behavior, prefer current product docs and current code
+
 ## Status
 
-Planned only. This document captures the intended runtime-hub redesign agreed for the hub-card optimization discussion on 2026-03-21.
-
-It is **not shipped behavior**.
-
-Until implementation lands:
-- current product docs remain the source of truth for intended shipped UX
-- current code remains the source of truth for observed runtime behavior
-- this file is the task-scoped design and implementation handoff for the proposed change
+Implemented later and retained as historical planning context. This document captures the runtime-hub redesign agreed for the hub-card optimization discussion on 2026-03-21.
 
 ## Problem
 

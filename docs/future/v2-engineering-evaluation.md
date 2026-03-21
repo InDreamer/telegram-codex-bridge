@@ -6,6 +6,12 @@ Related PRD: `docs/future/v2-prd.md`
 Related template: `docs/future/v2-engineering-evaluation-template.md`
 Related v1 docs: `docs/product/v1-scope.md`, `docs/product/chat-and-project-flow.md`, `docs/architecture/runtime-and-state.md`, `docs/operations/install-and-admin.md`, `docs/research/app-server-phase-0-verification.md`
 
+> Truth status:
+> - Current truth? No
+> - Use for: dated feasibility evidence and engineering evaluation context
+> - Verified current behavior here? No; this evaluation used `codex-cli 0.112.0` and a Node v22 validation environment
+> - Re-check current docs, code, and live schema before using any capability claim from this file
+
 ---
 
 ## 1. Evaluation Summary

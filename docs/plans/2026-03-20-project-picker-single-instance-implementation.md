@@ -1,5 +1,11 @@
 # Project Picker Single-Instance Implementation Plan
 
+> Truth status:
+> - Current truth? No
+> - Use for: implementation rationale, sequencing, and handoff history
+> - Verify current behavior in: current product/architecture/operations docs and current code
+
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Make `/new` and every project-picker return path recreate a fresh picker message so users always regain a visible session-creation entry point.

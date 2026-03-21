@@ -10,8 +10,8 @@ Recently closed repo-wide slimming tracker:
 
 - `2026-03-18-v5-project-slimming-plan.md` - verified V5 closeout tracker for the main service, UI, and store slimming wave
 
-Current task-scoped plans:
-- `2026-03-21-runtime-hub-slot-model-implementation-plan.md` - planned slot-based runtime-hub redesign, completed-hub retention, and hub-card UI alignment
+Recent task-scoped plan whose outcome is now reflected in current docs and code:
+- `2026-03-21-runtime-hub-slot-model-implementation-plan.md` - historical plan for the slot-based runtime-hub redesign, completed-hub retention, and hub-card UI alignment
 
 Examples include:
 - design plans
@@ -20,6 +20,8 @@ Examples include:
 - migration or reconciliation plans
 
 Everything else in this directory is implementation history unless the active task explicitly promotes it.
+Individual files now carry a top-level truth-status banner; respect it.
+Task-scoped plan files often keep their original task framing even after implementation lands, so always cross-check their status blocks against current docs and current code.
 
 Read this directory when you need to answer:
 - how a change was planned

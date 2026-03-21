@@ -1,6 +1,12 @@
 # V5 Project Slimming Plan
 
-> Planning document with verified implementation status.
+> Truth status:
+> - Current truth? No
+> - Use for: implementation rationale, sequencing, and handoff history
+> - Verify current behavior in: current product/architecture/operations docs and current code
+
+
+> Planning document with verified implementation status as of 2026-03-18.
 > This file is not a current-behavior spec.
 > It is the verified V5 execution tracker and closeout guide.
 > V5 is now closed; deferred follow-up work moved to `docs/plans/2026-03-18-v5-5-post-v5-slimming-plan.md`.

@@ -5,6 +5,12 @@ Owner: Product
 Last updated: 2026-03-10
 Related v1 docs: `AGENTS.md`, `docs/product/v1-scope.md`, `docs/roadmap/phase-1-delivery.md`
 
+> Truth status:
+> - Current truth? No
+> - Use for: future product direction and PM intent
+> - Verified current behavior here? No
+> - For current behavior, prefer current product/architecture/operations docs, current code, and live schema evidence
+
 ---
 
 ## 1. Document Purpose

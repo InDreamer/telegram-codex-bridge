@@ -14,3 +14,6 @@ Read this directory when you need to answer:
 - what longer-term product direction is being explored
 
 These docs are future intent and evaluation input, not current shipped behavior.
+Several of them contain date-stamped implementation snapshots or older runtime baselines.
+Individual files now carry a top-level truth-status banner; respect it.
+Cross-check current claims against `docs/product/`, `docs/architecture/`, `docs/operations/`, current code, and live app-server schema before treating anything here as current truth.

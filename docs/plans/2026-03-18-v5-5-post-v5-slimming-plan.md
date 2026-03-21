@@ -1,6 +1,12 @@
 # V5.5 Post-V5 Slimming Plan
 
-> Planning document with verified current status.
+> Truth status:
+> - Current truth? No
+> - Use for: implementation rationale, sequencing, and handoff history
+> - Verify current behavior in: current product/architecture/operations docs and current code
+
+
+> Planning document with verified current status as of 2026-03-18.
 > This file is not a current-behavior spec.
 > It is the active post-V5 tracker for documentation cleanup, AGENTS routing, install/admin slimming, and test redistribution.
 

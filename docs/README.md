@@ -13,6 +13,7 @@ Use these first depending on who is reading:
 - `README.md` — human-facing repository overview
 - `AGENTS.md` — agent-facing low-context retrieval router
 - `docs/README.md` — human-readable documentation map and layer model
+- `docs/generated/current-snapshot.md` — volatile current snapshot for versions, size counts, and other high-drift facts
 
 ## Layer 1 — Current intended behavior
 
@@ -23,6 +24,10 @@ This is the default layer for most human readers.
 ### Product
 - `docs/product/v1-scope.md`
 - `docs/product/chat-and-project-flow.md`
+- `docs/product/auth-and-project-flow.md`
+- `docs/product/codex-command-reference.md`
+- `docs/product/runtime-and-delivery.md`
+- `docs/product/callback-contract.md`
 
 ### Architecture
 - `docs/architecture/runtime-and-state.md`
@@ -55,6 +60,7 @@ Use this layer for questions like:
 
 These docs describe planned delivery sequencing and future product direction.
 They are useful for roadmap and design discussions, not for claiming shipped behavior.
+Many files here are date-stamped and may describe work that has since landed, shifted, or been superseded.
 
 ### Roadmap
 - `docs/roadmap/phase-1-delivery.md`
@@ -74,6 +80,7 @@ Use this layer for questions like:
 
 These docs capture implementation plans, sequencing notes, and design handoff material.
 They are useful for understanding why something was planned, not as automatic proof of current behavior.
+Expect date-stamped CLI versions, line counts, status labels, and task framing that can drift after implementation lands.
 
 - `docs/plans/`
 - current active repo-wide follow-up tracker:
@@ -109,7 +116,12 @@ Do not read `docs/archive/` by default.
 ### I want to understand the product
 1. `README.md`
 2. `docs/product/v1-scope.md`
-3. `docs/product/chat-and-project-flow.md`
+3. if you need the Telegram product router first: `docs/product/chat-and-project-flow.md`
+4. then exactly one narrow product doc:
+   - `docs/product/auth-and-project-flow.md`
+   - `docs/product/codex-command-reference.md`
+   - `docs/product/runtime-and-delivery.md`
+   - `docs/product/callback-contract.md`
 
 ### I want to understand runtime behavior and delivery
 1. `docs/architecture/runtime-and-state.md`
@@ -126,6 +138,10 @@ Do not read `docs/archive/` by default.
 1. `docs/research/codex-app-server-authoritative-reference.md`
 2. `docs/research/codex-app-server-api-quick-reference.md`
 3. verify adoption in `src/codex/app-server.ts`
+
+### I want to check volatile current counts or version baselines
+1. `docs/generated/current-snapshot.md`
+2. then the relevant current doc or source file
 
 ### I want to understand future direction
 1. `docs/roadmap/phase-1-delivery.md`

@@ -104,13 +104,26 @@ ctb
 Start with the smallest relevant doc instead of trawling the whole repo for no reason.
 
 - product scope and trust model: `docs/product/v1-scope.md`
-- Telegram UX and command behavior: `docs/product/chat-and-project-flow.md`
+- Telegram product router: `docs/product/chat-and-project-flow.md`
+- auth, project picker, browse, and session flow: `docs/product/auth-and-project-flow.md`
+- Codex-backed commands and structured rich inputs: `docs/product/codex-command-reference.md`
+- runtime surfaces, inspect, and final-answer delivery: `docs/product/runtime-and-delivery.md`
+- callback payload contract: `docs/product/callback-contract.md`
 - runtime, state, and recovery: `docs/architecture/runtime-and-state.md`
-- install, admin, and diagnostics: `docs/operations/install-and-admin.md`
 - current code organization: `docs/architecture/current-code-organization.md`
+- volatile current snapshot: `docs/generated/current-snapshot.md`
+- install, admin, and diagnostics: `docs/operations/install-and-admin.md`
 - Codex protocol reference: `docs/research/codex-app-server-authoritative-reference.md`
 - agent routing guidance: `AGENTS.md`
 
 ## Current Status
 
 The project is in active development. The current product, runtime, and operational docs are intentionally separated from protocol research and future planning so the repo does not blur shipped behavior with wishful thinking.
+
+Practical reading rule:
+- current intended behavior: `docs/product/`, `docs/architecture/`, `docs/operations/`
+- observed current behavior: repository code
+- protocol capability: `docs/research/` plus live generated schema
+- future direction or historical planning: `docs/future/`, `docs/plans/`, `docs/roadmap/`
+
+Do not treat future or planning docs as proof that behavior is already shipped.

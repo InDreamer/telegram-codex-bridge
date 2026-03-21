@@ -1,5 +1,11 @@
 # V3 Interaction Broker And Blocked Turn Recovery Implementation Plan
 
+> Truth status:
+> - Current truth? No
+> - Use for: implementation rationale, sequencing, and handoff history
+> - Verify current behavior in: current product/architecture/operations docs and current code
+
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Build V3 Phase 1 and Phase 2 by adding a generic server-request interaction broker, persisted pending interactions, Telegram-mediated approval/question flows, and blocked-turn continuation via `turn/steer`.

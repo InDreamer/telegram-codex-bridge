@@ -5,74 +5,81 @@ Agent router for `telegram-codex-bridge`.
 This file is for LLM coding agents.
 Goal: use the **least context** that still allows a correct answer or change.
 
-## Prime directive
+## Quick Start
 
-Read the **smallest relevant source first**.
-Then stop.
-Read more only if you are blocked by missing detail, ambiguity, or a real conflict.
+1. Read **one** current doc or **one** narrow code file first.
+2. Prefer **current docs** for intended behavior, **code** for observed behavior, **live schema** for protocol capability.
+3. Read more only when blocked by missing detail, ambiguity, or a real conflict.
+4. Stop as soon as the answer or edit is well-supported.
+5. Keep these separate in reasoning and answers:
+   - **Intended behavior**
+   - **Observed behavior**
+   - **Protocol capability**
+   - **Planned or historical context**
 
 Do **not** preload the repo.
 Do **not** read all linked docs.
 Do **not** mistake planned behavior for shipped behavior.
 
-## What this project is
+## Project Boundary
 
-A VPS-hosted Telegram bridge that controls the Codex installation already present on the server.
+This project is:
+- a VPS-hosted Telegram bridge for the Codex installation already on the server
+- Telegram as the control surface
+- Codex as the execution engine
 
-- Telegram = control surface
-- Codex = execution engine
-- the bridge is not a second Codex runtime
-- the bridge is not a second permission system
-- the bridge is not a provider-management layer
+This project is **not**:
+- a second Codex runtime
+- a second permission system
+- a provider-management layer
 
-## Retrieval budget
+## Retrieval Budget
 
 Default budget for most tasks:
-
-1. Read **1 doc** from the router below.
-2. If needed, read **1 more doc or 1-2 code files**.
-3. Stop as soon as the answer or edit is well-supported.
+1. Read **1** starting doc from the router below.
+2. If needed, read **1** more doc or **1-2** code files.
+3. Stop early.
 
 Only exceed this when the task is explicitly architectural, cross-cutting, or conflict-heavy.
 
-## Evidence model
+## Source Model
 
-This repo is still evolving.
-There is **no single permanent source of truth**.
 Use the right source for the right question.
 
-### Source categories
-
 1. **Active user/task instruction**
-   - Highest priority for the active task.
-
-2. **Active product/spec docs**
-   - Intended behavior.
-   - Answer: **what should happen**.
-
-3. **Repository code/runtime**
+   - Highest priority.
+2. **Current product / architecture / operations docs**
+   - Intended current behavior.
+3. **Repository code and runtime behavior**
    - Observed current behavior.
-   - Answer: **what happens today**.
-
-4. **Live Codex API / generated schema**
-   - Protocol capability and exact method/notification shape.
-   - Answer: **what Codex supports in principle**.
-
+4. **Live Codex CLI / generated schema**
+   - Protocol capability and exact payload shape.
 5. **Roadmap / future / plans / archive docs**
-   - Context only, unless the active task explicitly promotes one of them.
+   - Context only unless the active task explicitly promotes them.
 
-## Required separation in reasoning and answers
+## Fast First-File Router
 
-When sources differ, keep these separate:
+Pick **one** starting file.
 
-- **Observed behavior** = what current code/runtime does
-- **Intended behavior** = what the active spec says should happen
-- **Protocol capability** = what Codex supports
-- **Required action** = update code, update docs, or both
+| Task | Read first |
+|---|---|
+| v1 boundary, trust model, product scope | `docs/product/v1-scope.md` |
+| unsure which Telegram product doc you need | `docs/product/chat-and-project-flow.md` |
+| auth flow, project discovery, project picker, `/browse`, sessions, archive, rename, pin | `docs/product/auth-and-project-flow.md` |
+| Codex-backed Telegram commands, rich inputs, `/model`, `/skills`, `/plugins`, `/apps`, `/mcp`, `/account`, `/review`, `/fork`, `/rollback`, `/compact`, `/thread`, `/local_image`, `/mention` | `docs/product/codex-command-reference.md` |
+| `/where`, `/inspect`, `/interrupt`, `/status`, `/runtime`, runtime hubs/cards, final-answer delivery | `docs/product/runtime-and-delivery.md` |
+| Telegram callback payload families and stale/duplicate callback rules | `docs/product/callback-contract.md` |
+| current module ownership / where to read next in `src/` | `docs/architecture/current-code-organization.md` |
+| runtime lifecycle, SQLite state, recovery, degraded behavior | `docs/architecture/runtime-and-state.md` |
+| install, config, service, update, diagnostics | `docs/operations/install-and-admin.md` |
+| volatile counts or current version baselines | `docs/generated/current-snapshot.md` |
+| Codex protocol / app-server methods | `docs/research/codex-app-server-authoritative-reference.md` |
+| historical protocol verification only | `docs/research/app-server-phase-0-verification.md` |
+| roadmap / future / planning | current file under `docs/roadmap/`, `docs/future/`, or `docs/plans/` **only if the task is actually about future or history** |
 
-Never collapse those into one vague claim.
+Then verify against the narrowest relevant source file if needed.
 
-## Conflict policy
+## Conflict Rules
 
 - If the **user gives a direct instruction**, follow it for the active task.
 - If **code differs from current spec docs**, treat it as a real mismatch.
@@ -81,122 +88,18 @@ Never collapse those into one vague claim.
 - If **protocol docs show a capability**, verify bridge adoption before claiming Telegram UX supports it.
 - If you cannot tell which doc is active, say so explicitly.
 
-## First-file router
+## Stop Rules
 
-Pick **one** starting file based on the task.
+Stop reading when one of these is true:
+- you can answer the question with clear source support
+- you can make the requested change safely
+- the remaining uncertainty is explicitly about an unresolved source conflict
 
-### Scope / trust model / v1 boundary
-Read first:
-- `docs/product/v1-scope.md`
+If a conflict remains, report the conflict instead of reading the whole repo.
 
-Use for:
-- in-scope vs out-of-scope
-- trust model
-- operator assumptions
-- product boundary
+---
 
-### Telegram UX / commands / auth / project flow / sessions
-Read first:
-- `docs/product/chat-and-project-flow.md`
-
-Use for:
-- `/help`, `/start`, `/cancel`
-- `/new`, `/sessions`, `/archive`, `/unarchive`, `/use`, `/rename`, `/pin`
-- `/plan`, `/model`, `/status`, `/runtime`, `/inspect`, `/where`
-- `/skills`, `/plugins`, `/apps`, `/mcp`, `/account`
-- `/review`, `/fork`, `/rollback`, `/compact`
-- `/thread`, `/local_image`, `/mention`, `/interrupt`
-- auth flow
-- project picker
-- session switching
-- user-visible Telegram behavior
-- Telegram photo and voice input adaptation
-
-### Runtime / lifecycle / state / recovery / answer delivery
-Read first:
-- `docs/architecture/runtime-and-state.md`
-
-Use for:
-- app-server lifecycle
-- SQLite state
-- recovery rules
-- readiness/degraded behavior
-- runtime-card reduction
-- final-answer delivery
-
-### Current code organization / module ownership / refactor state
-Read first:
-- `docs/architecture/current-code-organization.md`
-
-Use for:
-- post-V5 and post-V5.5 code shape
-- service/UI/store/install ownership boundaries
-- current hotspots and where to read next in `src/`
-- distinguishing shell or facade files from extracted collaborators
-
-### Install / config / service / update / diagnostics
-Read first:
-- `docs/operations/install-and-admin.md`
-
-Use for:
-- `ctb` commands
-- install flow
-- env/config keys
-- service ownership
-- voice-input backends
-- restart/update/doctor/status
-
-### Readiness / capability checks
-Read code first when needed:
-- `src/readiness.ts`
-- Node/Codex version floors
-
-### Codex protocol / app-server methods
-Read first:
-- `docs/research/codex-app-server-authoritative-reference.md`
-
-Then only if needed:
-- `docs/research/codex-app-server-api-quick-reference.md`
-
-Use for:
-- app-server methods
-- notifications
-- request/response shape
-- protocol capability
-- current schema guidance
-
-### Historical verification detail
-Read only if needed:
-- `docs/research/app-server-phase-0-verification.md`
-
-Use only for:
-- older confirmed event names
-- earlier extraction notes
-- historical verification detail
-
-Do **not** use it as the top source for the latest CLI surface.
-
-### Planning / future direction / history
-Read only when the task is explicitly about planning or future direction:
-- `docs/plans/2026-03-18-v5-5-post-v5-slimming-plan.md`
-- `docs/plans/2026-03-18-v5-project-slimming-plan.md`
-- `docs/roadmap/phase-1-delivery.md`
-- `docs/future/v2-prd.md`
-- `docs/future/v3-prd.md`
-- `docs/future/v2-engineering-evaluation.md`
-- `docs/future/v2-engineering-evaluation-template.md`
-- `docs/plans/`
-- `docs/archive/`
-
-These are **not shipped behavior** unless the active task explicitly says otherwise.
-
-Archive warning:
-- prefer **not** to read `docs/archive/` at all
-- only consult archive material when current code, current docs, API/schema evidence, and the active user request appear broken or contradictory
-- archive material is also acceptable when the project clearly went through a substantive behavior or business transition and you need historical comparison
-- if archive evidence conflicts with current sources, current sources win unless the user explicitly asks for history
-
-## Code anchors
+## Appendix A — Code Anchors
 
 If docs are insufficient, verify against the **narrowest relevant source file**.
 
@@ -209,6 +112,7 @@ If docs are insufficient, verify against the **narrowest relevant source file**.
 - `src/service.ts`
 - `src/service/`
 - `src/paths.ts`
+- `src/readiness.ts`
 
 ### Telegram behavior
 - `src/telegram/commands.ts`
@@ -217,6 +121,12 @@ If docs are insufficient, verify against the **narrowest relevant source file**.
 - `src/telegram/ui-runtime.ts`
 - `src/telegram/ui-final-answer.ts`
 - `src/telegram/ui-shared.ts`
+- `src/service/session-project-coordinator.ts`
+- `src/service/project-browser-coordinator.ts`
+- `src/service/codex-command-coordinator.ts`
+- `src/service/rich-input-adapter.ts`
+- `src/service/runtime-surface-controller.ts`
+- `src/service/interaction-broker.ts`
 - `src/telegram/api.ts`
 - `src/telegram/poller.ts`
 
@@ -236,13 +146,18 @@ If docs are insufficient, verify against the **narrowest relevant source file**.
 - `src/activity/tracker.ts`
 - `src/activity/debug-journal.ts`
 
-## Minimal retrieval patterns
-
-Use these patterns unless the task clearly needs more.
+## Appendix B — Minimal Retrieval Patterns
 
 ### User-visible command behavior
-1. `docs/product/chat-and-project-flow.md`
-2. then `src/telegram/commands.ts` or the narrow `src/telegram/ui-*.ts` module if needed
+1. Read **one** product doc first:
+   - if unsure, start with `docs/product/chat-and-project-flow.md`
+   - otherwise go straight to one narrow doc:
+     - `docs/product/auth-and-project-flow.md`
+     - `docs/product/codex-command-reference.md`
+     - `docs/product/runtime-and-delivery.md`
+     - `docs/product/callback-contract.md`
+2. Then `src/telegram/commands.ts` for command registry / help-menu truth if needed.
+3. Then the narrow owner under `src/service/` or `src/telegram/ui-*.ts`.
 
 ### Actual runtime behavior
 1. `docs/architecture/runtime-and-state.md`
@@ -253,7 +168,7 @@ Use these patterns unless the task clearly needs more.
 1. `docs/operations/install-and-admin.md`
 2. then `src/install.ts`, `src/readiness.ts`, `src/service.ts`, `src/config.ts`, or `src/paths.ts`
 
-### Current module ownership or refactor status
+### Current module ownership
 1. `docs/architecture/current-code-organization.md`
 2. then the narrow module under `src/service/`, `src/telegram/ui-*.ts`, `src/state/store-*.ts`, or `src/install.ts`
 
@@ -263,51 +178,38 @@ Use these patterns unless the task clearly needs more.
 3. then `src/codex/app-server.ts` to confirm bridge adoption
 
 ### Shipped vs planned
-1. check current product/architecture/operations docs
+1. check current product / architecture / operations docs
 2. check code
-3. only then consult roadmap/future/plans if needed
-4. consult `docs/archive/` only as a last resort under the archive warning above
+3. only then consult roadmap / future / plans if needed
+4. consult `docs/archive/` only as a last resort
 
-## Stop conditions
+## Appendix C — Planning / Archive Warning
 
-Stop reading when one of these is true:
+Read `docs/future/`, `docs/plans/`, or `docs/archive/` only when the task is explicitly about future direction, implementation history, or conflict reconstruction.
 
-- you can answer the question with clear source support
-- you can make the requested change safely
-- the remaining uncertainty is explicitly about an unresolved source conflict
+Remember:
+- `docs/future/` = future product / evaluation input
+- `docs/plans/` = implementation rationale, sequencing, handoff history
+- `docs/archive/` = historical context only
 
-If a conflict remains, report the conflict instead of reading the whole repo.
+Do not use those directories to claim shipped behavior unless the active task explicitly promotes them and current docs/code agree.
 
-## Directory labels
-
-Use these labels mentally:
-
-- `docs/product/` = current intended product behavior
-- `docs/architecture/` = current runtime behavior and verified implementation-structure maps
-- `docs/operations/` = current operational reference
-- `docs/research/` = protocol/reference evidence; freshness varies
-- `docs/roadmap/` = delivery intent
-- `docs/future/` = future product/evaluation input
-- `docs/plans/` = active or closed implementation planning / handoff history
-- `docs/archive/` = historical context only; avoid by default
-
-## Anti-patterns
+## Appendix D — Anti-Patterns
 
 Avoid these mistakes:
-
-- reading every doc listed here "just in case"
-- treating roadmap/future/plans as shipped behavior
+- reading every doc listed here just in case
+- treating roadmap / future / plans as shipped behavior
 - treating archive docs as normal reference material
 - claiming protocol support means bridge support
 - assuming current code is automatically correct intent
 - assuming current docs are automatically implemented
-- giving one blended answer when observed, intended, and protocol differ
+- giving one blended answer when intended, observed, and protocol differ
 
-## Final instruction
+## Final Instruction
 
 Default behavior:
 - read less
 - verify narrowly
-- separate observed vs intended vs protocol
+- separate intended vs observed vs protocol vs planned
 - stop early when supported
 - do not over-claim

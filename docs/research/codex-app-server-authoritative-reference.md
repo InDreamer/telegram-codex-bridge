@@ -1,6 +1,6 @@
 # Codex App-Server Authoritative Reference
 
-Last refreshed: 2026-03-17
+Last refreshed: 2026-03-21
 
 Primary audience:
 - in-repo Codex/LLM agents
@@ -41,8 +41,8 @@ For raw protocol-only questions, use this order:
 4. Repository docs
 5. Historical verification docs and planning docs
 
-For this host on 2026-03-17:
-- `codex --version` returned `codex-cli 0.115.0`
+For this host on 2026-03-21:
+- `codex --version` returned `codex-cli 0.116.0`
 - `codex app-server --help` confirmed:
   - `--listen stdio://` default transport
   - `--listen ws://IP:PORT` available
@@ -50,7 +50,7 @@ For this host on 2026-03-17:
   - `generate-json-schema`
 
 Important implication:
-- the older runtime sample in `docs/research/app-server-phase-0-verification.md` remains useful evidence, but it is a dated `0.112.0` sample and must not outrank the current `0.115.0` CLI plus generated schema.
+- the older runtime sample in `docs/research/app-server-phase-0-verification.md` remains useful evidence, but it is a dated `0.112.0` sample and must not outrank the current `0.116.0` CLI plus generated schema.
 - the current schema also exposes a minimal filesystem RPC family under `fs/*`, but repository code still decides whether any of that surface is actually shipped in Telegram
 
 ## Official References
@@ -171,9 +171,9 @@ Commentary rule for integrations:
 
 ## Current Host Baseline
 
-Current host runtime facts captured on 2026-03-17:
+Current host runtime facts captured on 2026-03-21:
 
-- CLI version: `codex-cli 0.115.0`
+- CLI version: `codex-cli 0.116.0`
 - app-server help confirms:
   - `--listen stdio://` default
   - `--listen ws://IP:PORT`
@@ -190,7 +190,7 @@ LLM rule:
 
 ## API Surface Inventory
 
-This section summarizes the current `0.115.0` schema inventory. For exact request and response fields, generate JSON Schema or TypeScript bindings from the current CLI.
+This section summarizes the current `0.116.0` schema inventory. For exact request and response fields, generate JSON Schema or TypeScript bindings from the current CLI.
 
 ### Client requests
 
@@ -427,7 +427,7 @@ Those names were useful in the bridge's early implementation and may still appea
 
 ## What This Repository Uses Today
 
-Current bridge usage is intentionally narrower than the full `0.115.0` schema surface.
+Current bridge usage is intentionally narrower than the full `0.116.0` schema surface.
 
 Implemented today:
 - app-server child over `stdio`
@@ -510,11 +510,11 @@ Current implementation note:
   - `skills/changed`
   - `thread/compacted`
 
-Current-host note for `codex-cli 0.115.0`:
+Current-host note for `codex-cli 0.116.0`:
 - `thread/status/changed` carries a structured `status` object such as `active` plus nested `activeFlags`, not only a flat status string
 - the bridge starts app-server with the experimental API capability enabled, so experimental methods such as `collaborationMode/list` remain protocol-visible even though the current Telegram UX still does not ship collaboration-mode discovery or preset selection
 
-Still not used today by the bridge:
+Still not used today by the bridge, including:
 - `item/tool/call`
 - `account/chatgptAuthTokens/refresh`
 - filesystem RPC surface
@@ -558,11 +558,12 @@ jq -r '.oneOf[]?.properties.method.enum[]? // empty' <dir>/ServerRequest.json
 - <https://developers.openai.com/codex/cli/reference>
 
 5. Compare against:
+- `docs/architecture/current-code-organization.md`
 - `docs/architecture/runtime-and-state.md`
 - `docs/research/app-server-phase-0-verification.md`
 - `src/codex/app-server.ts`
 - `src/codex/notification-classifier.ts`
-- `src/service.ts`
+- the narrow owner under `src/service/` such as `turn-coordinator.ts`, `interaction-broker.ts`, `codex-command-coordinator.ts`, `runtime-surface-controller.ts`, or `project-browser-coordinator.ts`
 
 6. Update this document's:
 - refresh date

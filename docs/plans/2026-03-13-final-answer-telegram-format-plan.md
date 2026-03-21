@@ -1,5 +1,11 @@
 # Final Answer Telegram Format Implementation Plan
 
+> Truth status:
+> - Current truth? No
+> - Use for: implementation rationale, sequencing, and handoff history
+> - Verify current behavior in: current product/architecture/operations docs and current code
+
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Render final Codex answers in Telegram with safe formatted output instead of raw plain text.

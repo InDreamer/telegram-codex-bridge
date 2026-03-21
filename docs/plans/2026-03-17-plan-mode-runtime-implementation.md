@@ -1,5 +1,11 @@
 # Plan Mode Toggle And Runtime Card Implementation Plan
 
+> Truth status:
+> - Current truth? No
+> - Use for: implementation rationale, sequencing, and handoff history
+> - Verify current behavior in: current product/architecture/operations docs and current code
+
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Add a session-level `/plan` toggle, persist plan mode through the session store, pass Codex `collaborationMode` on new turns, surface plan mode in `/where`, and simplify runtime cards so only `Session`, `State`, and `Progress` are fixed while all other fields are optional `/runtime` rows.

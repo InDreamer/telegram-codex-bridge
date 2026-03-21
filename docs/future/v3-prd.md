@@ -8,6 +8,12 @@ Related docs:
 - `docs/plans/2026-03-14-codex-cli-capability-alignment-design.md`
 - `docs/plans/2026-03-14-v3-interaction-broker-phase-1-2-implementation-plan.md`
 
+> Truth status:
+> - Current truth? No
+> - Use for: future product direction plus a dated partial-implementation snapshot
+> - Verified current behavior here? No
+> - Some slices mentioned here have since landed or shifted; verify shipped behavior in current docs and code
+
 ---
 
 ## 1. Document Purpose

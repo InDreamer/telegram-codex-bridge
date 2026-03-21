@@ -1,5 +1,11 @@
 # Telegram Codex Bridge V2 Engineering Evaluation Template
 
+> Truth status:
+> - Current truth? No
+> - Use for: future direction, PM intent, or dated evaluation
+> - Verify current behavior in: current docs, current code, and live schema
+
+
 Status: Template
 For: Engineering evaluation response
 Related PRD: `docs/future/v2-prd.md`

@@ -1,5 +1,11 @@
 # Thread Archive Reconciliation Plan
 
+> Truth status:
+> - Current truth? No
+> - Use for: implementation rationale, sequencing, and handoff history
+> - Verify current behavior in: current product/architecture/operations docs and current code
+
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Complete the backend `thread archive` design for V2 so Telegram session archive stays locally authoritative while the bridge observes, correlates, and diagnoses Codex thread archive state transitions safely.

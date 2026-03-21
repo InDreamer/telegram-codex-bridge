@@ -12,3 +12,4 @@ Read this directory when you need to answer:
 - how to diagnose or repair the service
 
 This is operational reference, not product UX specification.
+If needed, verify implementation in `src/install.ts`, `src/readiness.ts`, `src/service.ts`, `src/config.ts`, and `src/paths.ts`.

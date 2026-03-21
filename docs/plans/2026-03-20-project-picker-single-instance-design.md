@@ -1,5 +1,11 @@
 # Project Picker Single-Instance Design
 
+> Truth status:
+> - Current truth? No
+> - Use for: implementation rationale, sequencing, and handoff history
+> - Verify current behavior in: current product/architecture/operations docs and current code
+
+
 ## Problem
 
 The current project picker behaves like a reusable bridge-owned message. Repeating `/new` can reuse an older picker message instead of sending a fresh one. If that older picker has been pushed far up in chat, the user can lose the visible entry point for creating a new session even though the bridge is still handling `/new`.
