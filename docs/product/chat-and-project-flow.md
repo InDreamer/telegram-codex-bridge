@@ -156,6 +156,8 @@ Rules:
 - selecting a project always creates a new session
 - `/new` never resumes or switches to an old session
 - `/new` may be used even when another session is already running; the newly created session becomes the active foreground session
+- `/new` always recreates the picker as a fresh bridge-owned message at the bottom of chat
+- the bridge keeps at most one valid project picker per chat; any older picker becomes stale
 
 ### `/browse`
 
@@ -179,7 +181,7 @@ Rules:
 ### `扫描本地项目`
 
 Behavior:
-- update the current project-picker surface in place when possible
+- retire the previous valid picker or no-results surface and send a fresh bridge-owned surface
 - show `正在扫描本地项目，请稍候…`
 - after scanning, keep a single refreshed picker or no-results surface visible; do not leave older picker cards behind
 
@@ -190,7 +192,7 @@ If no new results are found:
 ### `手动输入路径`
 
 Behavior:
-- replace the current picker surface with the manual-path prompt when possible
+- consume the current valid picker surface and continue the manual-path flow from the newest bridge-owned prompt
 - enter `awaiting_manual_project_path` mode
 - prompt with an example path and `/cancel`
 
@@ -199,6 +201,10 @@ Validation flow:
 2. bridge validates that the path exists, is readable, and is a directory
 3. if valid, bridge sends a confirmation card as the newest chat surface and retires the older manual-path prompt
 4. if confirmed, bridge creates the session and consumes the confirmation card into a compact success summary
+
+Return flow:
+- when the user returns to the project picker from manual-path mode, the bridge recreates the picker as a fresh bridge-owned message
+- only the newest picker remains valid for button callbacks
 
 Invalid path feedback:
 - `这个目录不可用，请重新发送目录路径。`
