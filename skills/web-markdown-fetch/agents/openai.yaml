@@ -1,0 +1,4 @@
+interface:
+  display_name: "Web Markdown Fetch"
+  short_description: "Fetch web pages through Markdown mirrors and save per-session assets"
+  default_prompt: "Use markdown.new, defuddle.md, and r.jina.ai in order; if all fail, use Scrapling. Persist markdown and image assets under the active agent session directory, report asset path plus images_saved/images_discovered, and when image understanding is needed in pi, read local saved images first before any external vision fallback."

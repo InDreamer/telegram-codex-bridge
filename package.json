@@ -21,6 +21,11 @@
     "cli",
     "agent"
   ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
   "bin": {
     "ctb": "./dist/cli.js"
   },
