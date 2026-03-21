@@ -129,3 +129,35 @@ test("buildProjectPicker shows a generic degraded notice when every scan root fa
     await cleanup();
   }
 });
+
+test("buildProjectPicker keeps the /new picker to three recent and two discovered projects", async () => {
+  const { root, store, cleanup } = await createDiscoveryContext();
+  const configuredRoot = join(root, "projects");
+  const recentNames = ["recent-a", "recent-b", "recent-c", "recent-d"];
+  const discoveredNames = ["discovered-a", "discovered-b", "discovered-c"];
+
+  try {
+    for (const name of [...recentNames, ...discoveredNames]) {
+      await writeMarker(join(configuredRoot, name, "package.json"));
+    }
+
+    for (const name of recentNames) {
+      store.createSession({
+        telegramChatId: "chat-1",
+        projectName: name,
+        projectPath: join(configuredRoot, name)
+      });
+    }
+
+    const picker = await buildProjectPicker(root, [configuredRoot], store);
+    const recentGroup = picker.groups.find((group) => group.key === "recent");
+    const discoveredGroup = picker.groups.find((group) => group.key === "discovered");
+
+    assert.equal(recentGroup?.candidates.length, 3);
+    assert.equal(discoveredGroup?.candidates.length, 2);
+    assert.equal(picker.groups.flatMap((group) => group.candidates).length, 5);
+    assert.equal(picker.projectMap.size, recentNames.length + discoveredNames.length);
+  } finally {
+    await cleanup();
+  }
+});

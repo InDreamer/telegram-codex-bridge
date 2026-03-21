@@ -82,10 +82,12 @@ Tie-breakers:
 `/new` output rules:
 - `/new` only selects a project and creates a new session
 - group visible candidates into `已收藏`, `最近使用`, and `本地发现`
-- show up to 5 projects per group
+- show at most 5 visible projects total
+- when no pinned projects consume that shared budget, prefer up to 3 `最近使用` entries and 2 `本地发现` entries
 - each visible project shows display name plus path hint
 - paths under `HOME` render as `~/...`; other paths render as absolute paths
 - the same project path appears at most once; if it matches multiple sources, show it in the highest-priority group and expose the others as tags
+- project buttons use compact numeric labels in the same order as the visible grouped list
 - always show `扫描本地项目` and `手动输入路径`
 
 Degradation:
@@ -149,7 +151,7 @@ Rules:
 Shows the project picker:
 - title `选择要新建会话的项目`
 - grouped project list
-- project buttons in the same order as the visible grouped list
+- compact numeric project buttons in the same order as the visible grouped list
 - fallback buttons
 
 Rules:

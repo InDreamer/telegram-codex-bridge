@@ -451,6 +451,7 @@ test("buildProjectPickerMessage renders grouped candidates with path hints", () 
   assert.match(rendered.text, /Repo\/team\/project-one/u);
   assert.match(rendered.text, /最近 · 本地发现 · 有历史会话/u);
   assert.match(rendered.text, /本地发现/u);
+  assert.deepEqual(rendered.replyMarkup.inline_keyboard[0]?.map((button) => button.text), ["1", "2"]);
   assert.equal(rendered.replyMarkup.inline_keyboard.at(-1)?.[0]?.text, "扫描本地项目");
 });
 

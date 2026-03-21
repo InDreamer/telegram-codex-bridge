@@ -50,35 +50,18 @@ function buildProjectBadgeLabels(candidate: ProjectCandidate): string[] {
   return labels;
 }
 
-function buildProjectButtonLabel(candidate: ProjectCandidate, duplicateDisplayNames: Set<string>): string {
-  if (!duplicateDisplayNames.has(candidate.displayName)) {
-    return candidate.displayName;
-  }
-
-  return `${candidate.displayName} · ${candidate.pathLabel}`;
-}
-
 export function buildProjectPickerMessage(picker: ProjectPickerResult): {
   text: string;
   replyMarkup: TelegramInlineKeyboardMarkup;
 } {
   const rows: TelegramInlineKeyboardMarkup["inline_keyboard"] = [];
   const visibleCandidates = picker.groups.flatMap((group) => group.candidates);
-  const duplicateDisplayNames = new Set(
-    visibleCandidates
-      .map((candidate) => candidate.displayName)
-      .filter((name, index, names) => names.indexOf(name) !== index)
-  );
+  const candidateButtons = visibleCandidates.map((candidate, index) => ({
+    text: String(index + 1),
+    callback_data: encodePickCallback(candidate.projectKey)
+  }));
 
-  for (const candidate of visibleCandidates) {
-    rows.push([
-      {
-        text: buildProjectButtonLabel(candidate, duplicateDisplayNames),
-        callback_data: encodePickCallback(candidate.projectKey)
-      }
-    ]);
-  }
-
+  rows.push(...chunkButtons(candidateButtons, 5));
   rows.push([
     { text: "扫描本地项目", callback_data: encodeScanMoreCallback() },
     { text: "手动输入路径", callback_data: encodePathManualCallback() }

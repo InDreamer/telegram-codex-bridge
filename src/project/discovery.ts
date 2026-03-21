@@ -21,7 +21,9 @@ const EXCLUDED_DIR_NAMES = new Set([
 const MAX_DEPTH = 3;
 const MAX_CANDIDATES = 200;
 const MAX_SCAN_MS = 3000;
-const MAX_GROUP_CANDIDATES = 5;
+const MAX_VISIBLE_PROJECT_CANDIDATES = 5;
+const MAX_VISIBLE_RECENT_CANDIDATES = 3;
+const MAX_VISIBLE_DISCOVERED_CANDIDATES = 2;
 
 interface ScanCandidate {
   projectPath: string;
@@ -359,18 +361,35 @@ async function buildCandidates(homeDir: string, store: BridgeStateStore): Promis
 }
 
 function buildProjectGroups(candidates: ProjectCandidate[]): ProjectPickerGroup[] {
-  const definitions: Array<{ key: ProjectCandidate["group"]; title: string }> = [
-    { key: "pinned", title: "已收藏" },
-    { key: "recent", title: "最近使用" },
-    { key: "discovered", title: "本地发现" }
+  const definitions: Array<{ key: ProjectCandidate["group"]; title: string; limit: number }> = [
+    { key: "pinned", title: "已收藏", limit: MAX_VISIBLE_PROJECT_CANDIDATES },
+    { key: "recent", title: "最近使用", limit: MAX_VISIBLE_RECENT_CANDIDATES },
+    { key: "discovered", title: "本地发现", limit: MAX_VISIBLE_DISCOVERED_CANDIDATES }
   ];
 
+  let remainingBudget = MAX_VISIBLE_PROJECT_CANDIDATES;
+
   return definitions
-    .map((definition) => ({
-      key: definition.key,
-      title: definition.title,
-      candidates: candidates.filter((candidate) => candidate.group === definition.key).slice(0, MAX_GROUP_CANDIDATES)
-    }))
+    .map((definition) => {
+      if (remainingBudget <= 0) {
+        return {
+          key: definition.key,
+          title: definition.title,
+          candidates: []
+        };
+      }
+
+      const groupCandidates = candidates
+        .filter((candidate) => candidate.group === definition.key)
+        .slice(0, Math.min(definition.limit, remainingBudget));
+      remainingBudget -= groupCandidates.length;
+
+      return {
+        key: definition.key,
+        title: definition.title,
+        candidates: groupCandidates
+      };
+    })
     .filter((group) => group.candidates.length > 0);
 }
 
