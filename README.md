@@ -99,31 +99,53 @@ CLI entrypoint:
 ctb
 ```
 
-## Documentation
+## Documentation And Agent Routing
 
-Start with the smallest relevant doc instead of trawling the whole repo for no reason.
+Use the smallest relevant entrypoint.
 
-- product scope and trust model: `docs/product/v1-scope.md`
-- Telegram product router: `docs/product/chat-and-project-flow.md`
-- auth, project picker, browse, and session flow: `docs/product/auth-and-project-flow.md`
-- Codex-backed commands and structured rich inputs: `docs/product/codex-command-reference.md`
-- runtime surfaces, inspect, and final-answer delivery: `docs/product/runtime-and-delivery.md`
-- callback payload contract: `docs/product/callback-contract.md`
-- runtime, state, and recovery: `docs/architecture/runtime-and-state.md`
-- current code organization: `docs/architecture/current-code-organization.md`
-- volatile current snapshot: `docs/generated/current-snapshot.md`
-- install, admin, and diagnostics: `docs/operations/install-and-admin.md`
-- Codex protocol reference: `docs/research/codex-app-server-authoritative-reference.md`
-- agent routing guidance: `AGENTS.md`
+### For coding agents
+
+Default traversal is:
+
+1. `AGENTS.md`
+2. exactly one domain agent:
+   - `docs/AGENTS.md`
+   - `src/AGENTS.md`
+   - `scripts/AGENTS.md`
+   - `skills/AGENTS.md`
+3. exactly one leaf doc or one narrow source file
+
+This keeps the index shallow and supports progressive disclosure.
+
+### For humans
+
+Start with one of these entry points:
+
+- `docs/README.md` — human-readable three-tier doc map
+- `docs/product/v1-scope.md` — product boundary and trust model
+- `docs/architecture/current-code-organization.md` — code-derived ownership map
+- `docs/operations/install-and-admin.md` — operator/admin reference
+- `docs/generated/current-snapshot.md` — volatile versions and size/count facts
+- `docs/research/codex-app-server-authoritative-reference.md` — Codex protocol reference
+
+### Source classes
+
+Keep these source classes separate in reasoning and answers:
+
+- **current truth**: `docs/product/`, `docs/architecture/`, `docs/operations/`, `docs/generated/current-snapshot.md`
+- **current implementation**: `src/`
+- **protocol evidence**: `docs/research/`
+- **planning and history**: `docs/roadmap/`, `docs/future/`, `docs/plans/`, `docs/archive/`
+
+Do not treat planning/history as proof that behavior is already shipped.
+Do not treat protocol capability as proof that Telegram UX already exposes it.
 
 ## Current Status
 
-The project is in active development. The current product, runtime, and operational docs are intentionally separated from protocol research and future planning so the repo does not blur shipped behavior with wishful thinking.
+The project is in active development.
 
-Practical reading rule:
-- current intended behavior: `docs/product/`, `docs/architecture/`, `docs/operations/`
-- observed current behavior: repository code
-- protocol capability: `docs/research/` plus live generated schema
-- future direction or historical planning: `docs/future/`, `docs/plans/`, `docs/roadmap/`
+The docs and agents are organized to support gradual retrieval rather than whole-repo preload:
 
-Do not treat future or planning docs as proof that behavior is already shipped.
+- root agent chooses a domain
+- domain agent chooses one leaf source
+- deeper expansion happens only when the task proves it is necessary

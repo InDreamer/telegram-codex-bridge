@@ -1,27 +1,22 @@
 # Documentation Map
 
-This repository uses a layered documentation model.
-The goal is to keep **current behavior**, **intended behavior**, **protocol evidence**, **future direction**, and **historical material** separate.
+This repository uses a **three-tier documentation model**.
+The goal is to keep current truth, protocol evidence, and planning/history separate so readers do not have to preload the whole doc tree.
 
-Do not treat every document as equal.
-Read the smallest relevant layer first.
+For coding agents, the preferred path is:
 
-## Layer 0 — Entry points
+1. root `AGENTS.md`
+2. `docs/AGENTS.md` or `src/AGENTS.md`
+3. one leaf file
 
-Use these first depending on who is reading:
+This file is the **human-readable map** of the doc system.
 
-- `README.md` — human-facing repository overview
-- `AGENTS.md` — agent-facing low-context retrieval router
-- `docs/README.md` — human-readable documentation map and layer model
-- `docs/generated/current-snapshot.md` — volatile current snapshot for versions, size counts, and other high-drift facts
+## Tier 1 — Current truth
 
-## Layer 1 — Current intended behavior
-
-These docs describe the current intended product/runtime/operational shape of the bridge.
-When a document in this layer is explicitly marked as code-derived, treat it as a verified current implementation map rather than a roadmap.
-This is the default layer for most human readers.
+Use this tier by default for current behavior.
 
 ### Product
+
 - `docs/product/v1-scope.md`
 - `docs/product/chat-and-project-flow.md`
 - `docs/product/auth-and-project-flow.md`
@@ -30,131 +25,107 @@ This is the default layer for most human readers.
 - `docs/product/callback-contract.md`
 
 ### Architecture
+
 - `docs/architecture/runtime-and-state.md`
 - `docs/architecture/current-code-organization.md`
 
 ### Operations
+
 - `docs/operations/install-and-admin.md`
 
-Use this layer for questions like:
+### High-drift current facts
+
+- `docs/generated/current-snapshot.md`
+
+Use Tier 1 for questions like:
+
 - what v1 includes or excludes
-- what the Telegram UX should do
-- how runtime/state/recovery are supposed to work
-- how operators install, run, and diagnose the bridge
+- how the Telegram UX is supposed to behave now
+- how runtime, state, recovery, and delivery are intended to work now
+- how operators install, configure, run, and diagnose the bridge now
+- what the current version baselines or code-size snapshots are
 
-## Layer 2 — Protocol and reference evidence
+## Tier 2 — Protocol evidence
 
-These docs describe Codex app-server protocol evidence and method-level reference.
-They are not the same thing as shipped bridge behavior.
+Use this tier only when the question is about Codex app-server capability or exact payload shape.
 
 - `docs/research/codex-app-server-authoritative-reference.md`
 - `docs/research/codex-app-server-api-quick-reference.md`
 - `docs/research/app-server-phase-0-verification.md`
 
-Use this layer for questions like:
-- what Codex supports in principle
-- exact request/notification shapes
+Use Tier 2 for questions like:
+
+- what Codex app-server supports in principle
+- exact request and notification shapes
 - earlier protocol verification details
 
-## Layer 3 — Delivery intent and future direction
-
-These docs describe planned delivery sequencing and future product direction.
-They are useful for roadmap and design discussions, not for claiming shipped behavior.
-Many files here are date-stamped and may describe work that has since landed, shifted, or been superseded.
-
-### Roadmap
-- `docs/roadmap/phase-1-delivery.md`
-
-### Future product/evaluation
-- `docs/future/v2-prd.md`
-- `docs/future/v3-prd.md`
-- `docs/future/v2-engineering-evaluation.md`
-- `docs/future/v2-engineering-evaluation-template.md`
-
-Use this layer for questions like:
-- what comes next
-- what is intended for v2/v3
-- how future directions were evaluated
-
-## Layer 4 — Implementation planning and handoff history
-
-These docs capture implementation plans, sequencing notes, and design handoff material.
-They are useful for understanding why something was planned, not as automatic proof of current behavior.
-Expect date-stamped CLI versions, line counts, status labels, and task framing that can drift after implementation lands.
-
-- `docs/plans/`
-- current active repo-wide follow-up tracker:
-  - `docs/plans/2026-03-18-v5-5-post-v5-slimming-plan.md`
-- recently closed repo-wide slimming tracker:
-  - `docs/plans/2026-03-18-v5-project-slimming-plan.md`
-
 Rule:
-- active and recently closed implementation trackers can stay in `docs/plans/`
-- move superseded or low-signal historical handoff material into `docs/archive/`
 
-Use this layer for:
-- implementation history
-- design sequencing
-- engineering handoff context
-- active staged refactor execution planning
+- Tier 2 proves **protocol capability**
+- Tier 2 does **not** automatically prove shipped Telegram behavior
 
-## Layer 5 — Historical archive
+## Tier 3 — Planning and history
 
-These docs exist for reconstruction and context only.
-They should not be treated as active behavior or active intent unless explicitly re-promoted.
+Use this tier only for future direction, engineering sequencing, or historical reconstruction.
 
+- `docs/roadmap/`
+- `docs/future/`
+- `docs/plans/`
 - `docs/archive/`
 
-Read this layer only when:
-- current docs, code, API evidence, and user-reported behavior appear broken or contradictory
-- the bridge has undergone a substantive behavior or business change and historical comparison is required
+Use Tier 3 for questions like:
 
-Do not read `docs/archive/` by default.
+- what comes next
+- what was planned for later phases
+- why an implementation sequence was chosen
+- how older behavior differed from the current model
 
-## Recommended reading paths
+Rule:
 
-### I want to understand the product
-1. `README.md`
-2. `docs/product/v1-scope.md`
-3. if you need the Telegram product router first: `docs/product/chat-and-project-flow.md`
-4. then exactly one narrow product doc:
-   - `docs/product/auth-and-project-flow.md`
-   - `docs/product/codex-command-reference.md`
-   - `docs/product/runtime-and-delivery.md`
-   - `docs/product/callback-contract.md`
+- Tier 3 is context, not default truth
 
-### I want to understand runtime behavior and delivery
-1. `docs/architecture/runtime-and-state.md`
-2. then relevant `src/` files if needed
+## Recommended Reading Paths
 
-### I want to understand current code organization
+### I want to understand the current product
+
+1. `docs/product/v1-scope.md`
+2. `docs/product/chat-and-project-flow.md` if you need a router
+3. exactly one narrow product doc from the split set
+
+### I want the current implementation map
+
 1. `docs/architecture/current-code-organization.md`
-2. then the narrow module under `src/service/`, `src/telegram/ui-*.ts`, `src/state/store-*.ts`, or `src/install.ts`
+2. then use `src/AGENTS.md` to choose one code owner file
 
-### I want to operate or deploy the bridge
+### I want install or admin guidance
+
 1. `docs/operations/install-and-admin.md`
+2. then `src/install.ts` or `src/readiness.ts` only if implementation verification is needed
 
-### I want to check protocol capabilities
+### I want Codex protocol details
+
 1. `docs/research/codex-app-server-authoritative-reference.md`
-2. `docs/research/codex-app-server-api-quick-reference.md`
-3. verify adoption in `src/codex/app-server.ts`
+2. `docs/research/codex-app-server-api-quick-reference.md` only if you need a fast method lookup
+3. then `src/codex/app-server.ts` only if bridge adoption must be confirmed
 
-### I want to check volatile current counts or version baselines
-1. `docs/generated/current-snapshot.md`
-2. then the relevant current doc or source file
+### I want roadmap, future, or historical context
 
-### I want to understand future direction
-1. `docs/roadmap/phase-1-delivery.md`
-2. `docs/future/`
-3. `docs/plans/` if handoff detail is needed
+1. the smallest relevant file in `docs/roadmap/`, `docs/future/`, `docs/plans/`, or `docs/archive/`
+2. then Tier 1 or code if you need to compare past intent with current truth
 
-## Interpretation rule
+## Local Directory Maps
 
-When sources disagree, keep these questions separate:
+The directory `README.md` files under these folders remain useful as local maps for humans:
 
-- **What should happen?** -> active spec/product/architecture/operations docs
-- **What happens today?** -> repository code/runtime
-- **What does Codex support in principle?** -> protocol/reference docs
-- **What is planned next?** -> roadmap/future/plans
+- `docs/product/`
+- `docs/architecture/`
+- `docs/operations/`
+- `docs/research/`
 
-Do not collapse these into one blended answer.
+Coding agents should usually prefer `docs/AGENTS.md` over these local maps.
+
+## Final Rule
+
+Read the smallest relevant tier first.
+Do not treat every document as equal.
+Do not preload the whole docs tree.
