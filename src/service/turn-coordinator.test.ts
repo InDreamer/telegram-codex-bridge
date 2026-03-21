@@ -446,6 +446,61 @@ test("TurnCoordinator completes a normal turn and delivers the recovered final a
   }
 });
 
+test("TurnCoordinator delivers review results when review mode exits without a populated final_answer message", async () => {
+  const { coordinator, store, sentHtmlMessages, finalizedHandoffs, cleanup } = await createCoordinatorContext({
+    appServer: {
+      resumeThread: async () => ({
+        thread: {
+          id: "thread-review",
+          turns: [{
+            id: "turn-review",
+            items: [
+              {
+                type: "agentMessage",
+                phase: "final_answer",
+                text: ""
+              },
+              {
+                type: "exitedReviewMode",
+                review: "The working tree only contains one planning document and no code changes."
+              },
+              {
+                type: "agentMessage",
+                phase: null,
+                text: "The working tree only contains one planning document and no code changes."
+              }
+            ]
+          }]
+        }
+      } as any)
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      displayName: "Session Review",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.beginActiveTurn("chat-1", session, "thread-review", "turn-review", "inProgress");
+    await coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-review",
+      turnId: "turn-review",
+      status: "completed"
+    });
+
+    assert.equal(coordinator.getActiveTurn(), null);
+    assert.equal(sentHtmlMessages.length, 1);
+    assert.match(sentHtmlMessages[0]?.html ?? "", /no code changes/u);
+    assert.doesNotMatch(sentHtmlMessages[0]?.html ?? "", /没有可返回的最终答复/u);
+    assert.deepEqual(finalizedHandoffs, [{ chatId: "chat-1", sessionId: session.sessionId }]);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("TurnCoordinator completes with the fallback terminal message when thread history recovery fails", async () => {
   const { coordinator, store, sentHtmlMessages, finalizedHandoffs, cleanup } = await createCoordinatorContext({
     appServer: {

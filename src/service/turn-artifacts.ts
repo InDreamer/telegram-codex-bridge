@@ -24,13 +24,25 @@ export async function extractTurnArtifactsFromHistory(
   }
 
   const finalItem = targetTurn.items.find(
-    (item) => item.type === "agentMessage" && item.phase === "final_answer" && typeof item.text === "string"
+    (item) => item.type === "agentMessage" && item.phase === "final_answer" && hasMeaningfulText(item.text)
   );
+  const reviewExitItem = [...targetTurn.items].reverse().find(
+    (item) => item.type === "exitedReviewMode" && hasMeaningfulText(item.review)
+  );
+  const reviewAgentMessage = reviewExitItem
+    ? [...targetTurn.items].reverse().find(
+      (item) => item.type === "agentMessage" && item.phase !== "commentary" && hasMeaningfulText(item.text)
+    )
+    : null;
   const planItem = [...targetTurn.items].reverse().find(
     (item) => item.type === "plan" && typeof item.text === "string"
   );
   return {
-    finalMessage: finalItem?.text ?? null,
+    finalMessage: finalItem?.text ?? reviewExitItem?.review ?? reviewAgentMessage?.text ?? null,
     proposedPlan: planItem?.text ?? null
   };
+}
+
+function hasMeaningfulText(value: string | null | undefined): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }

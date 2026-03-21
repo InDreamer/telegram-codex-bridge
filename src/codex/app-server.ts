@@ -276,6 +276,7 @@ export interface ThreadResumeResult {
         type: string;
         text?: string;
         phase?: string | null;
+        review?: string | null;
       }>;
     }>;
   };
