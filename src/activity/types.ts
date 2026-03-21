@@ -253,6 +253,7 @@ export interface ItemCompletedNotification extends ClassifiedNotificationBase {
   itemId: string | null;
   itemType: string | null;
   itemText: string | null;
+  itemReview: string | null;
   itemPhase: MessagePhase | null;
   collabTool: string | null;
   collabAgentStates: CollabAgentStateUpdate[];

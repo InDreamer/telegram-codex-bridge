@@ -126,6 +126,7 @@ export function classifyNotification(method: string, params: unknown): Classifie
         itemId: getItemId(params),
         itemType: getItemType(params),
         itemText: getString(getObject(params)?.item, "text"),
+        itemReview: getString(getObject(params)?.item, "review"),
         itemPhase: getMessagePhase(params),
         collabTool: getCollabTool(params),
         collabAgentStates: getCollabAgentStates(params)

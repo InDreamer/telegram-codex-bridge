@@ -1538,6 +1538,38 @@ test("renderFinalAnswerHtmlChunks keeps plain underscores and wildcard stars as 
   );
 });
 
+test("renderFinalAnswerHtmlChunks preserves review findings as direct content instead of summarizing them", () => {
+  const chunks = renderFinalAnswerHtmlChunks(
+    [
+      "telegram-codex-bridge",
+      "",
+      "The new review-result recovery path still depends on UUIDv7 lexical ordering to match the durable inner turn, which is not guaranteed by the protocol and can fail for same-millisecond UUIDv7s.",
+      "",
+      "Review comment:",
+      "",
+      "- [P1] Correlate review fallback without UUIDv7 ordering assumptions",
+      "  When `review/start` returns an outer turn, `isLikelyNewerTurnId()` can still fail.",
+      "  The app-server surface only guarantees `turn.id: string`, so `/review` can still fall back to `没有可返回的最终答复`."
+    ].join("\n"),
+    3000
+  );
+
+  assert.equal(chunks.length, 1);
+  assert.equal(
+    chunks[0],
+    [
+      "telegram-codex-bridge",
+      "",
+      "The new review-result recovery path still depends on UUIDv7 lexical ordering to match the durable inner turn, which is not guaranteed by the protocol and can fail for same-millisecond UUIDv7s.",
+      "",
+      "Review comment:",
+      "",
+      "• [P1] Correlate review fallback without UUIDv7 ordering assumptions",
+      "When <code>review/start</code> returns an outer turn, <code>isLikelyNewerTurnId()</code> can still fail.\nThe app-server surface only guarantees <code>turn.id: string</code>, so <code>/review</code> can still fall back to <code>没有可返回的最终答复</code>."
+    ].join("\n")
+  );
+});
+
 test("renderFinalAnswerHtmlChunks preserves balanced parentheses in Markdown links", () => {
   const chunks = renderFinalAnswerHtmlChunks(
     "See [Docs](https://example.com/a_(b)) for details.",

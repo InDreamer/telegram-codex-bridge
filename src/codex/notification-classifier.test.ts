@@ -148,3 +148,25 @@ test("classifies runtime parity notifications with structured summaries", () => 
   }
   assert.equal(reroute.toModel, "gpt-5.4");
 });
+
+test("classifies review item completed notifications with direct review text", () => {
+  const notification = classifyNotification("item/completed", {
+    threadId: "thread-review",
+    turnId: "turn-review-inner",
+    item: {
+      id: "item-review-exit",
+      type: "exitedReviewMode",
+      review: "The review found one blocking issue."
+    }
+  });
+
+  assert.equal(notification.kind, "item_completed");
+  if (notification.kind !== "item_completed") {
+    throw new Error("expected item_completed notification");
+  }
+  assert.equal(notification.threadId, "thread-review");
+  assert.equal(notification.turnId, "turn-review-inner");
+  assert.equal(notification.itemType, "exitedReviewMode");
+  assert.equal(notification.itemReview, "The review found one blocking issue.");
+  assert.equal(notification.itemText, null);
+});
