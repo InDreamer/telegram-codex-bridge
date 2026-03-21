@@ -6,12 +6,14 @@ Current active repo-wide follow-up tracker:
 
 - `2026-03-18-v5-5-post-v5-slimming-plan.md` - active V5.5 follow-up for docs cleanup, AGENTS routing, install/admin slimming, and UI test redistribution
 
+Recent task-scoped plans whose outcomes are now reflected in current docs and code:
+
+- `2026-03-21-runtime-hub-reuse-refresh-cap-archive-plan.md` - historical plan for latest-hub reuse, immediate accepted-work reanchor, live-hub cap/eviction, and archive/unarchive hub lifecycle
+- `2026-03-21-runtime-hub-slot-model-implementation-plan.md` - historical plan for the slot-based runtime-hub redesign, completed-hub retention, and hub-card UI alignment
+
 Recently closed repo-wide slimming tracker:
 
 - `2026-03-18-v5-project-slimming-plan.md` - verified V5 closeout tracker for the main service, UI, and store slimming wave
-
-Recent task-scoped plan whose outcome is now reflected in current docs and code:
-- `2026-03-21-runtime-hub-slot-model-implementation-plan.md` - historical plan for the slot-based runtime-hub redesign, completed-hub retention, and hub-card UI alignment
 
 Examples include:
 - design plans

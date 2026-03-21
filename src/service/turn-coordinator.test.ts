@@ -89,6 +89,7 @@ async function createCoordinatorContext(options: {
     };
   }> = [];
   const interactionResolutions: Array<{ chatId: string; sessionId: string; state: string; reason: string }> = [];
+  const acceptedTurnStartReanchors: Array<{ chatId: string; sessionId: string; kind: "text" | "structured" }> = [];
   const reanchorReasons: string[] = [];
   const finalizedHandoffs: Array<{ chatId: string; sessionId: string }> = [];
   let nextMessageId = 1;
@@ -132,6 +133,10 @@ async function createCoordinatorContext(options: {
     reanchorStatusCardToLatestMessage: async (_activeTurn, reason) => {
       reanchorReasons.push(reason);
     },
+    shouldReanchorAcceptedTurnStart: () => true,
+    reanchorAcceptedTurnStart: async (chatId, sessionId, kind) => {
+      acceptedTurnStartReanchors.push({ chatId, sessionId, kind });
+    },
     reanchorRuntimeAfterBridgeReply: async (_chatId, reason, _sessionId) => {
       reanchorReasons.push(reason);
     },
@@ -166,6 +171,7 @@ async function createCoordinatorContext(options: {
     safeMessages,
     sentHtmlMessages,
     interactionResolutions,
+    acceptedTurnStartReanchors,
     reanchorReasons,
     finalizedHandoffs,
     cleanup: async () => {
@@ -177,7 +183,7 @@ async function createCoordinatorContext(options: {
 
 test("TurnCoordinator starts plan-mode turns with collaborationMode and records the active turn", async () => {
   const startTurnCalls: unknown[] = [];
-  const { coordinator, store, syncReasons, cleanup } = await createCoordinatorContext({
+  const { coordinator, store, syncReasons, acceptedTurnStartReanchors, cleanup } = await createCoordinatorContext({
     appServer: {
       startThread: async () => ({ thread: { id: "thread-plan" } }),
       startTurn: async (payload: unknown) => {
@@ -216,7 +222,48 @@ test("TurnCoordinator starts plan-mode turns with collaborationMode and records 
     assert.equal(coordinator.getActiveTurn()?.effectiveModel, "gpt-5-default");
     assert.equal(coordinator.getActiveTurn()?.effectiveReasoningEffort, "medium");
     assert.deepEqual(syncReasons, ["turn_initialized"]);
+    assert.deepEqual(acceptedTurnStartReanchors, [{
+      chatId: "chat-1",
+      sessionId: session.sessionId,
+      kind: "text"
+    }]);
     assert.equal(store.getSessionById(session.sessionId)?.status, "running");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator starts structured turns and requests the structured-work hub reanchor", async () => {
+  const startTurnCalls: unknown[] = [];
+  const { coordinator, store, acceptedTurnStartReanchors, cleanup } = await createCoordinatorContext({
+    appServer: {
+      startThread: async () => ({ thread: { id: "thread-structured" } }),
+      startTurn: async (payload: unknown) => {
+        startTurnCalls.push(payload);
+        return { turn: { id: "turn-structured", status: "inProgress" } };
+      }
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.startStructuredTurn("chat-1", session, [{ type: "text", text: "Use this input." }] as never);
+
+    assert.deepEqual(startTurnCalls, [{
+      threadId: "thread-structured",
+      cwd: "/tmp/project-one",
+      input: [{ type: "text", text: "Use this input." }]
+    }]);
+    assert.deepEqual(acceptedTurnStartReanchors, [{
+      chatId: "chat-1",
+      sessionId: session.sessionId,
+      kind: "structured"
+    }]);
   } finally {
     await cleanup();
   }

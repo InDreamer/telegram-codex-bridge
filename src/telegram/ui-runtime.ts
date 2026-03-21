@@ -903,12 +903,21 @@ export function buildRuntimeErrorCard(
   return lines.join("\n");
 }
 
+function appendInteractionHubHint(lines: string[], hubHint?: string | null): void {
+  if (!hubHint) {
+    return;
+  }
+
+  lines.push("", escapeHtml(hubHint));
+}
+
 export function buildInteractionApprovalCard(options: {
   interactionId: string;
   title: string;
   subtitle: string;
   body?: string | null;
   detail?: string | null;
+  hubHint?: string | null;
   actions: Array<{
     text: string;
     decisionKey: string;
@@ -924,6 +933,7 @@ export function buildInteractionApprovalCard(options: {
   if (options.detail) {
     lines.push(formatHtmlField("说明：", options.detail));
   }
+  appendInteractionHubHint(lines, options.hubHint);
 
   const actionRow = options.actions.map((action, index) => ({
     text: action.text,
@@ -953,6 +963,7 @@ export function buildInteractionQuestionCard(options: {
   isOther: boolean;
   isSecret: boolean;
   awaitingText?: boolean;
+  hubHint?: string | null;
 }): {
   text: string;
   replyMarkup: TelegramInlineKeyboardMarkup;
@@ -970,6 +981,7 @@ export function buildInteractionQuestionCard(options: {
 
   if (options.awaitingText) {
     lines.push("<i>当前正在等待你直接发送这条问题的文字回答。</i>");
+    appendInteractionHubHint(lines, options.hubHint);
     return {
       text: lines.join("\n"),
       replyMarkup: {
@@ -980,6 +992,7 @@ export function buildInteractionQuestionCard(options: {
 
   if (!options.options || options.options.length === 0) {
     lines.push("<i>点击下方按钮后，直接在聊天里发送你的回答。</i>");
+    appendInteractionHubHint(lines, options.hubHint);
     return {
       text: lines.join("\n"),
       replyMarkup: {
@@ -1011,6 +1024,7 @@ export function buildInteractionQuestionCard(options: {
   }
 
   rows.push([{ text: "取消本次交互", callback_data: encodeInteractionCancelCallback(options.interactionId) }]);
+  appendInteractionHubHint(lines, options.hubHint);
 
   return {
     text: lines.join("\n"),
@@ -1026,6 +1040,7 @@ export function buildInteractionResolvedCard(options: {
   expandable?: boolean;
   expanded?: boolean;
   interactionId?: string;
+  hubHint?: string | null;
 }): {
   text: string;
   replyMarkup?: TelegramInlineKeyboardMarkup;
@@ -1048,6 +1063,7 @@ export function buildInteractionResolvedCard(options: {
       lines.push(escapeHtml(detail));
     }
   }
+  appendInteractionHubHint(lines, options.hubHint);
 
   if (!options.expandable || !options.interactionId) {
     return { text: lines.join("\n") };

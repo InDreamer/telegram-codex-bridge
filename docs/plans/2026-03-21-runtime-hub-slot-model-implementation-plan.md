@@ -10,6 +10,9 @@
 
 Implemented later and retained as historical planning context. This document captures the runtime-hub redesign agreed for the hub-card optimization discussion on 2026-03-21.
 
+Follow-up changes to latest-hub reuse, middle-hole admission after archive removal, live-hub cap/eviction, and archive/unarchive hub lifecycle are tracked in:
+- `docs/plans/2026-03-21-runtime-hub-reuse-refresh-cap-archive-plan.md`
+
 ## Problem
 
 The current hub card mixes two different ideas:

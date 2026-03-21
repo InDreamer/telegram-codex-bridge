@@ -77,6 +77,7 @@ interface RichInputAdapterDeps {
   sleep: (delayMs: number) => Promise<void>;
   getBlockedTurnSteerAvailability: (chatId: string, session: SessionRow) => RichInputTurnAvailability;
   sendPendingInteractionBlockNotice: (chatId: string) => Promise<void>;
+  reanchorAcceptedTurnContinuation: (chatId: string, sessionId: string) => Promise<void>;
   startTextTurn: (
     chatId: string,
     session: SessionRow,
@@ -414,6 +415,7 @@ export class RichInputAdapter {
             expectedTurnId: steerAvailability.turnId,
             input: [{ type: "text", text: transcript }]
           });
+          await this.deps.reanchorAcceptedTurnContinuation(chatId, session.sessionId);
         } catch (error) {
           await this.deps.logger.warn("voice turn steer failed", {
             chatId,
@@ -453,6 +455,7 @@ export class RichInputAdapter {
             expectedTurnId: steerAvailability.turnId,
             input
           });
+          await this.deps.reanchorAcceptedTurnContinuation(chatId, session.sessionId);
         } catch (error) {
           await this.deps.logger.warn("turn steer failed", {
             chatId,

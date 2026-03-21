@@ -64,6 +64,8 @@ interface InteractionBrokerAppServer {
   respondToServerRequestError(id: JsonRpcRequestId, code: number, message: string): Promise<void>;
 }
 
+const INTERACTION_HUB_HINT = "如需查看或刷新 Hub，可发送 /hub。";
+
 interface InteractionBrokerDeps {
   getStore: () => BridgeStateStore | null;
   getAppServer: () => InteractionBrokerAppServer | null;
@@ -904,7 +906,8 @@ function buildPendingInteractionSurface(
       details,
       expandable: details.length > 0,
       expanded: options?.answeredExpanded ?? false,
-      interactionId: row.interactionId
+      interactionId: row.interactionId,
+      hubHint: INTERACTION_HUB_HINT
     });
   }
 
@@ -912,7 +915,8 @@ function buildPendingInteractionSurface(
     return buildInteractionResolvedCard({
       title: interaction.title,
       state: "canceled",
-      summary: "已取消"
+      summary: "已取消",
+      hubHint: INTERACTION_HUB_HINT
     });
   }
 
@@ -939,6 +943,7 @@ function buildPendingInteractionSurface(
         subtitle: interaction.subtitle,
         body: interaction.body,
         detail: interaction.detail,
+        hubHint: INTERACTION_HUB_HINT,
         actions: buildApprovalActions(interaction)
       });
     case "permissions":
@@ -948,6 +953,7 @@ function buildPendingInteractionSurface(
         subtitle: interaction.subtitle,
         body: summarizePermissions(interaction.requestedPermissions),
         detail: interaction.detail,
+        hubHint: INTERACTION_HUB_HINT,
         actions: [
           { text: "批准本次权限", decisionKey: "accept" },
           { text: "本会话内总是批准", decisionKey: "acceptForSession" },
@@ -961,6 +967,7 @@ function buildPendingInteractionSurface(
         subtitle: `MCP: ${interaction.serverName}`,
         body: interaction.message,
         detail: interaction.detail,
+        hubHint: INTERACTION_HUB_HINT,
         actions: [
           { text: "接受", decisionKey: "accept" },
           { text: "拒绝", decisionKey: "decline" }
@@ -973,7 +980,8 @@ function buildPendingInteractionSurface(
         return buildInteractionResolvedCard({
           title: interaction.title,
           state: "answered",
-          summary: summarizeAnsweredInteraction(row, interaction)
+          summary: summarizeAnsweredInteraction(row, interaction),
+          hubHint: INTERACTION_HUB_HINT
         });
       }
 
@@ -988,7 +996,8 @@ function buildPendingInteractionSurface(
         options: currentQuestion.options,
         isOther: currentQuestion.isOther,
         isSecret: currentQuestion.isSecret,
-        awaitingText: row.state === "awaiting_text"
+        awaitingText: row.state === "awaiting_text",
+        hubHint: INTERACTION_HUB_HINT
       });
     }
   }

@@ -103,6 +103,8 @@ interface SessionProjectCoordinatorDeps {
   safeDeleteMessage: (chatId: string, messageId: number) => Promise<TelegramDeleteResult>;
   getActiveRuntimeStatusText: (chatId: string) => string | null;
   reanchorRuntimeAfterBridgeReply: (chatId: string, sessionId: string, reason: string) => Promise<void>;
+  handleSessionArchived: (chatId: string, sessionId: string, reason: string) => Promise<void>;
+  handleSessionUnarchived: (chatId: string, sessionId: string, reason: string) => Promise<void>;
 }
 
 export class SessionProjectCoordinator {
@@ -478,6 +480,15 @@ export class SessionProjectCoordinator {
       if (activeSession.threadId) {
         await this.deps.markPendingThreadArchiveCommit(activeSession.threadId, pendingOpId);
       }
+      try {
+        await this.deps.handleSessionArchived(chatId, activeSession.sessionId, "telegram_archive");
+      } catch (error) {
+        await this.deps.logger.warn("runtime hub archive cleanup failed", {
+          chatId,
+          sessionId: activeSession.sessionId,
+          error: `${error}`
+        });
+      }
       const nextActiveSession = store.getActiveSession(chatId);
       await this.deps.safeSendHtmlMessage(
         chatId,
@@ -550,6 +561,15 @@ export class SessionProjectCoordinator {
       store.unarchiveSession(target.sessionId);
       if (target.threadId) {
         await this.deps.markPendingThreadArchiveCommit(target.threadId, pendingOpId);
+      }
+      try {
+        await this.deps.handleSessionUnarchived(chatId, target.sessionId, "telegram_unarchive");
+      } catch (error) {
+        await this.deps.logger.warn("runtime hub unarchive cleanup failed", {
+          chatId,
+          sessionId: target.sessionId,
+          error: `${error}`
+        });
       }
       await this.deps.safeSendHtmlMessage(chatId, buildUnarchiveSuccessText(this.projectDisplayName(target)));
     } catch {

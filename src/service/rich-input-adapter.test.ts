@@ -86,6 +86,7 @@ function authorizeChatWithSession(store: BridgeStateStore, chatId: string, proje
 async function createAdapterContext(options: {
   config?: BridgeConfig;
   api?: Record<string, unknown>;
+  appServer?: Record<string, unknown>;
   getBlockedTurnSteerAvailability?: () => { kind: "available"; threadId: string; turnId: string } | { kind: "interaction_pending" } | { kind: "busy" };
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "ctb-rich-input-test-"));
@@ -103,6 +104,7 @@ async function createAdapterContext(options: {
   const startTextTurns: Array<{ chatId: string; sessionId: string; text: string; transcript?: string }> = [];
   const startStructuredTurns: Array<{ chatId: string; sessionId: string; input: unknown[] }> = [];
   const pendingInteractionNotices: string[] = [];
+  const continuationReanchorCalls: Array<{ chatId: string; sessionId: string }> = [];
 
   const adapter = new RichInputAdapter({
     getStore: () => store,
@@ -114,7 +116,8 @@ async function createAdapterContext(options: {
       startThreadRealtime: async () => {},
       appendThreadRealtimeAudio: async () => {},
       stopThreadRealtime: async () => {},
-      archiveThread: async () => {}
+      archiveThread: async () => {},
+      ...(options.appServer ?? {})
     }) as never,
     fetchAllModels: async () => [{
       id: "gpt-realtime",
@@ -141,6 +144,9 @@ async function createAdapterContext(options: {
       options.getBlockedTurnSteerAvailability?.() ?? { kind: "busy" },
     sendPendingInteractionBlockNotice: async (chatId) => {
       pendingInteractionNotices.push(chatId);
+    },
+    reanchorAcceptedTurnContinuation: async (chatId, sessionId) => {
+      continuationReanchorCalls.push({ chatId, sessionId });
     },
     startTextTurn: async (chatId, session, text, extra) => {
       const turn: { chatId: string; sessionId: string; text: string; transcript?: string } = {
@@ -174,6 +180,7 @@ async function createAdapterContext(options: {
     startTextTurns,
     startStructuredTurns,
     pendingInteractionNotices,
+    continuationReanchorCalls,
     cleanup: async () => {
       store.close();
       await rm(root, { recursive: true, force: true });
@@ -249,6 +256,50 @@ test("RichInputAdapter does not queue rich input while a running turn is blocked
 
     assert.deepEqual(pendingInteractionNotices, ["1"]);
     assert.equal(adapter.hasPendingRichInputComposer("1"), false);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RichInputAdapter reanchors the hub after accepted structured turn continuation", async () => {
+  const steerCalls: unknown[] = [];
+  const { adapter, store, continuationReanchorCalls, cleanup } = await createAdapterContext({
+    getBlockedTurnSteerAvailability: () => ({ kind: "available", threadId: "thread-1", turnId: "turn-1" }),
+    appServer: {
+      steerTurn: async (payload: unknown) => {
+        steerCalls.push(payload);
+      }
+    }
+  });
+
+  try {
+    const session = authorizeChatWithSession(store, "1");
+    store.updateSessionStatus(session.sessionId, "running", {
+      lastTurnId: "turn-1",
+      lastTurnStatus: "inProgress"
+    });
+    const runningSession = store.getSessionById(session.sessionId)!;
+
+    await adapter.submitOrQueueRichInput(
+      "1",
+      runningSession,
+      [{ type: "mention", name: "Docs", path: "app://docs/reference" }],
+      "continue with Docs",
+      "引用：Docs"
+    );
+
+    assert.deepEqual(steerCalls, [{
+      threadId: "thread-1",
+      expectedTurnId: "turn-1",
+      input: [
+        { type: "mention", name: "Docs", path: "app://docs/reference" },
+        { type: "text", text: "continue with Docs" }
+      ]
+    }]);
+    assert.deepEqual(continuationReanchorCalls, [{
+      chatId: "1",
+      sessionId: runningSession.sessionId
+    }]);
   } finally {
     await cleanup();
   }

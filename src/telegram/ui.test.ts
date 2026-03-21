@@ -1424,6 +1424,41 @@ test("resolved and expired interaction cards drop action buttons", () => {
   assert.match(expired.text, /已过期/u);
 });
 
+test("interaction card builders can append a /hub hint", () => {
+  const approval = buildInteractionApprovalCard({
+    interactionId: "ix-hint-approval",
+    title: "Codex 需要命令批准",
+    subtitle: "命令审批",
+    body: "pnpm test",
+    detail: null,
+    hubHint: "如需查看或刷新 Hub，可发送 /hub。",
+    actions: [{ text: "批准", decisionKey: "accept" }]
+  });
+  const questionnaire = buildInteractionQuestionCard({
+    interactionId: "ix-hint-question",
+    title: "Codex 需要更多信息",
+    questionId: "repo:env",
+    header: "Env",
+    question: "Which environment?",
+    questionIndex: 1,
+    totalQuestions: 1,
+    options: null,
+    isOther: false,
+    isSecret: false,
+    hubHint: "如需查看或刷新 Hub，可发送 /hub。"
+  });
+  const resolved = buildInteractionResolvedCard({
+    title: "Codex 需要命令批准",
+    state: "canceled",
+    summary: "已取消",
+    hubHint: "如需查看或刷新 Hub，可发送 /hub。"
+  });
+
+  assert.match(approval.text, /如需查看或刷新 Hub，可发送 \/hub。/u);
+  assert.match(questionnaire.text, /如需查看或刷新 Hub，可发送 \/hub。/u);
+  assert.match(resolved.text, /如需查看或刷新 Hub，可发送 \/hub。/u);
+});
+
 test("buildInspectText includes pending interaction summaries when present", () => {
   const text = buildInspectText(
     createInspectSnapshot({

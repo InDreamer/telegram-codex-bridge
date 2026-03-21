@@ -130,10 +130,13 @@ While a turn is running:
 - keep one bridge-owned runtime surface in the chat for each visible runtime hub
 - current runtime-card titles are `Runtime Status` and `Error`
 - each live runtime hub is a stable five-slot container; sessions join a slot only when they first become truly running and keep that slot after they finish
+- new running work is admitted only into the latest live hub
+- if the latest live hub still has an empty slot, reuse that hub even when it is currently rendered as completed, filling the smallest empty slot
+- if the latest live hub is full, create a new hub; before creating a fourth live hub, evict the oldest hub that no longer owns a running session, but allow temporary overflow beyond three while all existing hubs still have running work
 - show at most one `当前查看中的会话` section on the hub that owns the active viewed session; hide that section entirely when the active session has not joined any hub yet
 - show `其他运行中的会话` and `最近结束的会话` from that hub's own slots only
 - keep completed hubs visible in chat and render their header as `Hub：x/y · 已完成`
-- use a fixed one-row slot selector with `1..5` for occupied slots and `·` for empty positions; ended slots remain selectable
+- use a fixed one-row slot selector with `1..5` for occupied slots and `·` for empty positions; ended slots remain selectable, and archive-driven removal may leave middle holes
 - keep richer runtime rows such as model, directory, token, and plan-mode fields out of the hub and available through `/status`
 - when plan state becomes available, expose it through a collapsed button on the viewed runtime surface
 - the collapsed Chinese plan label is fixed `计划清单`, `收起计划清单`, and plan/agent controls share one row when both are present
@@ -152,10 +155,12 @@ While a turn is running:
 - never expose raw reasoning deltas in the default chat flow
 - if Telegram refuses an edit or rate-limits it, retry the same card later instead of sending replacement-message spam
 - let `/inspect` return a snapshot on demand instead of pushing extra detail automatically
-- auto-refresh the hub only after a new turn stays running for a short delay, or after a blocked turn resumes running and stays running for a short delay
+- reanchor the hub to the bottom immediately when the bridge accepts plain-text work that starts a turn, structured or rich input that starts a turn, or accepted blocked-turn continuation input
+- keep delayed auto-refresh only for a new turn that stays running for a short delay, or after a blocked turn resumes running and stays running for a short delay; suppress duplicate delayed start churn after an immediate accepted-work reanchor
 - do not auto-refresh the hub after final answers, plan results, `/status`, `/inspect`, `/where`, `/help`, language changes, interrupt replies, failure notices, or session-management confirmations
 - when actionable interaction cards are pending, keep them visually primary and block both automatic hub refresh and `/hub` pull-up
 - use the one-line reminder `需要查看运行卡片时，可发送 /hub。` only on the delayed first auto-refresh for a turn and on plain-text busy-turn rejection before the user has learned `/hub`
+- bridge-owned interaction cards and their resolved answered or canceled result cards append `如需查看或刷新 Hub，可发送 /hub。` as a contextual handoff while the interaction surface remains primary
 
 While a turn is running:
 - do not queue a second turn

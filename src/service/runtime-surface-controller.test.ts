@@ -1281,7 +1281,7 @@ test("RuntimeSurfaceController renders slot-based hub headers and selector butto
   }
 });
 
-test("RuntimeSurfaceController does not automatically reuse a completed hub for a new running session", async () => {
+test("RuntimeSurfaceController reuses a completed latest hub when it still has an empty slot", async () => {
   const activeTurns: unknown[] = [];
   const { controller, store, sentHtml, editedHtml, cleanup } = await createControllerContext({
     listActiveTurns: () => activeTurns
@@ -1352,9 +1352,379 @@ test("RuntimeSurfaceController does not automatically reuse a completed hub for 
       forcePreferredFocus: true
     });
 
+    assert.equal(sentHtml.length, 1);
+    assert.match(editedHtml.at(-1)?.html ?? "", /<b>Hub：<\/b> 1\/1/u);
+    assert.deepEqual((editedHtml.at(-1)?.replyMarkup as TelegramInlineKeyboardMarkup | undefined)?.inline_keyboard[0]?.map((button) => button.text), ["1", "2", "·", "·", "·"]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController admits new work only into the latest hub, not older hubs with holes", async () => {
+  const activeTurns: unknown[] = [];
+  const { controller, store, sentHtml, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns
+  });
+
+  try {
+    const sessions = await Promise.all(
+      Array.from({ length: 10 }, (_, index) => store.createSession({
+        telegramChatId: "chat-1",
+        projectName: `Project ${index + 1}`,
+        projectPath: `/tmp/project-${index + 1}`
+      }))
+    );
+    for (const [index, session] of sessions.entries()) {
+      activeTurns.push({
+        sessionId: session.sessionId,
+        chatId: "chat-1",
+        threadId: `thread-${index + 1}`,
+        turnId: `turn-${index + 1}`,
+        tracker: {
+          getInspectSnapshot: () => createInspectSnapshot(),
+          getStatus: () => createActivityStatus()
+        },
+        statusCard: createStatusCard(),
+        latestStatusProgressText: null,
+        latestPlanFingerprint: "",
+        latestAgentFingerprint: "",
+        subagentIdentityBackfillStates: new Map(),
+        errorCards: [],
+        nextErrorCardId: 1,
+        surfaceQueue: Promise.resolve()
+      });
+    }
+    store.setActiveSession("chat-1", sessions[9]!.sessionId);
+
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_initialized", sessions[9]!.sessionId, undefined, {
+      forcePreferredFocus: true
+    });
+
+    const removed = sessions[0]!;
+    activeTurns.splice(0, 1);
+    store.archiveSession(removed.sessionId);
+    await controller.handleSessionArchived("chat-1", removed.sessionId, "telegram_archive");
+
+    const nextSession = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project 11",
+      projectPath: "/tmp/project-11"
+    });
+    activeTurns.push({
+      sessionId: nextSession.sessionId,
+      chatId: "chat-1",
+      threadId: "thread-11",
+      turnId: "turn-11",
+      tracker: {
+        getInspectSnapshot: () => createInspectSnapshot(),
+        getStatus: () => createActivityStatus()
+      },
+      statusCard: createStatusCard(),
+      latestStatusProgressText: null,
+      latestPlanFingerprint: "",
+      latestAgentFingerprint: "",
+      subagentIdentityBackfillStates: new Map(),
+      errorCards: [],
+      nextErrorCardId: 1,
+      surfaceQueue: Promise.resolve()
+    });
+    store.setActiveSession("chat-1", nextSession.sessionId);
+
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_initialized", nextSession.sessionId, undefined, {
+      forcePreferredFocus: true
+    });
+
+    const runtimeHubStates = (controller as unknown as {
+      runtimeHubStates: Map<string, { liveHubs: Map<number, { slots: Array<{ sessionId: string | null }> }> }>;
+    }).runtimeHubStates;
+    const orderedHubs = [...(runtimeHubStates.get("chat-1")?.liveHubs.values() ?? [])].sort((left, right) => (left as any).windowIndex - (right as any).windowIndex);
+    assert.equal(orderedHubs.length, 3);
+    assert.equal(orderedHubs[0]?.slots[0]?.sessionId, null);
+    assert.equal(orderedHubs[2]?.slots[0]?.sessionId, nextSession.sessionId);
+    assert.match(sentHtml.at(-1)?.html ?? "", /<b>Hub：<\/b> 3\/3/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController removes archived sessions from live hubs immediately", async () => {
+  const activeTurns: unknown[] = [];
+  const { controller, store, sentHtml, deletedMessages, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns
+  });
+
+  try {
+    const session = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    store.setActiveSession("chat-1", session.sessionId);
+    activeTurns.push({
+      sessionId: session.sessionId,
+      chatId: "chat-1",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      tracker: {
+        getInspectSnapshot: () => createInspectSnapshot(),
+        getStatus: () => createActivityStatus()
+      },
+      statusCard: createStatusCard(),
+      latestStatusProgressText: null,
+      latestPlanFingerprint: "",
+      latestAgentFingerprint: "",
+      subagentIdentityBackfillStates: new Map(),
+      errorCards: [],
+      nextErrorCardId: 1,
+      surfaceQueue: Promise.resolve()
+    });
+
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_initialized", session.sessionId, undefined, {
+      forcePreferredFocus: true
+    });
+
+    activeTurns.length = 0;
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_terminal", null, session.sessionId);
+    const initialMessageId = sentHtml[0]?.messageId ?? 0;
+    store.archiveSession(session.sessionId);
+
+    await controller.handleSessionArchived("chat-1", session.sessionId, "telegram_archive");
+
+    const runtimeHubStates = (controller as unknown as {
+      runtimeHubStates: Map<string, { liveHubs: Map<number, unknown> }>;
+    }).runtimeHubStates;
+    assert.equal(runtimeHubStates.get("chat-1")?.liveHubs.size ?? 0, 0);
+    assert.deepEqual(deletedMessages, [initialMessageId]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController removes archived sessions from recovery hubs immediately", async () => {
+  const { controller, store, cleanup } = await createControllerContext();
+
+  try {
+    const sessions = await Promise.all([
+      store.createSession({ telegramChatId: "chat-1", projectName: "Project One", projectPath: "/tmp/project-one" }),
+      store.createSession({ telegramChatId: "chat-1", projectName: "Project Two", projectPath: "/tmp/project-two" })
+    ]);
+    store.setActiveSession("chat-1", sessions[0]!.sessionId);
+
+    await controller.sendRecoveryHub("chat-1", sessions.map((session) => session.sessionId));
+    store.archiveSession(sessions[0]!.sessionId);
+    await controller.handleSessionArchived("chat-1", sessions[0]!.sessionId, "telegram_archive");
+
+    const runtimeHubStates = (controller as unknown as {
+      runtimeHubStates: Map<string, { recoveryHub: { sessionIds: string[] } | null }>;
+    }).runtimeHubStates;
+    assert.deepEqual(runtimeHubStates.get("chat-1")?.recoveryHub?.sessionIds ?? [], [sessions[1]!.sessionId]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController evicts the oldest non-running hub before creating a fourth live hub and keeps display order dense", async () => {
+  const activeTurns: unknown[] = [];
+  const { controller, store, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns
+  });
+
+  try {
+    const sessions = await Promise.all(
+      Array.from({ length: 11 }, (_, index) => store.createSession({
+        telegramChatId: "chat-1",
+        projectName: `Project ${index + 1}`,
+        projectPath: `/tmp/project-${index + 1}`
+      }))
+    );
+    for (const [index, session] of sessions.entries()) {
+      activeTurns.push({
+        sessionId: session.sessionId,
+        chatId: "chat-1",
+        threadId: `thread-${index + 1}`,
+        turnId: `turn-${index + 1}`,
+        tracker: {
+          getInspectSnapshot: () => createInspectSnapshot(),
+          getStatus: () => createActivityStatus()
+        },
+        statusCard: createStatusCard(),
+        latestStatusProgressText: null,
+        latestPlanFingerprint: "",
+        latestAgentFingerprint: "",
+        subagentIdentityBackfillStates: new Map(),
+        errorCards: [],
+        nextErrorCardId: 1,
+        surfaceQueue: Promise.resolve()
+      });
+    }
+    store.setActiveSession("chat-1", sessions[10]!.sessionId);
+
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_initialized", sessions[10]!.sessionId, undefined, {
+      forcePreferredFocus: true
+    });
+
+    for (let index = 0; index < 5; index += 1) {
+      const sessionId = sessions[index]!.sessionId;
+      const turnIndex = activeTurns.findIndex((turn) => (turn as { sessionId: string }).sessionId === sessionId);
+      if (turnIndex >= 0) {
+        activeTurns.splice(turnIndex, 1);
+      }
+    }
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_terminal", null, sessions[0]!.sessionId);
+
+    for (let index = 11; index < 16; index += 1) {
+      const session = await store.createSession({
+        telegramChatId: "chat-1",
+        projectName: `Project ${index + 1}`,
+        projectPath: `/tmp/project-${index + 1}`
+      });
+      activeTurns.push({
+        sessionId: session.sessionId,
+        chatId: "chat-1",
+        threadId: `thread-${index + 1}`,
+        turnId: `turn-${index + 1}`,
+        tracker: {
+          getInspectSnapshot: () => createInspectSnapshot(),
+          getStatus: () => createActivityStatus()
+        },
+        statusCard: createStatusCard(),
+        latestStatusProgressText: null,
+        latestPlanFingerprint: "",
+        latestAgentFingerprint: "",
+        subagentIdentityBackfillStates: new Map(),
+        errorCards: [],
+        nextErrorCardId: 1,
+        surfaceQueue: Promise.resolve()
+      });
+      store.setActiveSession("chat-1", session.sessionId);
+      await controller.refreshLiveRuntimeHubs("chat-1", "turn_initialized", session.sessionId, undefined, {
+        forcePreferredFocus: true
+      });
+    }
+
+    const runtimeHubStates = (controller as unknown as {
+      runtimeHubStates: Map<string, { liveHubs: Map<number, unknown> }>;
+    }).runtimeHubStates;
+    assert.equal(runtimeHubStates.get("chat-1")?.liveHubs.size ?? 0, 3);
+    const orderedHubs = [...(runtimeHubStates.get("chat-1")?.liveHubs.values() ?? [])].sort((left, right) => (left as any).windowIndex - (right as any).windowIndex);
+    const renderedHeaders = orderedHubs.map((hubState) => {
+      const text = (controller as any).buildLiveHubRenderPayload("chat-1", hubState, orderedHubs.length, activeTurns).text as string;
+      return text.match(/<b>Hub：<\/b> (\d+\/\d+)/u)?.[1] ?? null;
+    });
+    assert.deepEqual(renderedHeaders, ["1/3", "2/3", "3/3"]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController allows a temporary fourth live hub when the first three still have running sessions", async () => {
+  const activeTurns: unknown[] = [];
+  const { controller, store, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns
+  });
+
+  try {
+    const sessions = await Promise.all(
+      Array.from({ length: 16 }, (_, index) => store.createSession({
+        telegramChatId: "chat-1",
+        projectName: `Project ${index + 1}`,
+        projectPath: `/tmp/project-${index + 1}`
+      }))
+    );
+    for (const [index, session] of sessions.entries()) {
+      activeTurns.push({
+        sessionId: session.sessionId,
+        chatId: "chat-1",
+        threadId: `thread-${index + 1}`,
+        turnId: `turn-${index + 1}`,
+        tracker: {
+          getInspectSnapshot: () => createInspectSnapshot(),
+          getStatus: () => createActivityStatus()
+        },
+        statusCard: createStatusCard(),
+        latestStatusProgressText: null,
+        latestPlanFingerprint: "",
+        latestAgentFingerprint: "",
+        subagentIdentityBackfillStates: new Map(),
+        errorCards: [],
+        nextErrorCardId: 1,
+        surfaceQueue: Promise.resolve()
+      });
+    }
+    store.setActiveSession("chat-1", sessions[15]!.sessionId);
+
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_initialized", sessions[15]!.sessionId, undefined, {
+      forcePreferredFocus: true
+    });
+
+    const runtimeHubStates = (controller as unknown as {
+      runtimeHubStates: Map<string, { liveHubs: Map<number, unknown> }>;
+    }).runtimeHubStates;
+    assert.equal(runtimeHubStates.get("chat-1")?.liveHubs.size ?? 0, 4);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController does not double-send delayed start auto-refresh after immediate accepted-work reanchor", async () => {
+  const activeTurns: Array<{
+    sessionId: string;
+    chatId: string;
+    threadId: string;
+    turnId: string;
+    tracker: {
+      getInspectSnapshot: () => InspectSnapshot;
+      getStatus: () => ActivityStatus;
+    };
+    statusCard: ReturnType<typeof createStatusCard>;
+    latestStatusProgressText: null;
+    latestPlanFingerprint: string;
+    latestAgentFingerprint: string;
+    subagentIdentityBackfillStates: Map<string, "pending" | "resolved" | "exhausted">;
+    errorCards: never[];
+    nextErrorCardId: number;
+    surfaceQueue: Promise<void>;
+  }> = [];
+  const { controller, store, sentHtml, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns
+  });
+
+  try {
+    const session = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    store.setActiveSession("chat-1", session.sessionId);
+
+    const activeTurn = {
+      sessionId: session.sessionId,
+      chatId: "chat-1",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      tracker: {
+        getInspectSnapshot: () => createInspectSnapshot(),
+        getStatus: () => createActivityStatus()
+      },
+      statusCard: createStatusCard(),
+      latestStatusProgressText: null,
+      latestPlanFingerprint: "",
+      latestAgentFingerprint: "",
+      subagentIdentityBackfillStates: new Map(),
+      errorCards: [],
+      nextErrorCardId: 1,
+      surfaceQueue: Promise.resolve()
+    };
+    activeTurns.push(activeTurn);
+
+    await controller.syncRuntimeCards(activeTurn as never, null, null, createActivityStatus(), {
+      force: true,
+      reason: "turn_initialized"
+    });
+    await controller.reanchorRuntimeAfterBridgeReply(activeTurn as never, "chat-1", "accepted_user_work", session.sessionId);
+    await sleep(1700);
+
     assert.equal(sentHtml.length, 2);
-    assert.match(sentHtml[1]?.html ?? "", /<b>Hub：<\/b> 2\/2/u);
-    assert.match(sentHtml[0]?.html ?? editedHtml.at(-2)?.html ?? "", /<b>Hub：<\/b> 1\/1/u);
   } finally {
     await cleanup();
   }

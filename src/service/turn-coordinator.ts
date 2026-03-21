@@ -143,6 +143,12 @@ interface TurnCoordinatorDeps {
   ) => Promise<void>;
   runRuntimeCardOperation: (activeTurn: ActiveTurnState, operation: () => Promise<void>) => Promise<void>;
   reanchorStatusCardToLatestMessage: (activeTurn: ActiveTurnState, reason: string) => Promise<void>;
+  shouldReanchorAcceptedTurnStart: (chatId: string) => boolean;
+  reanchorAcceptedTurnStart: (
+    chatId: string,
+    sessionId: string,
+    kind: "text" | "structured"
+  ) => Promise<void>;
   reanchorRuntimeAfterBridgeReply: (chatId: string, reason: string, sessionId?: string) => Promise<void>;
   finalizeTerminalRuntimeHandoff: (chatId: string, sessionId: string) => Promise<void>;
   disposeRuntimeCards: (activeTurn: ActiveTurnState) => void;
@@ -355,8 +361,12 @@ export class TurnCoordinator {
           transcript: options.transcript
         });
       }
+      const shouldReanchorAcceptedStart = this.deps.shouldReanchorAcceptedTurnStart(chatId);
       const effectiveConfig = this.resolveEffectiveTurnConfig(session, request, threadState);
       await this.beginActiveTurn(chatId, session, threadId, turn.turn.id, turn.turn.status, effectiveConfig);
+      if (shouldReanchorAcceptedStart) {
+        await this.deps.reanchorAcceptedTurnStart(chatId, session.sessionId, "text");
+      }
     } catch (error) {
       await this.deps.logger.error("turn start failed", {
         sessionId: session.sessionId,
@@ -404,8 +414,12 @@ export class TurnCoordinator {
         store.clearSessionDefaultCollaborationModeReset(session.sessionId);
       }
 
+      const shouldReanchorAcceptedStart = this.deps.shouldReanchorAcceptedTurnStart(chatId);
       const effectiveConfig = this.resolveEffectiveTurnConfig(session, request, threadState);
       await this.beginActiveTurn(chatId, session, threadId, turn.turn.id, turn.turn.status, effectiveConfig);
+      if (shouldReanchorAcceptedStart) {
+        await this.deps.reanchorAcceptedTurnStart(chatId, session.sessionId, "structured");
+      }
     } catch (error) {
       await this.deps.logger.error("structured turn start failed", {
         sessionId: session.sessionId,

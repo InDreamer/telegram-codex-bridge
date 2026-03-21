@@ -55,6 +55,8 @@ async function createCoordinatorContext() {
     error: async () => {}
   });
   const reanchorCalls: Array<{ chatId: string; sessionId: string; reason: string }> = [];
+  const archiveHookCalls: Array<{ chatId: string; sessionId: string; reason: string }> = [];
+  const unarchiveHookCalls: Array<{ chatId: string; sessionId: string; reason: string }> = [];
   const sentMessages: Array<{ messageId: number; text: string; html: boolean }> = [];
   const deletedMessages: number[] = [];
   const editedMessages: Array<{ messageId: number; text: string; html: boolean }> = [];
@@ -109,6 +111,12 @@ async function createCoordinatorContext() {
     getActiveRuntimeStatusText: () => null,
     reanchorRuntimeAfterBridgeReply: async (chatId, sessionId, reason) => {
       reanchorCalls.push({ chatId, sessionId, reason });
+    },
+    handleSessionArchived: async (chatId, sessionId, reason) => {
+      archiveHookCalls.push({ chatId, sessionId, reason });
+    },
+    handleSessionUnarchived: async (chatId, sessionId, reason) => {
+      unarchiveHookCalls.push({ chatId, sessionId, reason });
     }
   });
 
@@ -116,6 +124,8 @@ async function createCoordinatorContext() {
     coordinator,
     store,
     reanchorCalls,
+    archiveHookCalls,
+    unarchiveHookCalls,
     sentMessages,
     deletedMessages,
     editedMessages,
@@ -300,6 +310,60 @@ test("stale picker message ids expire after a newer picker is sent", async () =>
     assert.deepEqual(deletedMessages, [firstPickerMessageId]);
     assert.equal(sentMessages.at(-1)?.text, "这个按钮已过期，请重新操作。");
     assert.equal((coordinator as any).pickerStates.get("chat-1")?.interactiveMessageId, secondPickerMessageId);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("handleArchive calls the runtime-surface archive hook after local persistence succeeds", async () => {
+  const { coordinator, store, archiveHookCalls, unarchiveHookCalls, cleanup } = await createCoordinatorContext();
+
+  try {
+    authorizeChat(store, "chat-1");
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one",
+      displayName: "Session One"
+    });
+    store.setActiveSession("chat-1", session.sessionId);
+
+    await coordinator.handleArchive("chat-1");
+
+    assert.equal(store.getSessionById(session.sessionId)?.archived, true);
+    assert.deepEqual(archiveHookCalls, [{
+      chatId: "chat-1",
+      sessionId: session.sessionId,
+      reason: "telegram_archive"
+    }]);
+    assert.deepEqual(unarchiveHookCalls, []);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("handleUnarchive calls only the lightweight runtime-surface unarchive hook", async () => {
+  const { coordinator, store, archiveHookCalls, unarchiveHookCalls, cleanup } = await createCoordinatorContext();
+
+  try {
+    authorizeChat(store, "chat-1");
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one",
+      displayName: "Session One"
+    });
+    store.archiveSession(session.sessionId);
+
+    await coordinator.handleUnarchive("chat-1", "1");
+
+    assert.equal(store.getSessionById(session.sessionId)?.archived, false);
+    assert.deepEqual(archiveHookCalls, []);
+    assert.deepEqual(unarchiveHookCalls, [{
+      chatId: "chat-1",
+      sessionId: session.sessionId,
+      reason: "telegram_unarchive"
+    }]);
   } finally {
     await cleanup();
   }

@@ -268,7 +268,11 @@ export class BridgeService {
       safeDeleteMessage: async (chatId, messageId) => this.safeDeleteMessageResult(chatId, messageId),
       getActiveRuntimeStatusText: (chatId) => this.buildActiveRuntimeStatusText(chatId),
       reanchorRuntimeAfterBridgeReply: async (chatId, sessionId, reason) =>
-        this.reanchorRuntimeAfterBridgeReply(chatId, reason, sessionId)
+        this.reanchorRuntimeAfterBridgeReply(chatId, reason, sessionId),
+      handleSessionArchived: async (chatId, sessionId, reason) =>
+        this.runtimeSurfaceController.handleSessionArchived(chatId, sessionId, reason),
+      handleSessionUnarchived: async (chatId, sessionId, reason) =>
+        this.runtimeSurfaceController.handleSessionUnarchived(chatId, sessionId, reason)
     });
     this.projectBrowserCoordinator = new ProjectBrowserCoordinator({
       getStore: () => this.store,
@@ -346,6 +350,13 @@ export class BridgeService {
         this.runtimeSurfaceController.runRuntimeCardOperation(activeTurn as ActiveTurnState, operation),
       reanchorStatusCardToLatestMessage: async (activeTurn, reason) =>
         this.runtimeSurfaceController.reanchorStatusCardToLatestMessage(activeTurn as ActiveTurnState, reason),
+      shouldReanchorAcceptedTurnStart: (chatId) => this.runtimeSurfaceController.hasRuntimeHub(chatId),
+      reanchorAcceptedTurnStart: async (chatId, sessionId, kind) =>
+        this.reanchorRuntimeAfterBridgeReply(
+          chatId,
+          kind === "text" ? "accepted_user_work" : "accepted_structured_work",
+          sessionId
+        ),
       reanchorRuntimeAfterBridgeReply: async (chatId, reason, sessionId) =>
         this.reanchorRuntimeAfterBridgeReply(chatId, reason, sessionId),
       finalizeTerminalRuntimeHandoff: async (chatId, sessionId) =>
@@ -396,6 +407,8 @@ export class BridgeService {
         };
       },
       sendPendingInteractionBlockNotice: async (chatId) => this.interactionBroker.sendPendingInteractionBlockNotice(chatId),
+      reanchorAcceptedTurnContinuation: async (chatId, sessionId) =>
+        this.reanchorRuntimeAfterBridgeReply(chatId, "accepted_turn_continue", sessionId),
       startTextTurn: async (chatId, session, text, options) => this.turnCoordinator.startTextTurn(chatId, session, text, options),
       startStructuredTurn: async (chatId, session, input) => this.turnCoordinator.startStructuredTurn(chatId, session, input),
       safeSendMessage: async (chatId, text) => this.safeSendMessage(chatId, text)
@@ -1474,6 +1487,7 @@ export class BridgeService {
             expectedTurnId: steerAvailability.activeTurn.turnId,
             input: [{ type: "text", text }]
           });
+          await this.reanchorRuntimeAfterBridgeReply(chatId, "accepted_turn_continue", activeSession.sessionId);
         } catch (error) {
           await this.logger.warn("turn steer failed", {
             chatId,

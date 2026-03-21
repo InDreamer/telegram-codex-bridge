@@ -9,6 +9,9 @@
 
 Planned. This document captures the agreed direction for making runtime-hub access simpler and less disruptive in Telegram chats.
 
+Follow-up changes for immediate accepted-user-work reanchor and `/hub` handoff hints on interaction surfaces are tracked in:
+- `docs/plans/2026-03-21-runtime-hub-reuse-refresh-cap-archive-plan.md`
+
 ## Problem
 
 The current runtime hub solves live-state visibility, but it creates two opposite UX problems:

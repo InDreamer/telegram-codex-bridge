@@ -6833,6 +6833,7 @@ test("MCP form interactions cancel with action cancel", async () => {
 test("blocked running turns route plain text into turn steer when no interaction is awaiting text", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const steerCalls: unknown[] = [];
+  const reanchorCalls: Array<{ reason: string; sessionId: string | null }> = [];
 
   try {
     const session = authorizeNumericChatWithSession(store, "1");
@@ -6854,6 +6855,17 @@ test("blocked running turns route plain text into turn steer when no interaction
         steerCalls.push(payload);
       }
     };
+    (service as any).runtimeSurfaceController.reanchorRuntimeAfterBridgeReply = async (
+      _activeTurn: { sessionId?: string } | null,
+      _chatId: string,
+      reason: string,
+      preferredSessionId?: string | null
+    ) => {
+      reanchorCalls.push({
+        reason,
+        sessionId: preferredSessionId ?? null
+      });
+    };
 
     await (service as any).startRealTurn("1", session, "Do the work");
     await (service as any).handleAppServerNotification("thread/status/changed", {
@@ -6869,6 +6881,10 @@ test("blocked running turns route plain text into turn steer when no interaction
       threadId: "thread-3",
       expectedTurnId: "turn-3",
       input: [{ type: "text", text: "continue with staging" }]
+    }]);
+    assert.deepEqual(reanchorCalls, [{
+      reason: "accepted_turn_continue",
+      sessionId: session.sessionId
     }]);
   } finally {
     await cleanup();

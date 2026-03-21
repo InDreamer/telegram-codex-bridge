@@ -47,7 +47,9 @@ function createTestPaths(root: string): BridgePaths {
   };
 }
 
-async function createBrokerContext() {
+async function createBrokerContext(options: {
+  appServer?: Record<string, unknown>;
+} = {}) {
   const root = await mkdtemp(join(tmpdir(), "ctb-interaction-broker-test-"));
   const paths = createTestPaths(root);
   await Promise.all([
@@ -58,13 +60,26 @@ async function createBrokerContext() {
   ]);
 
   const store = await BridgeStateStore.open(paths, testLogger);
+  const sentHtml: Array<{ chatId: string; html: string }> = [];
+  const editedHtml: Array<{ chatId: string; messageId: number; html: string }> = [];
   const broker = new InteractionBroker({
     getStore: () => store,
-    getAppServer: () => null,
+    getAppServer: () => options.appServer as never,
     logger: testLogger,
     safeSendMessage: async () => true,
-    safeSendHtmlMessageResult: async () => null,
-    safeEditHtmlMessageText: async () => ({ outcome: "edited" }),
+    safeSendHtmlMessageResult: async (chatId, html) => {
+      sentHtml.push({ chatId, html });
+      return {
+        message_id: 100 + sentHtml.length,
+        chat: { id: 1, type: "private" },
+        date: 0,
+        text: html
+      } as never;
+    },
+    safeEditHtmlMessageText: async (chatId, messageId, html) => {
+      editedHtml.push({ chatId, messageId, html });
+      return { outcome: "edited" };
+    },
     safeAnswerCallbackQuery: async () => {},
     appendInteractionCreatedJournal: async () => {},
     appendInteractionResolvedJournal: async () => {}
@@ -73,6 +88,8 @@ async function createBrokerContext() {
   return {
     store,
     broker,
+    sentHtml,
+    editedHtml,
     cleanup: async () => {
       store.close();
       await rm(root, { recursive: true, force: true });
@@ -237,6 +254,245 @@ test("getBlockedTurnSteerAvailability reports interaction_pending before steer a
       broker.getBlockedTurnSteerAvailability("chat-1", currentSession, activeTurn),
       { kind: "interaction_pending" }
     );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("pending interaction cards include the /hub hint", async () => {
+  const { broker, store, sentHtml, cleanup } = await createBrokerContext({
+    appServer: {
+      respondToServerRequest: async () => {},
+      respondToServerRequestError: async () => {}
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one",
+      displayName: "Session One"
+    });
+    const activeTurn = {
+      chatId: "chat-1",
+      sessionId: session.sessionId,
+      threadId: "thread-1",
+      turnId: "turn-1",
+      tracker: {
+        getInspectSnapshot: () => ({ agentSnapshot: [] } as unknown as InspectSnapshot),
+        getStatus: () => ({ turnStatus: "blocked" } as ActivityStatus)
+      },
+      statusCard: {
+        needsReanchorOnActive: false
+      }
+    };
+
+    await broker.handleNormalizedServerRequest({
+      id: "req-pending",
+      method: "item/commandExecution/requestApproval"
+    } as never, {
+      kind: "approval",
+      method: "item/commandExecution/requestApproval",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      rawParams: {},
+      itemId: "item-1",
+      approvalId: null,
+      decisionOptions: [
+        { key: "accept", kind: "accept", label: "批准", payload: { decision: { accept: true } } },
+        { key: "decline", kind: "decline", label: "拒绝", payload: { decision: { accept: false } } }
+      ],
+      title: "Codex 需要命令批准",
+      subtitle: "命令审批",
+      body: "pnpm test",
+      detail: null
+    }, activeTurn as never);
+
+    assert.match(sentHtml[0]?.html ?? "", /如需查看或刷新 Hub，可发送 \/hub。/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("answered and canceled interaction cards include the /hub hint", async () => {
+  const { broker, store, editedHtml, cleanup } = await createBrokerContext({
+    appServer: {
+      respondToServerRequest: async () => {},
+      respondToServerRequestError: async () => {}
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one",
+      displayName: "Session One"
+    });
+    const activeTurn = {
+      chatId: "chat-1",
+      sessionId: session.sessionId,
+      threadId: "thread-1",
+      turnId: "turn-1",
+      tracker: {
+        getInspectSnapshot: () => ({ agentSnapshot: [] } as unknown as InspectSnapshot),
+        getStatus: () => ({ turnStatus: "blocked" } as ActivityStatus)
+      },
+      statusCard: {
+        needsReanchorOnActive: false
+      }
+    };
+
+    await broker.handleNormalizedServerRequest({
+      id: "req-answered",
+      method: "item/commandExecution/requestApproval"
+    } as never, {
+      kind: "approval",
+      method: "item/commandExecution/requestApproval",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      rawParams: {},
+      itemId: "item-1",
+      approvalId: null,
+      decisionOptions: [
+        { key: "accept", kind: "accept", label: "批准", payload: { decision: { accept: true } } },
+        { key: "decline", kind: "decline", label: "拒绝", payload: { decision: { accept: false } } }
+      ],
+      title: "Codex 需要命令批准",
+      subtitle: "命令审批",
+      body: "pnpm test",
+      detail: null
+    }, activeTurn as never);
+
+    await broker.handleServerRequestResolvedNotification("thread-1", "req-answered");
+    assert.match(editedHtml.at(-1)?.html ?? "", /如需查看或刷新 Hub，可发送 \/hub。/u);
+
+    await broker.handleNormalizedServerRequest({
+      id: "req-canceled",
+      method: "item/commandExecution/requestApproval"
+    } as never, {
+      kind: "approval",
+      method: "item/commandExecution/requestApproval",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      rawParams: {},
+      itemId: "item-2",
+      approvalId: null,
+      decisionOptions: [
+        { key: "accept", kind: "accept", label: "批准", payload: { decision: { accept: true } } },
+        { key: "cancel", kind: "cancel", label: "取消", payload: { decision: { cancel: true } } }
+      ],
+      title: "Codex 需要命令批准",
+      subtitle: "命令审批",
+      body: "pnpm test",
+      detail: null
+    }, activeTurn as never);
+
+    const cancelPending = store.listPendingInteractionsByChat("chat-1", ["pending"])
+      .find((row) => row.requestId === JSON.stringify("req-canceled"));
+    assert.ok(cancelPending?.telegramMessageId !== null);
+    if (!cancelPending?.telegramMessageId) {
+      throw new Error("expected cancel interaction telegram message id");
+    }
+
+    await broker.handleInteractionCancelCallback(
+      "callback-1",
+      "chat-1",
+      cancelPending.telegramMessageId,
+      cancelPending.interactionId
+    );
+
+    assert.match(editedHtml.at(-1)?.html ?? "", /如需查看或刷新 Hub，可发送 \/hub。/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("failed and expired interaction cards do not include the /hub hint", async () => {
+  const { broker, store, editedHtml, cleanup } = await createBrokerContext({
+    appServer: {
+      respondToServerRequest: async () => {},
+      respondToServerRequestError: async () => {}
+    }
+  });
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one",
+      displayName: "Session One"
+    });
+    const activeTurn = {
+      chatId: "chat-1",
+      sessionId: session.sessionId,
+      threadId: "thread-1",
+      turnId: "turn-1",
+      tracker: {
+        getInspectSnapshot: () => ({ agentSnapshot: [] } as unknown as InspectSnapshot),
+        getStatus: () => ({ turnStatus: "blocked" } as ActivityStatus)
+      },
+      statusCard: {
+        needsReanchorOnActive: false
+      }
+    };
+
+    await broker.handleNormalizedServerRequest({
+      id: "req-failed",
+      method: "item/commandExecution/requestApproval"
+    } as never, {
+      kind: "approval",
+      method: "item/commandExecution/requestApproval",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      rawParams: {},
+      itemId: "item-1",
+      approvalId: null,
+      decisionOptions: [
+        { key: "accept", kind: "accept", label: "批准", payload: { decision: { accept: true } } },
+        { key: "decline", kind: "decline", label: "拒绝", payload: { decision: { accept: false } } }
+      ],
+      title: "Codex 需要命令批准",
+      subtitle: "命令审批",
+      body: "pnpm test",
+      detail: null
+    }, activeTurn as never);
+
+    await broker.resolveActionablePendingInteractionsForSession("chat-1", session.sessionId, {
+      state: "failed",
+      reason: "telegram_delivery_failed",
+      resolutionSource: "telegram_delivery_failed"
+    });
+    assert.doesNotMatch(editedHtml.at(-1)?.html ?? "", /如需查看或刷新 Hub，可发送 \/hub。/u);
+
+    await broker.handleNormalizedServerRequest({
+      id: "req-expired",
+      method: "item/commandExecution/requestApproval"
+    } as never, {
+      kind: "approval",
+      method: "item/commandExecution/requestApproval",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      rawParams: {},
+      itemId: "item-2",
+      approvalId: null,
+      decisionOptions: [
+        { key: "accept", kind: "accept", label: "批准", payload: { decision: { accept: true } } },
+        { key: "decline", kind: "decline", label: "拒绝", payload: { decision: { accept: false } } }
+      ],
+      title: "Codex 需要命令批准",
+      subtitle: "命令审批",
+      body: "pnpm test",
+      detail: null
+    }, activeTurn as never);
+
+    await broker.resolveActionablePendingInteractionsForSession("chat-1", session.sessionId, {
+      state: "expired",
+      reason: "turn_completed",
+      resolutionSource: "turn_expired"
+    });
+    assert.doesNotMatch(editedHtml.at(-1)?.html ?? "", /如需查看或刷新 Hub，可发送 \/hub。/u);
   } finally {
     await cleanup();
   }

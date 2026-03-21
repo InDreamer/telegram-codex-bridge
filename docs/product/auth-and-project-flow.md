@@ -263,6 +263,7 @@ Responses:
 Archive rules:
 - archive only applies to the current active session
 - archived sessions are hidden from default `/sessions`
+- archive immediately removes the session from bridge-owned live and recovery hub surfaces, frees any occupied slot, and deletes an emptied hub when needed
 - after archiving the active session, the bridge switches to the most recent remaining visible session when one exists
 - low-level Codex protocol events such as `thread/archived` are internal bridge signals, not Telegram commands
 
@@ -276,6 +277,8 @@ Responses:
 Rules:
 - `<n>` is indexed against `/sessions archived`, not the default `/sessions` view
 - if no active visible session remains, the restored session becomes active automatically
+- unarchive restores session visibility only; it does not place an idle session back into a runtime hub by itself
+- the restored session re-enters the latest live hub only when it later starts a real running turn
 
 ### `/rename` and `/rename <name>`
 
