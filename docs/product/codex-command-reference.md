@@ -19,6 +19,19 @@ General command contract:
 - structured Telegram command replies render field labels in bold via Telegram HTML
 - plain one-line prompts and simple lists may stay plain text when they do not expose label-value fields
 
+### `/hub`
+
+Behavior:
+- re-surfaces the current live runtime hub to the bottom of the chat
+- if multiple sessions are still running, the refreshed hub keeps focus on the current active session
+- if no session is currently running, reply with `当前没有运行中的会话。`
+- if actionable interaction cards are still pending, do not move the hub below them and reply with `当前有待处理的交互，请先完成当前操作。`
+
+Rules:
+- `/hub` is only a runtime-surface pull-up command; it is not a second `/status` or `/inspect`
+- a successful `/hub` refresh does not send an extra confirmation message beyond the refreshed runtime hub itself
+- once a user successfully uses `/hub`, the bridge treats the command as learned and stops adding `/hub` reminder copy for that chat
+
 ### `/plan`
 
 Behavior:

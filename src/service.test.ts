@@ -4424,6 +4424,28 @@ test("status command appends live runtime details for the active running session
   }
 });
 
+test("hub command reports when no sessions are running", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: string[] = [];
+
+  try {
+    authorizeChat(store, "chat-1");
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string) => {
+        sent.push(text);
+        return createFakeTelegramMessage(454, text);
+      }
+    };
+
+    await (service as any).routeCommand("chat-1", "hub", "");
+
+    assert.deepEqual(sent, ["当前没有运行中的会话。"]);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("structured project and session replies use Telegram HTML parse mode", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ text: string; parseMode?: string }> = [];
@@ -4498,7 +4520,7 @@ test("use command can switch away from a running session so another session beco
   }
 });
 
-test("use command shows a separate current input session when another session keeps running", async () => {
+test("use command leaves the existing runtime hub in place when another session keeps running", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ messageId: number; text: string; parseMode?: string }> = [];
   const deleted: number[] = [];
@@ -4542,19 +4564,17 @@ test("use command shows a separate current input session when another session ke
 
     assert.equal(sent[1]?.parseMode, "HTML");
     assert.equal(sent[1]?.text, "<b>已切换到项目：</b> Project Idle");
-    assert.doesNotMatch(sent[2]?.text ?? "", /<b>当前输入会话<\/b>/u);
-    assert.doesNotMatch(sent[2]?.text ?? "", /<b>当前查看中的会话<\/b>/u);
-    assert.match(sent[2]?.text ?? "", /<b>其他运行中的会话<\/b>/u);
-    assert.match(sent[2]?.text ?? "", /1\. <b>Project One<\/b> \/ Project One · Running/u);
-    assert.deepEqual(deleted, [initialStatusMessageId]);
+    assert.equal(sent.length, 2);
+    assert.deepEqual(deleted, []);
     assert.equal(store.getActiveSession("chat-1")?.sessionId, idleSession.sessionId);
     assert.equal(store.getSessionById(runningSession.sessionId)?.status, "running");
+    assert.equal((service as any).activeTurn?.statusCard.messageId, initialStatusMessageId);
   } finally {
     await cleanup();
   }
 });
 
-test("use command reanchors a background running session after it becomes foreground", async () => {
+test("use command does not reanchor a background running session after it becomes foreground", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ messageId: number; text: string; parseMode?: string }> = [];
   const deleted: number[] = [];
@@ -4599,13 +4619,71 @@ test("use command reanchors a background running session after it becomes foregr
 
     assert.equal(sent[1]?.parseMode, "HTML");
     assert.equal(sent[1]?.text, "<b>已切换到项目：</b> Project One");
-    assert.equal(isRuntimeStatusText(sent[2]?.text ?? ""), true);
-    assert.deepEqual(deleted, [initialStatusMessageId]);
+    assert.equal(sent.length, 2);
+    assert.deepEqual(deleted, []);
     assert.equal(store.getActiveSession("chat-1")?.sessionId, runningSession.sessionId);
     assert.equal(
       (service as any).turnCoordinator.getActiveTurnBySessionId(runningSession.sessionId)?.statusCard.messageId,
-      sent[2]?.messageId
+      initialStatusMessageId
     );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("status and inspect replies stay at the bottom without an automatic hub reanchor", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; parseMode?: string }> = [];
+  const deleted: number[] = [];
+
+  try {
+    const session = authorizeChatWithSession(store, "chat-1");
+    store.setActiveSession("chat-1", session.sessionId);
+    store.writeReadinessSnapshot({
+      state: "ready",
+      checkedAt: "2026-03-10T10:00:00.000Z",
+      details: {
+        codexInstalled: true,
+        codexAuthenticated: true,
+        appServerAvailable: true,
+        telegramTokenValid: true,
+        authorizedUserBound: true,
+        issues: []
+      },
+      appServerPid: "1234"
+    });
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const messageId = 970 + sent.length;
+        sent.push({ messageId, text, parseMode: options?.parseMode });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string) =>
+        createFakeTelegramMessage(messageId, text),
+      deleteMessage: async (_chatId: string, messageId: number) => {
+        deleted.push(messageId);
+        return true;
+      }
+    };
+
+    installRunningAppServer(service, "thread-status-inspect", "turn-status-inspect");
+    await (service as any).startRealTurn("chat-1", session, "Do the work");
+    await (service as any).handleAppServerNotification("turn/started", {
+      threadId: "thread-status-inspect",
+      turnId: "turn-status-inspect"
+    });
+
+    assert.equal(isRuntimeStatusText(sent[0]?.text ?? ""), true);
+
+    await (service as any).routeCommand("chat-1", "status", "");
+    assert.equal(sent.length, 2);
+    assert.match(sent[1]?.text ?? "", /^<b>服务状态<\/b>/u);
+
+    await (service as any).routeCommand("chat-1", "inspect", "");
+    assert.equal(sent.length, 3);
+    assert.match(sent[2]?.text ?? "", /^<b>当前任务详情<\/b>|^<b>任务详情<\/b>|^<b>Inspect<\/b>/u);
+    assert.deepEqual(deleted, []);
   } finally {
     await cleanup();
   }
@@ -4666,15 +4744,15 @@ test("runtime and language pickers keep focus while a turn is active", async () 
     const languageClosedMessage = [...edited].reverse().find((entry) => entry.messageId === sent[2]?.messageId);
     assert.equal(languageClosedMessage?.messageId, sent[2]?.messageId);
     assert.match(languageClosedMessage?.text ?? "", /Language Picker Closed/u);
-    assert.equal(sent.length, 4);
-    assert.deepEqual(deleted, [initialStatusMessageId]);
-    assert.notEqual((service as any).activeTurn?.statusCard.messageId, initialStatusMessageId);
+    assert.equal(sent.length, 3);
+    assert.deepEqual(deleted, []);
+    assert.equal((service as any).activeTurn?.statusCard.messageId, initialStatusMessageId);
   } finally {
     await cleanup();
   }
 });
 
-test("rename, pin, and plan replies reanchor the active running session", async () => {
+test("rename, pin, and plan replies leave the runtime hub where it is", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
   const edited: Array<{ messageId: number; text: string; parseMode?: string; replyMarkup?: any }> = [];
@@ -4707,8 +4785,8 @@ test("rename, pin, and plan replies reanchor the active running session", async 
       turnId: "turn-1"
     });
 
-    let currentStatusMessageId = sent[0]?.messageId;
-    assert.ok(currentStatusMessageId);
+    const initialStatusMessageId = sent[0]?.messageId;
+    assert.ok(initialStatusMessageId);
 
     await (service as any).routeCommand("chat-1", "rename", "");
     const renameSurfaceMessageId = sent.at(-1)?.messageId;
@@ -4716,22 +4794,17 @@ test("rename, pin, and plan replies reanchor the active running session", async 
     await (service as any).beginProjectRename("chat-1", renameSurfaceMessageId!, session.sessionId);
     assert.equal(edited.at(-1)?.text, "请输入新的项目别名。\n发送 /cancel 取消。");
     await (service as any).handleRenameInput("chat-1", "Alias <One>");
-    assert.equal(sent.at(-2)?.text, "<b>当前项目别名已更新为：</b> Alias &lt;One&gt;");
-    assert.equal(isRuntimeStatusText(sent.at(-1)?.text ?? ""), true);
-    assert.deepEqual(deleted, [renameSurfaceMessageId!, currentStatusMessageId]);
-    currentStatusMessageId = sent.at(-1)?.messageId;
+    assert.equal(sent.at(-1)?.text, "<b>当前项目别名已更新为：</b> Alias &lt;One&gt;");
+    assert.deepEqual(deleted, [renameSurfaceMessageId!]);
 
     await (service as any).routeCommand("chat-1", "pin", "");
-    assert.equal(sent.at(-2)?.text, "<b>已收藏项目：</b> Alias &lt;One&gt;");
-    assert.equal(isRuntimeStatusText(sent.at(-1)?.text ?? ""), true);
-    assert.deepEqual(deleted, [renameSurfaceMessageId!, sent[0]!.messageId, currentStatusMessageId!]);
-    currentStatusMessageId = sent.at(-1)?.messageId;
+    assert.equal(sent.at(-1)?.text, "<b>已收藏项目：</b> Alias &lt;One&gt;");
+    assert.deepEqual(deleted, [renameSurfaceMessageId!]);
 
     await (service as any).routeCommand("chat-1", "plan", "");
-    assert.equal(sent.at(-2)?.text, "已为当前会话开启 Plan mode。当前任务不受影响，下次任务开始时生效。");
-    assert.equal(isRuntimeStatusText(sent.at(-1)?.text ?? ""), true);
-    assert.deepEqual(deleted, [renameSurfaceMessageId!, sent[0]!.messageId, sent[3]!.messageId, currentStatusMessageId!]);
-    assert.equal((service as any).activeTurn?.statusCard.messageId, sent.at(-1)?.messageId);
+    assert.equal(sent.at(-1)?.text, "已为当前会话开启 Plan mode。当前任务不受影响，下次任务开始时生效。");
+    assert.deepEqual(deleted, [renameSurfaceMessageId!]);
+    assert.equal((service as any).activeTurn?.statusCard.messageId, initialStatusMessageId);
   } finally {
     await cleanup();
   }
@@ -5400,7 +5473,7 @@ test("server requests are persisted and rendered as Telegram interaction cards",
   }
 });
 
-test("runtime reanchors after a blocked interaction resumes active and deletes the old status card", async () => {
+test("runtime does not reanchor past a still-pending interaction even after the recovery delay", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ messageId: number; text: string }> = [];
   const deleted: number[] = [];
@@ -5460,10 +5533,12 @@ test("runtime reanchors after a blocked interaction resumes active and deletes t
       activeFlags: []
     });
 
-    assert.equal(sent.length, 3);
-    assert.match(sent[2]?.text ?? "", /^<b>Runtime Status<\/b>|^<b>运行状态<\/b>/u);
-    assert.deepEqual(deleted, [sent[0]!.messageId]);
-    assert.equal((service as any).activeTurn?.statusCard.messageId, sent[2]?.messageId);
+    assert.equal(sent.length, 2);
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+
+    assert.equal(sent.length, 2);
+    assert.deepEqual(deleted, []);
+    assert.equal((service as any).activeTurn?.statusCard.messageId, sent[0]?.messageId);
   } finally {
     await cleanup();
   }
@@ -5522,6 +5597,57 @@ test("bridge commands while blocked do not reanchor runtime ahead of the pending
     assert.match(sent[1]?.text ?? "", /Codex 需要命令批准/u);
     assert.match(sent[2]?.text ?? "", /当前会话|Current Session/u);
     assert.equal((service as any).activeTurn?.statusCard.messageId, sent[0]?.messageId);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("busy-turn rejection teaches /hub once and stops after the user uses the command", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+  const sent: Array<{ messageId: number; text: string; parseMode?: string }> = [];
+  const deleted: number[] = [];
+
+  try {
+    const session = authorizeNumericChatWithSession(store, "1");
+    store.setActiveSession("1", session.sessionId);
+
+    (service as any).api = {
+      sendMessage: async (_chatId: string, text: string, options?: any) => {
+        const messageId = 1200 + sent.length;
+        sent.push({ messageId, text, parseMode: options?.parseMode });
+        return createFakeTelegramMessage(messageId, text);
+      },
+      editMessageText: async (_chatId: string, messageId: number, text: string) =>
+        createFakeTelegramMessage(messageId, text),
+      deleteMessage: async (_chatId: string, messageId: number) => {
+        deleted.push(messageId);
+        return true;
+      }
+    };
+
+    installRunningAppServer(service, "thread-hub-reminder", "turn-hub-reminder");
+    await (service as any).startRealTurn("1", session, "Do the work");
+    await (service as any).handleAppServerNotification("turn/started", {
+      threadId: "thread-hub-reminder",
+      turnId: "turn-hub-reminder"
+    });
+
+    await (service as any).handleMessage(
+      createIncomingUserMessage(1, 1, 10, "Can you also do one more thing?")
+    );
+    assert.match(
+      sent.at(-1)?.text ?? "",
+      /当前项目仍在执行，请等待完成或发送 \/interrupt。需要查看运行卡片时，可发送 \/hub。/u
+    );
+
+    await (service as any).routeCommand("1", "hub", "");
+    assert.equal(isRuntimeStatusText(sent.at(-1)?.text ?? ""), true);
+    assert.ok(deleted.length > 0);
+
+    await (service as any).handleMessage(
+      createIncomingUserMessage(1, 1, 11, "One more follow-up")
+    );
+    assert.equal(sent.at(-1)?.text, "当前项目仍在执行，请等待完成或发送 /interrupt。");
   } finally {
     await cleanup();
   }

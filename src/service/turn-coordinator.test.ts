@@ -631,6 +631,31 @@ test("TurnCoordinator keeps the final runtime surface until a deferred terminal 
   }
 });
 
+test("TurnCoordinator does not reanchor the hub after a failed-turn notice", async () => {
+  const { coordinator, store, safeMessages, reanchorReasons, cleanup } = await createCoordinatorContext();
+
+  try {
+    const session = store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.beginActiveTurn("chat-1", session, "thread-failed", "turn-failed", "inProgress");
+    await coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-failed",
+      turnId: "turn-failed",
+      status: "failed"
+    });
+
+    assert.equal(coordinator.getActiveTurn(), null);
+    assert.deepEqual(safeMessages, ["这次操作未成功完成，请重试。"]);
+    assert.deepEqual(reanchorReasons, []);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("TurnCoordinator ignores queued late notifications after a turn reaches terminal handoff", async () => {
   const syncReasons: string[] = [];
   const { coordinator, store, cleanup } = await createCoordinatorContext({

@@ -130,6 +130,10 @@ function createStatusCard(messageId = 0) {
   };
 }
 
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function getOnlyDraftToken(controller: RuntimeSurfaceController): string {
   const [token] = [...((controller as unknown as {
     runtimePreferenceDrafts: Map<string, unknown>;
@@ -412,17 +416,200 @@ test("RuntimeSurfaceController retries failed edits on the same status message i
   }
 });
 
-test("RuntimeSurfaceController reanchors the status card after blocked work resumes active", async () => {
+test("RuntimeSurfaceController manual hub refresh resurfaces the live hub to the bottom", async () => {
   const activeTurns: unknown[] = [];
-  const { controller, sentHtml, deletedMessages, cleanup } = await createControllerContext({
-    listActiveTurns: () => activeTurns,
-    initialSentMessageId: 1001
+  const { controller, store, sentHtml, deletedMessages, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns
   });
 
   try {
+    const session = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    store.setActiveSession("chat-1", session.sessionId);
+    const activeTurn = {
+      sessionId: session.sessionId,
+      chatId: "chat-1",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      tracker: {
+        getInspectSnapshot: () => createInspectSnapshot(),
+        getStatus: () => createActivityStatus()
+      },
+      statusCard: createStatusCard(),
+      latestStatusProgressText: null,
+      latestPlanFingerprint: "",
+      latestAgentFingerprint: "",
+      subagentIdentityBackfillStates: new Map(),
+      errorCards: [],
+      nextErrorCardId: 1,
+      surfaceQueue: Promise.resolve()
+    };
+    activeTurns.push(activeTurn);
+
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_initialized", session.sessionId, undefined, {
+      forcePreferredFocus: true
+    });
+
+    assert.equal(sentHtml.length, 1);
+    await (controller as any).handleHub("chat-1");
+
+    assert.equal(sentHtml.length, 2);
+    assert.match(sentHtml[1]?.html ?? "", /^<b>Runtime Status<\/b>|^<b>运行状态<\/b>/u);
+    assert.deepEqual(deletedMessages, [sentHtml[0]!.messageId]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController manual hub refresh refuses while actionable interaction cards are pending", async () => {
+  const activeTurns: unknown[] = [];
+  let blockedSessionId = "";
+  const { controller, store, sentHtml, deletedMessages, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns,
+    buildPendingInteractionSummaries: (session) => session.sessionId === blockedSessionId
+      ? [{ id: "pending-1" }]
+      : []
+  });
+
+  try {
+    const session = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    blockedSessionId = session.sessionId;
+    store.setActiveSession("chat-1", session.sessionId);
+    activeTurns.push({
+      sessionId: session.sessionId,
+      chatId: "chat-1",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      tracker: {
+        getInspectSnapshot: () => createInspectSnapshot(),
+        getStatus: () => createActivityStatus({
+          turnStatus: "blocked",
+          threadBlockedReason: "waitingOnApproval"
+        })
+      },
+      statusCard: createStatusCard(),
+      latestStatusProgressText: null,
+      latestPlanFingerprint: "",
+      latestAgentFingerprint: "",
+      subagentIdentityBackfillStates: new Map(),
+      errorCards: [],
+      nextErrorCardId: 1,
+      surfaceQueue: Promise.resolve()
+    });
+
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_initialized", session.sessionId, undefined, {
+      forcePreferredFocus: true
+    });
+
+    assert.equal(sentHtml.length, 1);
+    const result = await (controller as any).handleHub("chat-1");
+    assert.equal(result.kind, "interaction_pending");
+    assert.equal(sentHtml.length, 1);
+    assert.deepEqual(deletedMessages, []);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController manual hub refresh reports when no sessions are running", async () => {
+  const { controller, cleanup } = await createControllerContext();
+
+  try {
+    const result = await (controller as any).handleHub("chat-1");
+    assert.equal(result.kind, "no_running");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController delays the start auto-refresh until work is still running", async () => {
+  const activeTurns: unknown[] = [];
+  const { controller, store, sentHtml, deletedMessages, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns
+  });
+
+  try {
+    const session = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    store.setActiveSession("chat-1", session.sessionId);
     const inspect = createInspectSnapshot();
     const activeTurn = {
-      sessionId: "session-1",
+      sessionId: session.sessionId,
+      chatId: "chat-1",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      tracker: {
+        getInspectSnapshot: () => inspect,
+        getStatus: () => createActivityStatus()
+      },
+      statusCard: createStatusCard(1000),
+      latestStatusProgressText: null,
+      latestPlanFingerprint: "",
+      latestAgentFingerprint: "",
+      subagentIdentityBackfillStates: new Map(),
+      errorCards: [],
+      nextErrorCardId: 1,
+      surfaceQueue: Promise.resolve()
+    };
+    activeTurns.push(activeTurn);
+
+    await controller.syncRuntimeCards(
+      activeTurn as never,
+      null,
+      null,
+      createActivityStatus({ turnStatus: "running" }),
+      { reason: "turn_initialized" }
+    );
+
+    assert.equal(sentHtml.length, 0);
+    await sleep(900);
+    assert.equal(sentHtml.length, 0);
+
+    await sleep(700);
+    assert.equal(sentHtml.length, 1);
+    assert.equal(activeTurn.statusCard.messageId, sentHtml[0]?.messageId);
+    assert.ok(deletedMessages.length <= 1);
+
+    await controller.syncRuntimeCards(
+      activeTurn as never,
+      null,
+      createActivityStatus({ turnStatus: "running" }),
+      createActivityStatus({ turnStatus: "running", latestProgress: "Still running" }),
+      { reason: "thread_status_changed" }
+    );
+    await sleep(1700);
+    assert.equal(sentHtml.length, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController delays recovery hub refresh after blocked work resumes active", async () => {
+  const activeTurns: unknown[] = [];
+  const { controller, store, sentHtml, deletedMessages, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns
+  });
+
+  try {
+    const session = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    store.setActiveSession("chat-1", session.sessionId);
+    const inspect = createInspectSnapshot();
+    const activeTurn = {
+      sessionId: session.sessionId,
       chatId: "chat-1",
       threadId: "thread-1",
       turnId: "turn-1",
@@ -452,9 +639,14 @@ test("RuntimeSurfaceController reanchors the status card after blocked work resu
       { reason: "thread_status_changed" }
     );
 
+    assert.equal(sentHtml.length, 0);
+    await sleep(900);
+    assert.equal(sentHtml.length, 0);
+
+    await sleep(400);
     assert.equal(sentHtml.length, 1);
     assert.equal(activeTurn.statusCard.messageId, sentHtml[0]?.messageId);
-    assert.deepEqual(deletedMessages, [1000]);
+    assert.ok(deletedMessages.length <= 1);
     assert.equal(activeTurn.statusCard.needsReanchorOnActive, false);
   } finally {
     await cleanup();

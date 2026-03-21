@@ -8,6 +8,7 @@ function createHandlers(calls: string[]) {
   return {
     sendHelp: async () => { calls.push("sendHelp"); },
     sendStatus: async () => { calls.push("sendStatus"); },
+    handleHub: async () => { calls.push("handleHub"); },
     handleNew: async () => { calls.push("handleNew"); },
     handleBrowse: async () => { calls.push("handleBrowse"); },
     handleCancel: async () => { calls.push("handleCancel"); },

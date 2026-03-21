@@ -36,6 +36,7 @@ test("buildHelpText stays aligned with the command registry", () => {
 
   assert.ok(helpText.startsWith("可用指令\n/help 查看可用指令"));
   assert.ok(helpText.includes("/sessions 查看最近会话\n/sessions archived 查看已归档会话"));
+  assert.ok(helpText.includes("/hub 重新查看运行卡片"));
   assert.ok(helpText.includes("/runtime 配置运行状态卡片顶部摘要行"));
   assert.ok(helpText.includes("/language 切换桥接界面语言"));
   assert.ok(helpText.endsWith("/cancel 取消当前输入并返回"));
@@ -46,6 +47,7 @@ test("buildHelpText renders the English command surface when requested", () => {
 
   assert.ok(helpText.startsWith("Available commands\n/help Show available commands"));
   assert.ok(helpText.includes("/sessions Show recent sessions\n/sessions archived Show archived sessions"));
+  assert.ok(helpText.includes("/hub Bring back the runtime hub"));
   assert.ok(helpText.includes("/language Change bridge UI language"));
   assert.ok(helpText.endsWith("/cancel Cancel the current input and return"));
 });

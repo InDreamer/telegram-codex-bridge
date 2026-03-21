@@ -1248,11 +1248,12 @@ export class BridgeService {
     await routeBridgeCommand(commandName, {
       sendHelp: async () => {
         await this.safeSendMessage(chatId, buildHelpText(this.getUiLanguage()));
-        await this.reanchorRuntimeAfterBridgeReply(chatId, "help_sent");
       },
       sendStatus: async () => {
         await this.sendStatus(chatId);
-        await this.reanchorRuntimeAfterBridgeReply(chatId, "status_sent");
+      },
+      handleHub: async () => {
+        await this.handleHub(chatId);
       },
       handleNew: async () => {
         await this.sessionProjectCoordinator.handleNew(chatId);
@@ -1271,14 +1272,12 @@ export class BridgeService {
       },
       sendWhere: async () => {
         await this.sessionProjectCoordinator.sendWhere(chatId);
-        await this.reanchorRuntimeAfterBridgeReply(chatId, "where_sent");
       },
       handleInterrupt: async () => {
         await this.handleInterrupt(chatId);
       },
       handleInspect: async () => {
         await this.handleInspect(chatId);
-        await this.reanchorRuntimeAfterBridgeReply(chatId, "inspect_sent");
       },
       handleRuntime: async () => {
         await this.handleRuntime(chatId);
@@ -1493,7 +1492,16 @@ export class BridgeService {
         return;
       }
 
-      await this.safeSendMessage(chatId, "当前项目仍在执行，请等待完成或发送 /interrupt。");
+      const reminder = this.runtimeSurfaceController.consumeHubCommandReminderForTurn(
+        chatId,
+        this.getActiveTurnForSession(activeSession.sessionId)?.turnId ?? null
+      );
+      await this.safeSendMessage(
+        chatId,
+        reminder
+          ? `当前项目仍在执行，请等待完成或发送 /interrupt。${reminder}`
+          : "当前项目仍在执行，请等待完成或发送 /interrupt。"
+      );
       return;
     }
 
@@ -1834,6 +1842,18 @@ export class BridgeService {
 
   private async handleInspect(chatId: string): Promise<void> {
     await this.runtimeSurfaceController.handleInspect(chatId);
+  }
+
+  private async handleHub(chatId: string): Promise<void> {
+    const result = await this.runtimeSurfaceController.handleHub(chatId);
+    if (result.kind === "no_running") {
+      await this.safeSendMessage(chatId, "当前没有运行中的会话。");
+      return;
+    }
+
+    if (result.kind === "interaction_pending") {
+      await this.safeSendMessage(chatId, "当前有待处理的交互，请先完成当前操作。");
+    }
   }
 
   private async handleInspectViewCallback(
@@ -2619,7 +2639,6 @@ export class BridgeService {
     await this.replaceBridgeOwnedMessage(chatId, messageId, this.buildLanguageClosedMessage(nextLanguage), {
       html: true
     });
-    await this.reanchorRuntimeAfterBridgeReply(chatId, "language_changed");
   }
 
   private async handleLanguageCloseCallback(

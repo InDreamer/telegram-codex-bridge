@@ -229,6 +229,7 @@ export function buildRuntimeHubMessage(options: {
   isMainHub?: boolean;
   completed?: boolean;
   sessionProgressTextLimit?: number;
+  reminderText?: string | null;
 }): string {
   const language = options.language ?? "zh";
   const sessionProgressTextLimit = options.sessionProgressTextLimit ?? 120;
@@ -296,6 +297,9 @@ export function buildRuntimeHubMessage(options: {
       }
     }
 
+    if (options.reminderText) {
+      lines.push("", escapeHtml(options.reminderText));
+    }
     lines.push("", buildRuntimeSurfaceFooter(language));
     return lines.join("\n");
   }
@@ -381,6 +385,9 @@ export function buildRuntimeHubMessage(options: {
     }
   }
 
+  if (options.reminderText) {
+    lines.push("", escapeHtml(options.reminderText));
+  }
   lines.push("", buildRuntimeSurfaceFooter(language));
   return lines.join("\n");
 }

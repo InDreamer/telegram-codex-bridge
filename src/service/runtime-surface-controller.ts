@@ -59,6 +59,9 @@ const RUNTIME_HUB_SLOT_COUNT = 5;
 const RUNTIME_HUB_TEXT_SOFT_LIMIT = 3200;
 const RUNTIME_HUB_SESSION_PROGRESS_TEXT_LIMIT = 120;
 const RUNTIME_HUB_COMPACT_SESSION_PROGRESS_TEXT_LIMIT = 80;
+const HUB_AUTO_REFRESH_START_DELAY_MS = 1500;
+const HUB_AUTO_REFRESH_RECOVERY_DELAY_MS = 1000;
+const HUB_COMMAND_REMINDER_TEXT = "需要查看运行卡片时，可发送 /hub。";
 
 interface RuntimePreferencesDraftState {
   chatId: string;
@@ -163,6 +166,13 @@ interface RuntimeHubChatState {
   operationQueue: Promise<void>;
 }
 
+interface TurnHubAutoRefreshState {
+  timer: ReturnType<typeof setTimeout> | null;
+  startScheduled: boolean;
+  recoveryScheduled: boolean;
+  reminderShown: boolean;
+}
+
 interface RuntimeSurfaceControllerDeps {
   logger: Logger;
   getStore: () => BridgeStateStore | null;
@@ -233,6 +243,8 @@ interface RuntimeSurfaceControllerDeps {
 export class RuntimeSurfaceController {
   private readonly runtimePreferenceDrafts = new Map<string, RuntimePreferencesDraftState>();
   private readonly runtimeHubStates = new Map<string, RuntimeHubChatState>();
+  private readonly turnHubAutoRefreshStates = new Map<string, TurnHubAutoRefreshState>();
+  private readonly learnedHubCommandChats = new Set<string>();
 
   constructor(private readonly deps: RuntimeSurfaceControllerDeps) {}
 
@@ -250,6 +262,60 @@ export class RuntimeSurfaceController {
     }
 
     return state;
+  }
+
+  private getOrCreateTurnHubAutoRefreshState(turnId: string): TurnHubAutoRefreshState {
+    let state = this.turnHubAutoRefreshStates.get(turnId);
+    if (!state) {
+      state = {
+        timer: null,
+        startScheduled: false,
+        recoveryScheduled: false,
+        reminderShown: false
+      };
+      this.turnHubAutoRefreshStates.set(turnId, state);
+    }
+
+    return state;
+  }
+
+  private clearTurnHubAutoRefreshState(turnId: string): void {
+    const state = this.turnHubAutoRefreshStates.get(turnId);
+    if (!state) {
+      return;
+    }
+
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+    this.turnHubAutoRefreshStates.delete(turnId);
+  }
+
+  private consumeHubCommandReminder(chatId: string, turnId: string): string | null {
+    if (this.learnedHubCommandChats.has(chatId)) {
+      return null;
+    }
+
+    const state = this.getOrCreateTurnHubAutoRefreshState(turnId);
+    if (state.reminderShown) {
+      return null;
+    }
+
+    state.reminderShown = true;
+    return HUB_COMMAND_REMINDER_TEXT;
+  }
+
+  consumeHubCommandReminderForTurn(chatId: string, turnId: string | null | undefined): string | null {
+    if (!turnId) {
+      return null;
+    }
+
+    return this.consumeHubCommandReminder(chatId, turnId);
+  }
+
+  private markHubCommandLearned(chatId: string): void {
+    this.learnedHubCommandChats.add(chatId);
   }
 
   private async runHubChatOperation<T>(chatId: string, operation: () => Promise<T>): Promise<T> {
@@ -1013,7 +1079,8 @@ export class RuntimeSurfaceController {
     chatId: string,
     hubState: RuntimeHubState,
     totalWindows: number,
-    turns: RuntimeSurfaceActiveTurn[]
+    turns: RuntimeSurfaceActiveTurn[],
+    reminderText?: string | null
   ): {
     text: string;
     replyMarkup: TelegramInlineKeyboardMarkup;
@@ -1096,7 +1163,8 @@ export class RuntimeSurfaceController {
         agentEntries: focused.agentEntries,
         agentsExpanded: !options?.compactFocused && visibleState.agentsExpanded,
         completed: this.isLiveHubCompleted(hubState, runningSessionIds),
-        sessionProgressTextLimit: options?.sessionProgressTextLimit ?? RUNTIME_HUB_SESSION_PROGRESS_TEXT_LIMIT
+        sessionProgressTextLimit: options?.sessionProgressTextLimit ?? RUNTIME_HUB_SESSION_PROGRESS_TEXT_LIMIT,
+        ...(reminderText !== undefined ? { reminderText } : {})
       });
 
       return {
@@ -1153,7 +1221,7 @@ export class RuntimeSurfaceController {
     });
   }
 
-  private buildRecoveryHubRenderPayload(chatId: string, hubState: RuntimeHubState): {
+  private buildRecoveryHubRenderPayload(chatId: string, hubState: RuntimeHubState, reminderText?: string | null): {
     text: string;
     replyMarkup: TelegramInlineKeyboardMarkup;
     visibleState: RuntimeHubVisibleState;
@@ -1187,7 +1255,8 @@ export class RuntimeSurfaceController {
       activeInputSession,
       sessionCollectionKind: "generic",
       terminalSummaries: [],
-      isMainHub: true
+      isMainHub: true,
+      ...(reminderText !== undefined ? { reminderText } : {})
     });
 
     return {
@@ -1676,6 +1745,79 @@ export class RuntimeSurfaceController {
     hubState.timer = null;
   }
 
+  private scheduleTurnHubAutoRefresh(
+    activeTurn: RuntimeSurfaceActiveTurn,
+    trigger: "start" | "recovery"
+  ): void {
+    const state = this.getOrCreateTurnHubAutoRefreshState(activeTurn.turnId);
+    if ((trigger === "start" && state.startScheduled) || (trigger === "recovery" && state.recoveryScheduled)) {
+      return;
+    }
+
+    if (trigger === "start") {
+      state.startScheduled = true;
+    } else {
+      state.recoveryScheduled = true;
+    }
+
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+
+    const delayMs = trigger === "start" ? HUB_AUTO_REFRESH_START_DELAY_MS : HUB_AUTO_REFRESH_RECOVERY_DELAY_MS;
+    state.timer = setTimeout(() => {
+      state.timer = null;
+      void this.runHubChatOperation(activeTurn.chatId, async () => {
+        const currentTurn = this.deps.listActiveTurns().find((candidate) =>
+          candidate.chatId === activeTurn.chatId
+          && candidate.sessionId === activeTurn.sessionId
+          && candidate.turnId === activeTurn.turnId
+        );
+        if (!currentTurn) {
+          return;
+        }
+
+        const currentStatus = currentTurn.tracker.getStatus();
+        if (currentStatus.turnStatus !== "running") {
+          return;
+        }
+
+        if (this.chatHasActionablePendingInteractions(currentTurn.chatId)) {
+          return;
+        }
+
+        await this.refreshLiveRuntimeHubsNow(
+          currentTurn.chatId,
+          trigger === "start" ? "turn_running_auto_refresh" : "turn_recovered_auto_refresh",
+          currentTurn.sessionId,
+          undefined,
+          { forcePreferredFocus: true }
+        );
+
+        const chatState = this.runtimeHubStates.get(currentTurn.chatId);
+        const targetHub = chatState
+          ? (
+            this.findLiveHubSlot(chatState, currentTurn.sessionId)?.hubState
+            ?? this.resolveCurrentLiveHubContext(chatState)
+          )
+          : null;
+        if (!targetHub) {
+          return;
+        }
+
+        const reminderText = this.consumeHubCommandReminder(currentTurn.chatId, currentTurn.turnId);
+        await this.reanchorRuntimeHubToLatestMessage(
+          targetHub,
+          trigger === "start" ? "turn_running_auto_refresh" : "turn_recovered_auto_refresh",
+          reminderText
+        );
+        currentTurn.statusCard.needsReanchorOnActive = false;
+      });
+    }, delayMs);
+    state.timer.unref?.();
+  }
+
   private syncSingleSessionHubState(hubState: RuntimeHubState): void {
     const sessionIds = this.getHubOccupiedSessionIds(hubState);
     if (hubState.destroyed || hubState.kind !== "live" || sessionIds.length !== 1 || hubState.messageId === 0) {
@@ -1835,8 +1977,8 @@ export class RuntimeSurfaceController {
       || agentsChanged
       || statusProgressTextChanged
       || options.force;
-    const shouldReanchorOnRecovery = activeTurn.statusCard.needsReanchorOnActive
-      && previousStatus?.turnStatus === "blocked"
+    const shouldScheduleStartAutoRefresh = previousStatus === null && nextStatus.turnStatus === "running";
+    const shouldScheduleRecoveryAutoRefresh = previousStatus?.turnStatus === "blocked"
       && nextStatus.turnStatus === "running";
 
     if (statusChanged) {
@@ -1845,9 +1987,20 @@ export class RuntimeSurfaceController {
       });
     }
 
-    if (shouldReanchorOnRecovery) {
-      activeTurn.statusCard.needsReanchorOnActive = false;
-      await this.reanchorRuntimeAfterBridgeReply(activeTurn, activeTurn.chatId, "recovered_active");
+    if (nextStatus.turnStatus === "blocked" || this.isTerminalTurnStatus(nextStatus.turnStatus)) {
+      const autoRefreshState = this.turnHubAutoRefreshStates.get(activeTurn.turnId);
+      if (autoRefreshState?.timer) {
+        clearTimeout(autoRefreshState.timer);
+        autoRefreshState.timer = null;
+      }
+    }
+
+    if (shouldScheduleStartAutoRefresh) {
+      this.scheduleTurnHubAutoRefresh(activeTurn, "start");
+    }
+
+    if (shouldScheduleRecoveryAutoRefresh) {
+      this.scheduleTurnHubAutoRefresh(activeTurn, "recovery");
     }
 
     if (classified?.kind === "error") {
@@ -1902,6 +2055,7 @@ export class RuntimeSurfaceController {
     }
 
     if (nextStatus.turnStatus === "completed" || nextStatus.turnStatus === "failed" || nextStatus.turnStatus === "interrupted") {
+      this.clearTurnHubAutoRefreshState(activeTurn.turnId);
       const chatState = this.getOrCreateHubChatState(activeTurn.chatId);
       const slotBinding = this.findLiveHubSlot(chatState, activeTurn.sessionId);
       if (slotBinding) {
@@ -2190,6 +2344,7 @@ export class RuntimeSurfaceController {
   }
 
   disposeRuntimeCards(activeTurn: RuntimeSurfaceActiveTurn): void {
+    this.clearTurnHubAutoRefreshState(activeTurn.turnId);
     void this.logRuntimeCardEvent(activeTurn, activeTurn.statusCard, "card_disposed", {
       card: summarizeRuntimeCardSurface(activeTurn.statusCard)
     });
@@ -2215,6 +2370,41 @@ export class RuntimeSurfaceController {
         this.clearRetainedHubTimer(retained);
       }
     }
+  }
+
+  async handleHub(chatId: string): Promise<{ kind: "refreshed" | "no_running" | "interaction_pending" }> {
+    return await this.runHubChatOperation(chatId, async () => {
+      if (this.chatHasActionablePendingInteractions(chatId)) {
+        return { kind: "interaction_pending" };
+      }
+
+      const store = this.deps.getStore();
+      const preferredSessionId = store?.getActiveSession(chatId)?.sessionId ?? null;
+      const runningTurns = this.getRunningTurnsForChat(chatId);
+      if (runningTurns.length === 0) {
+        return { kind: "no_running" };
+      }
+
+      await this.refreshLiveRuntimeHubsNow(chatId, "manual_hub_command", preferredSessionId, undefined, {
+        forcePreferredFocus: true
+      });
+
+      const chatState = this.runtimeHubStates.get(chatId);
+      const targetHub = chatState
+        ? (
+          (preferredSessionId ? this.findLiveHubSlot(chatState, preferredSessionId)?.hubState : null)
+          ?? this.resolveCurrentLiveHubContext(chatState)
+        )
+        : null;
+      if (targetHub) {
+        const refreshed = await this.reanchorRuntimeHubToLatestMessage(targetHub, "manual_hub_command");
+        if (refreshed) {
+          this.markHubCommandLearned(chatId);
+        }
+      }
+
+      return { kind: "refreshed" };
+    });
   }
 
   async reanchorRuntimeAfterBridgeReply(
@@ -2297,9 +2487,13 @@ export class RuntimeSurfaceController {
     await this.reanchorRuntimeHubToLatestMessage(recoveryHub, reason);
   }
 
-  private async reanchorRuntimeHubToLatestMessage(hubState: RuntimeHubState, _reason: string): Promise<void> {
+  private async reanchorRuntimeHubToLatestMessage(
+    hubState: RuntimeHubState,
+    _reason: string,
+    reminderText?: string | null
+  ): Promise<boolean> {
     if (hubState.destroyed) {
-      return;
+      return false;
     }
 
     this.clearHubTimer(hubState);
@@ -2311,17 +2505,18 @@ export class RuntimeSurfaceController {
         hubState.chatId,
         hubState,
         this.getOrderedLiveHubs(this.getOrCreateHubChatState(hubState.chatId)).length,
-        this.getActiveTurnsForChat(hubState.chatId)
+        this.getActiveTurnsForChat(hubState.chatId),
+        reminderText
       )
-      : this.buildRecoveryHubRenderPayload(hubState.chatId, hubState);
+      : this.buildRecoveryHubRenderPayload(hubState.chatId, hubState, reminderText);
     const sent = await this.deps.safeSendHtmlMessageResult(hubState.chatId, rendered.text, rendered.replyMarkup);
     if (!sent) {
-      return;
+      return false;
     }
 
     if (hubState.destroyed || generation !== hubState.requestedGeneration) {
       await this.deleteHubMessage(hubState.chatId, sent.message_id, generation);
-      return;
+      return false;
     }
 
     hubState.messageId = sent.message_id;
@@ -2342,6 +2537,7 @@ export class RuntimeSurfaceController {
     if (previousMessageId > 0 && previousMessageId !== sent.message_id) {
       await this.deleteHubMessage(hubState.chatId, previousMessageId, generation);
     }
+    return true;
   }
 
   async renderPersistedFinalAnswer(

@@ -4,6 +4,7 @@ import type { TelegramApi } from "./api.js";
 export type TelegramCommandHandlerKey =
   | "sendHelp"
   | "sendStatus"
+  | "handleHub"
   | "handleNew"
   | "handleBrowse"
   | "handleCancel"
@@ -51,6 +52,7 @@ export interface TelegramCommandDefinition {
 const TELEGRAM_COMMAND_ENTRIES: LocalizedTelegramCommandEntry[] = [
   { command: "help", aliases: ["start", "commands"], handler: "sendHelp", description: { zh: "查看可用指令", en: "Show available commands" }, helpLines: [{ zh: "/help 查看可用指令", en: "/help Show available commands" }] },
   { command: "status", handler: "sendStatus", description: { zh: "查看服务状态", en: "Show bridge status" }, helpLines: [{ zh: "/status 查看服务状态", en: "/status Show bridge status" }] },
+  { command: "hub", handler: "handleHub", description: { zh: "重新查看运行卡片", en: "Bring back the runtime hub" }, helpLines: [{ zh: "/hub 重新查看运行卡片", en: "/hub Bring back the runtime hub" }] },
   { command: "new", handler: "handleNew", description: { zh: "选择项目并新建会话", en: "Choose a project and create a session" }, helpLines: [{ zh: "/new 选择项目并新建会话", en: "/new Choose a project and create a session" }] },
   { command: "browse", handler: "handleBrowse", description: { zh: "浏览当前项目文件", en: "Browse the current project files" }, helpLines: [{ zh: "/browse 浏览当前项目文件", en: "/browse Browse the current project files" }] },
   { command: "sessions", handler: "handleSessions", description: { zh: "查看最近会话", en: "Show recent sessions" }, helpLines: [{ zh: "/sessions 查看最近会话", en: "/sessions Show recent sessions" }, { zh: "/sessions archived 查看已归档会话", en: "/sessions archived Show archived sessions" }] },

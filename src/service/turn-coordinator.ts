@@ -791,9 +791,7 @@ export class TurnCoordinator {
       lastTurnStatus: classified.status
     });
     this.deps.disposeRuntimeCards(activeTurn);
-    if (await this.deps.safeSendMessage(activeTurn.chatId, "这次操作未成功完成，请重试。")) {
-      await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "turn_failed_notice_sent", activeTurn.sessionId);
-    }
+    await this.deps.safeSendMessage(activeTurn.chatId, "这次操作未成功完成，请重试。");
   }
 
   async handleActiveTurnAppServerExit(): Promise<void> {
@@ -964,9 +962,6 @@ export class TurnCoordinator {
     if (sent) {
       store.setFinalAnswerMessageId(saved.answerId, sent.message_id);
       store.setFinalAnswerDeliveryState(saved.answerId, "visible");
-      if (!activeTurn.terminalDeliveryPending) {
-        await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "final_answer_sent", activeTurn.sessionId);
-      }
       return {
         answerId: saved.answerId,
         kind: "final_answer",
@@ -1018,9 +1013,6 @@ export class TurnCoordinator {
     if (sent) {
       store.setFinalAnswerMessageId(saved.answerId, sent.message_id);
       store.setFinalAnswerDeliveryState(saved.answerId, "visible");
-      if (!activeTurn.terminalDeliveryPending) {
-        await this.deps.reanchorRuntimeAfterBridgeReply(activeTurn.chatId, "plan_result_sent", activeTurn.sessionId);
-      }
       return {
         answerId: saved.answerId,
         kind: "plan_result",
@@ -1139,13 +1131,6 @@ export class TurnCoordinator {
 
     store.clearRuntimeNotice(notice.key);
     store.setFinalAnswerDeliveryState(saved.answerId, "deferred_notice_visible");
-    if (!activeTurn.terminalDeliveryPending) {
-      await this.deps.reanchorRuntimeAfterBridgeReply(
-        activeTurn.chatId,
-        saved.kind === "plan_result" ? "plan_result_deferred_notice_sent" : "final_answer_deferred_notice_sent",
-        activeTurn.sessionId
-      );
-    }
     return true;
   }
 

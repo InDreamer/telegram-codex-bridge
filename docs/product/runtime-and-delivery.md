@@ -1,7 +1,7 @@
 # Runtime And Delivery Flow
 
 Current intended behavior for:
-- `/where`, `/inspect`, `/interrupt`, `/status`, and `/runtime`
+- `/hub`, `/where`, `/inspect`, `/interrupt`, `/status`, and `/runtime`
 - runtime-hub and runtime-card behavior while turns are running
 - final-answer delivery and bridge-owned message edit/replacement rules
 - blocked-turn continuation and rich-input continuation rules
@@ -25,6 +25,21 @@ Shows:
 - bridge `session_id`
 - Codex `thread_id` when available, otherwise an explicit not-created-yet note
 - latest `turn_id` when available
+
+### `/hub`
+
+Shows:
+- the latest live runtime hub for the current chat
+
+Responses:
+- with one or more running sessions: resend the runtime hub to the bottom of the chat
+- with no running sessions: `当前没有运行中的会话。`
+- with actionable pending interaction cards still visible: `当前有待处理的交互，请先完成当前操作。`
+
+Rules:
+- `/hub` does not include extra detail rows beyond the runtime hub itself
+- `/hub` never buries pending interaction controls under a refreshed hub
+- a successful `/hub` use marks the command as learned for that chat so reminder copy stops repeating
 
 ### `/inspect`
 
@@ -137,10 +152,15 @@ While a turn is running:
 - never expose raw reasoning deltas in the default chat flow
 - if Telegram refuses an edit or rate-limits it, retry the same card later instead of sending replacement-message spam
 - let `/inspect` return a snapshot on demand instead of pushing extra detail automatically
+- auto-refresh the hub only after a new turn stays running for a short delay, or after a blocked turn resumes running and stays running for a short delay
+- do not auto-refresh the hub after final answers, plan results, `/status`, `/inspect`, `/where`, `/help`, language changes, interrupt replies, failure notices, or session-management confirmations
+- when actionable interaction cards are pending, keep them visually primary and block both automatic hub refresh and `/hub` pull-up
+- use the one-line reminder `需要查看运行卡片时，可发送 /hub。` only on the delayed first auto-refresh for a turn and on plain-text busy-turn rejection before the user has learned `/hub`
 
 While a turn is running:
 - do not queue a second turn
 - reply with `当前项目仍在执行，请等待完成或发送 /interrupt。`
+- before the user has learned `/hub`, plain-text busy-turn rejection may append `需要查看运行卡片时，可发送 /hub。`
 
 Blocked-turn continuation and rich input rules:
 - if the active turn is blocked and the session has no unresolved interaction cards, plain text becomes `turn/steer`

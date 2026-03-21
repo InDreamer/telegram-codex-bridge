@@ -147,7 +147,7 @@ async function createDiscoveredProject(root: string, name: string): Promise<stri
   return projectPath;
 }
 
-test("SessionProjectCoordinator reanchors runtime hubs after project picker creates a new session", async () => {
+test("SessionProjectCoordinator leaves runtime hubs in place after project picker creates a new session", async () => {
   const { coordinator, store, reanchorCalls, cleanup } = await createCoordinatorContext();
 
   try {
@@ -169,17 +169,13 @@ test("SessionProjectCoordinator reanchors runtime hubs after project picker crea
 
     const created = store.getActiveSession("chat-1");
     assert.ok(created);
-    assert.deepEqual(reanchorCalls, [{
-      chatId: "chat-1",
-      sessionId: created.sessionId,
-      reason: "session_created"
-    }]);
+    assert.deepEqual(reanchorCalls, []);
   } finally {
     await cleanup();
   }
 });
 
-test("SessionProjectCoordinator reanchors runtime hubs after manual-path confirmation creates a new session", async () => {
+test("SessionProjectCoordinator leaves runtime hubs in place after manual-path confirmation creates a new session", async () => {
   const { coordinator, store, reanchorCalls, cleanup } = await createCoordinatorContext();
 
   try {
@@ -201,11 +197,7 @@ test("SessionProjectCoordinator reanchors runtime hubs after manual-path confirm
 
     const created = store.getActiveSession("chat-1");
     assert.ok(created);
-    assert.deepEqual(reanchorCalls, [{
-      chatId: "chat-1",
-      sessionId: created.sessionId,
-      reason: "session_created"
-    }]);
+    assert.deepEqual(reanchorCalls, []);
   } finally {
     await cleanup();
   }
