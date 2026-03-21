@@ -10,7 +10,7 @@ import { commandExists, runCommand } from "../process.js";
 import type { BridgeStateStore } from "../state/store.js";
 import type { TelegramApi, TelegramMessage } from "../telegram/api.js";
 import type { SessionRow } from "../types.js";
-import { normalizeAndTruncate, normalizeWhitespace } from "../util/text.js";
+import { normalizeAndTruncate, normalizeWhitespace, splitStructuredInputCommand } from "../util/text.js";
 import { asRecord, getArray, getString } from "../util/untyped.js";
 
 const TELEGRAM_IMAGE_CACHE_DIRNAME = "telegram-images";
@@ -740,21 +740,6 @@ export class RichInputAdapter {
       }
     }));
   }
-}
-
-function splitStructuredInputCommand(args: string): { value: string; prompt: string | null } {
-  const separatorIndex = args.indexOf("::");
-  if (separatorIndex === -1) {
-    return {
-      value: args.trim(),
-      prompt: null
-    };
-  }
-
-  return {
-    value: args.slice(0, separatorIndex).trim(),
-    prompt: args.slice(separatorIndex + 2).trim() || null
-  };
 }
 
 function parseMentionValue(value: string): {

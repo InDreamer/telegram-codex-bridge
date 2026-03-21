@@ -12,10 +12,8 @@ import {
   type RollbackTargetView
 } from "../telegram/ui.js";
 import type { ReasoningEffort, SessionRow } from "../types.js";
-import { normalizeAndTruncate, normalizeWhitespace, truncateText } from "../util/text.js";
+import { normalizeAndTruncate, normalizeWhitespace, truncateText, summarizeTextPreview, splitStructuredInputCommand, HISTORY_TEXT_LIMIT } from "../util/text.js";
 import { asRecord, getArray, getString } from "../util/untyped.js";
-
-const HISTORY_TEXT_LIMIT = 220;
 
 interface ReviewCommandArgs {
   delivery?: "inline" | "detached";
@@ -1085,25 +1083,6 @@ export class CodexCommandCoordinator {
         : null;
     return summary ? truncateText(summary, HISTORY_TEXT_LIMIT) : null;
   }
-}
-
-function summarizeTextPreview(text: string | null | undefined, limit = 160): string {
-  return normalizeAndTruncate(text, limit, "...") ?? "";
-}
-
-function splitStructuredInputCommand(args: string): { value: string; prompt: string | null } {
-  const separatorIndex = args.indexOf("::");
-  if (separatorIndex === -1) {
-    return {
-      value: args.trim(),
-      prompt: null
-    };
-  }
-
-  return {
-    value: args.slice(0, separatorIndex).trim(),
-    prompt: args.slice(separatorIndex + 2).trim() || null
-  };
 }
 
 function parseReviewCommandArgs(args: string): ReviewCommandArgs | null {

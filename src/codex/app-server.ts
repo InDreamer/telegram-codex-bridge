@@ -59,18 +59,31 @@ interface ThreadStartParams {
   model?: string;
 }
 
+/** Bridge-side collaboration mode config (camelCase). */
+export interface CollaborationModeInput {
+  mode: "default" | "plan";
+  settings: {
+    model: string;
+    developerInstructions?: string | null;
+    reasoningEffort?: ReasoningEffort | null;
+  };
+}
+
+/** Wire-format collaboration mode payload (snake_case for Codex protocol). */
+interface CollaborationModeWirePayload {
+  mode: "default" | "plan";
+  settings: {
+    model: string;
+    developer_instructions?: string | null;
+    reasoning_effort?: ReasoningEffort | null;
+  };
+}
+
 interface TurnStartParams {
   threadId: string;
   cwd: string;
   approvalPolicy: "never";
-  collaborationMode?: {
-    mode: "default" | "plan";
-    settings: {
-      model: string;
-      developer_instructions?: string | null;
-      reasoning_effort?: ReasoningEffort | null;
-    };
-  };
+  collaborationMode?: CollaborationModeWirePayload;
   sandboxPolicy: {
     type: "dangerFullAccess";
   };
@@ -366,14 +379,7 @@ export function buildTurnStartParams(options: {
   input?: UserInput[];
   model?: string;
   effort?: ReasoningEffort;
-  collaborationMode?: {
-    mode: "default" | "plan";
-    settings: {
-      model: string;
-      developerInstructions?: string | null;
-      reasoningEffort?: ReasoningEffort | null;
-    };
-  };
+  collaborationMode?: CollaborationModeInput;
 }): TurnStartParams {
   const input = options.input ?? (options.text ? [{ type: "text", text: options.text }] : []);
   return {
@@ -675,14 +681,7 @@ export class CodexAppServerClient {
     input?: UserInput[];
     model?: string;
     effort?: ReasoningEffort;
-    collaborationMode?: {
-      mode: "default" | "plan";
-      settings: {
-        model: string;
-        developerInstructions?: string | null;
-        reasoningEffort?: ReasoningEffort | null;
-      };
-    };
+    collaborationMode?: CollaborationModeInput;
   }): Promise<TurnStartResult> {
     return await this.request<TurnStartResult>("turn/start", buildTurnStartParams(options));
   }

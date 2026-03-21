@@ -27,7 +27,9 @@ import {
 } from "./runtime-surface-state.js";
 import { extractTurnArtifactsFromHistory } from "./turn-artifacts.js";
 import { asRecord, getString } from "../util/untyped.js";
-import { normalizeAndTruncate } from "../util/text.js";
+import { normalizeAndTruncate, summarizeTextPreview, hasMeaningfulText } from "../util/text.js";
+import { summarizeActivityStatus, summarizeActivityStatusList } from "../activity/serialize.js";
+import { nowIso } from "../util/time.js";
 
 const MAX_RECENT_ACTIVITY_ENTRIES = 20;
 const MAX_RUNNING_SESSIONS_PER_CHAT = 10;
@@ -62,7 +64,6 @@ interface ActiveTurnState extends InteractionBrokerActiveTurn {
   nextErrorCardId: number;
   surfaceQueue: Promise<void>;
 }
-
 interface RecentActivityEntry {
   tracker: ActivityTracker;
   debugFilePath: string | null;
@@ -321,67 +322,24 @@ export class TurnCoordinator {
       transcript: string;
     }
   ): Promise<void> {
-    const store = this.deps.getStore();
-    if (!store) {
-      return;
-    }
-
-    const capacity = this.getRunningTurnCapacity(chatId);
-    if (!capacity.allowed) {
-      await this.deps.safeSendMessage(
-        chatId,
-        `当前最多只能并行运行 ${capacity.limit} 个会话，请先等待完成或停止部分任务。`
-      );
-      return;
-    }
-
-    try {
-      await this.deps.ensureAppServerAvailable();
-      const threadState = await this.ensureSessionThreadState(session);
-      const threadId = threadState.threadId;
-      const appServer = this.deps.getAppServer();
-      const request = await this.buildTurnStartRequest(session, {
-        threadId,
-        cwd: session.projectPath,
-        text
-      });
-      const turn = await appServer?.startTurn(request);
-
-      if (!turn) {
-        throw new Error("turn start returned no result");
-      }
-      if (session.needsDefaultCollaborationModeReset) {
-        store.clearSessionDefaultCollaborationModeReset(session.sessionId);
-      }
+    return this.startTurnInternal(chatId, session, { text }, "text", (store, threadId, turnId) => {
       if (options?.sourceKind === "voice") {
-        store.saveTurnInputSource({
-          threadId,
-          turnId: turn.turn.id,
-          sourceKind: "voice",
-          transcript: options.transcript
-        });
+        store.saveTurnInputSource({ threadId, turnId, sourceKind: "voice", transcript: options.transcript });
       }
-      const shouldReanchorAcceptedStart = this.deps.shouldReanchorAcceptedTurnStart(chatId);
-      const effectiveConfig = this.resolveEffectiveTurnConfig(session, request, threadState);
-      await this.beginActiveTurn(chatId, session, threadId, turn.turn.id, turn.turn.status, effectiveConfig);
-      if (shouldReanchorAcceptedStart) {
-        await this.deps.reanchorAcceptedTurnStart(chatId, session.sessionId, "text");
-      }
-    } catch (error) {
-      await this.deps.logger.error("turn start failed", {
-        sessionId: session.sessionId,
-        error: `${error}`
-      });
-      store.updateSessionStatus(session.sessionId, "failed", {
-        failureReason: "turn_failed",
-        lastTurnId: session.lastTurnId,
-        lastTurnStatus: "failed"
-      });
-      await this.deps.safeSendMessage(chatId, "Codex 服务暂时不可用，请稍后重试。");
-    }
+    });
   }
 
   async startStructuredTurn(chatId: string, session: SessionRow, input: UserInput[]): Promise<void> {
+    return this.startTurnInternal(chatId, session, { input }, "structured");
+  }
+
+  private async startTurnInternal(
+    chatId: string,
+    session: SessionRow,
+    payload: { text: string } | { input: UserInput[] },
+    kind: "text" | "structured",
+    afterStart?: (store: NonNullable<ReturnType<typeof this.deps.getStore>>, threadId: string, turnId: string) => void
+  ): Promise<void> {
     const store = this.deps.getStore();
     if (!store) {
       return;
@@ -404,7 +362,7 @@ export class TurnCoordinator {
       const request = await this.buildTurnStartRequest(session, {
         threadId,
         cwd: session.projectPath,
-        input
+        ...payload
       });
       const turn = await appServer?.startTurn(request);
       if (!turn) {
@@ -413,15 +371,15 @@ export class TurnCoordinator {
       if (session.needsDefaultCollaborationModeReset) {
         store.clearSessionDefaultCollaborationModeReset(session.sessionId);
       }
-
+      afterStart?.(store, threadId, turn.turn.id);
       const shouldReanchorAcceptedStart = this.deps.shouldReanchorAcceptedTurnStart(chatId);
       const effectiveConfig = this.resolveEffectiveTurnConfig(session, request, threadState);
       await this.beginActiveTurn(chatId, session, threadId, turn.turn.id, turn.turn.status, effectiveConfig);
       if (shouldReanchorAcceptedStart) {
-        await this.deps.reanchorAcceptedTurnStart(chatId, session.sessionId, "structured");
+        await this.deps.reanchorAcceptedTurnStart(chatId, session.sessionId, kind);
       }
     } catch (error) {
-      await this.deps.logger.error("structured turn start failed", {
+      await this.deps.logger.error(`${kind} turn start failed`, {
         sessionId: session.sessionId,
         error: `${error}`
       });
@@ -1366,7 +1324,7 @@ export class TurnCoordinator {
   ): Promise<void> {
     try {
       await activeTurn.debugJournal.append({
-        receivedAt: new Date().toISOString(),
+        receivedAt: nowIso(),
         threadId: overrides?.threadId ?? activeTurn.threadId,
         turnId: overrides?.turnId ?? activeTurn.turnId,
         method,
@@ -1548,39 +1506,4 @@ function getKnownUnsupportedServerRequest(request: JsonRpcServerRequest): {
 
 function serializeJsonRpcRequestId(id: JsonRpcRequestId): string {
   return typeof id === "number" ? `${id}` : `s:${id}`;
-}
-
-function summarizeActivityStatus(status: ActivityStatus): Record<string, unknown> {
-  return {
-    turnStatus: status.turnStatus,
-    threadRuntimeState: status.threadRuntimeState,
-    activeItemType: status.activeItemType,
-    activeItemId: status.activeItemId,
-    activeItemLabel: summarizeTextPreview(status.activeItemLabel, 160) || null,
-    lastActivityAt: status.lastActivityAt,
-    currentItemStartedAt: status.currentItemStartedAt,
-    currentItemDurationSec: status.currentItemDurationSec,
-    lastHighValueEventType: status.lastHighValueEventType,
-    lastHighValueTitle: summarizeTextPreview(status.lastHighValueTitle, 160) || null,
-    lastHighValueDetail: summarizeTextPreview(status.lastHighValueDetail, 160) || null,
-    latestProgress: summarizeTextPreview(status.latestProgress, 160) || null,
-    recentStatusUpdates: summarizeActivityStatusList(status.recentStatusUpdates),
-    blockedReason: status.threadBlockedReason,
-    finalMessageAvailable: status.finalMessageAvailable,
-    inspectAvailable: status.inspectAvailable,
-    debugAvailable: status.debugAvailable,
-    errorState: status.errorState
-  };
-}
-
-function summarizeActivityStatusList(values: string[]): string[] {
-  return values.map((value) => summarizeTextPreview(value, 160));
-}
-
-function summarizeTextPreview(text: string | null | undefined, limit = 160): string {
-  return normalizeAndTruncate(text, limit, "...") ?? "";
-}
-
-function hasMeaningfulText(value: string | null | undefined): value is string {
-  return typeof value === "string" && value.trim().length > 0;
 }

@@ -77,7 +77,8 @@ import {
 } from "./types.js";
 import { CodexAppServerClient } from "./codex/app-server.js";
 import { asRecord, getString, getNumber, getArray } from "./util/untyped.js";
-import { normalizeAndTruncate } from "./util/text.js";
+import { normalizeAndTruncate, summarizeTextPreview, HISTORY_TEXT_LIMIT } from "./util/text.js";
+import { summarizeActivityStatus, summarizeActivityStatusList } from "./activity/serialize.js";
 
 interface RecentActivityEntry {
   tracker: ActivityTracker;
@@ -92,8 +93,6 @@ interface InspectRenderPayload {
 }
 
 const HISTORY_SUMMARY_LIMIT = 5;
-const HISTORY_TEXT_LIMIT = 220;
-
 const MAX_RECENT_ACTIVITY_ENTRIES = 20;
 const TELEGRAM_SEND_RETRY_DELAYS_MS = [750, 2_000] as const;
 const TELEGRAM_SEND_MAX_RETRY_AFTER_MS = 10_000;
@@ -197,11 +196,7 @@ export class BridgeService {
       })
     };
     this.runtimeSurfaceTraceSink = new RuntimeSurfaceTraceSink({
-      logger: {
-        info: async (message, meta) => this.logger.info(message, meta),
-        warn: async (message, meta) => this.logger.warn(message, meta),
-        error: async (message, meta) => this.logger.error(message, meta)
-      },
+      logger: this.loggerAdapter,
       traceLoggers: this.runtimeCardTraceLoggers
     });
     this.runtimeNoticeBroadcaster = new RuntimeNoticeBroadcaster({
@@ -209,19 +204,11 @@ export class BridgeService {
       safeSendMessage: async (chatId, text) => this.safeSendMessage(chatId, text)
     });
     this.threadArchiveReconciler = new ThreadArchiveReconciler({
-      logger: {
-        info: async (message, meta) => this.logger.info(message, meta),
-        warn: async (message, meta) => this.logger.warn(message, meta),
-        error: async (message, meta) => this.logger.error(message, meta)
-      },
+      logger: this.loggerAdapter,
       getStore: () => this.store
     });
     this.subagentIdentityBackfiller = new SubagentIdentityBackfiller({
-      logger: {
-        info: async (message, meta) => this.logger.info(message, meta),
-        warn: async (message, meta) => this.logger.warn(message, meta),
-        error: async (message, meta) => this.logger.error(message, meta)
-      },
+      logger: this.loggerAdapter,
       getAppServer: () => this.appServer
     });
     this.interactionBroker = new InteractionBroker({
@@ -243,13 +230,7 @@ export class BridgeService {
       config: { projectScanRoots: this.config.projectScanRoots },
       getStore: () => this.store,
       getSnapshot: () => this.snapshot,
-      ensureAppServerAvailable: async () => {
-        await this.ensureAppServerAvailable();
-        if (!this.appServer) {
-          throw new Error("app-server unavailable");
-        }
-        return this.appServer;
-      },
+      ensureAppServerAvailable: async () => this.requireAppServer(),
       registerPendingThreadArchiveOp: (threadId, sessionId, expectedRemoteState, origin) =>
         this.threadArchiveReconciler.registerPendingOp(threadId, sessionId, expectedRemoteState, origin),
       markPendingThreadArchiveCommit: async (threadId, opId) =>
@@ -319,11 +300,7 @@ export class BridgeService {
     });
     this.turnCoordinator = new TurnCoordinator({
       paths: { runtimeDir: this.paths.runtimeDir },
-      logger: {
-        info: async (message, meta) => this.logger.info(message, meta),
-        warn: async (message, meta) => this.logger.warn(message, meta),
-        error: async (message, meta) => this.logger.error(message, meta)
-      },
+      logger: this.loggerAdapter,
       getStore: () => this.store,
       getAppServer: () => this.appServer,
       ensureAppServerAvailable: async () => this.ensureAppServerAvailable(),
@@ -372,13 +349,7 @@ export class BridgeService {
     this.richInputAdapter = new RichInputAdapter({
       getStore: () => this.store,
       getApi: () => this.api,
-      ensureAppServerAvailable: async () => {
-        await this.ensureAppServerAvailable();
-        if (!this.appServer) {
-          throw new Error("app-server unavailable");
-        }
-        return this.appServer;
-      },
+      ensureAppServerAvailable: async () => this.requireAppServer(),
       fetchAllModels: async () => this.fetchAllModels(),
       extractFinalAnswerFromHistory: async (appServer, threadId, turnId) =>
         extractFinalAnswerFromHistory(appServer, threadId, turnId),
@@ -415,13 +386,7 @@ export class BridgeService {
     });
     this.codexCommandCoordinator = new CodexCommandCoordinator({
       getStore: () => this.store,
-      ensureAppServerAvailable: async () => {
-        await this.ensureAppServerAvailable();
-        if (!this.appServer) {
-          throw new Error("app-server unavailable");
-        }
-        return this.appServer;
-      },
+      ensureAppServerAvailable: async () => this.requireAppServer(),
       fetchAllModels: async () => this.fetchAllModels(),
       fetchAllApps: async (threadId) => this.fetchAllApps(threadId),
       fetchAllMcpServerStatuses: async () => this.fetchAllMcpServerStatuses(),
@@ -440,6 +405,24 @@ export class BridgeService {
         this.safeEditHtmlMessageText(chatId, messageId, text, replyMarkup),
       safeAnswerCallbackQuery: async (callbackQueryId, text) => this.safeAnswerCallbackQuery(callbackQueryId, text)
     });
+  }
+
+  /** Forwarding logger adapter for sub-coordinators that accept { info, warn, error }. */
+  private get loggerAdapter() {
+    return {
+      info: async (message: string, meta?: Record<string, unknown>) => this.logger.info(message, meta),
+      warn: async (message: string, meta?: Record<string, unknown>) => this.logger.warn(message, meta),
+      error: async (message: string, meta?: Record<string, unknown>) => this.logger.error(message, meta)
+    };
+  }
+
+  /** Ensure app-server is available and return it, or throw. */
+  private async requireAppServer(): Promise<CodexAppServerClient> {
+    await this.ensureAppServerAvailable();
+    if (!this.appServer) {
+      throw new Error("app-server unavailable");
+    }
+    return this.appServer;
   }
 
   private getActiveTurnForSession(sessionId: string): ActiveTurnState | null {
@@ -2819,36 +2802,6 @@ function defaultSleep(delayMs: number): Promise<void> {
   });
 }
 
-function summarizeActivityStatus(status: ActivityStatus): Record<string, unknown> {
-  return {
-    turnStatus: status.turnStatus,
-    threadRuntimeState: status.threadRuntimeState,
-    activeItemType: status.activeItemType,
-    activeItemId: status.activeItemId,
-    activeItemLabel: summarizeTextPreview(status.activeItemLabel, 160) || null,
-    lastActivityAt: status.lastActivityAt,
-    currentItemStartedAt: status.currentItemStartedAt,
-    currentItemDurationSec: status.currentItemDurationSec,
-    lastHighValueEventType: status.lastHighValueEventType,
-    lastHighValueTitle: summarizeTextPreview(status.lastHighValueTitle, 160) || null,
-    lastHighValueDetail: summarizeTextPreview(status.lastHighValueDetail, 160) || null,
-    latestProgress: summarizeTextPreview(status.latestProgress, 160) || null,
-    recentStatusUpdates: summarizeActivityStatusList(status.recentStatusUpdates),
-    blockedReason: status.threadBlockedReason,
-    finalMessageAvailable: status.finalMessageAvailable,
-    inspectAvailable: status.inspectAvailable,
-    debugAvailable: status.debugAvailable,
-    errorState: status.errorState
-  };
-}
-
-function summarizeActivityStatusList(values: string[]): string[] {
-  return values.map((value) => summarizeTextPreview(value, 160));
-}
-
-function summarizeTextPreview(text: string | null | undefined, limit = 160): string {
-  return normalizeAndTruncate(text, limit, "...") ?? "";
-}
 
 function buildInspectPayloadFromThreadHistory(
   turn: unknown,

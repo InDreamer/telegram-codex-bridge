@@ -15,6 +15,7 @@ import { SKIP_QUESTION_OPTION_VALUE, type NormalizedApprovalInteraction, type No
 import { parseBooleanLike } from "../util/boolean.js";
 import { asRecord, getString, getStringArray } from "../util/untyped.js";
 import { isTelegramEditCommitted, type TelegramEditResult } from "./runtime-surface-state.js";
+import { nowIso } from "../util/time.js";
 
 export interface PendingInteractionTextMode {
   sessionId: string;
@@ -586,7 +587,7 @@ export class InteractionBroker {
       if (interaction) {
         await this.renderStoredPendingInteraction(
           row.telegramChatId,
-          { ...row, state: "answered", responseJson, resolvedAt: new Date().toISOString() },
+          { ...row, state: "answered", responseJson, resolvedAt: nowIso() },
           interaction
         );
       }

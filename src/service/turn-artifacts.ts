@@ -1,4 +1,5 @@
 import type { CodexAppServerClient } from "../codex/app-server.js";
+import { hasMeaningfulText } from "../util/text.js";
 
 type HistoryTurn = Awaited<ReturnType<CodexAppServerClient["resumeThread"]>>["thread"]["turns"][number];
 type FinalMessageSource = "final_answer" | "review_exit" | "agent_message" | null;
@@ -12,7 +13,6 @@ export interface TurnArtifactsFromHistory {
   reviewArtifactsPresent: boolean;
   resolvedTurnId: string | null;
 }
-
 export async function extractFinalAnswerFromHistory(
   appServer: CodexAppServerClient,
   threadId: string,
@@ -149,8 +149,4 @@ function findMostRecentCompletedReviewTurn(
 
     return !knownReviewTurnIdsAtStart.has(turn.id);
   }) ?? null;
-}
-
-function hasMeaningfulText(value: string | null | undefined): value is string {
-  return typeof value === "string" && value.trim().length > 0;
 }

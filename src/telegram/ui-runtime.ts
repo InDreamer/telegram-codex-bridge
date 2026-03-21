@@ -512,84 +512,62 @@ export function buildRuntimeHubReplyMarkup(options: {
       text: sessionId ? String(index + 1) : "·",
       callback_data: encodeHubSelectCallback(options.token, options.callbackVersion, index + 1)
     })));
-
-    const secondaryButtons: TelegramInlineKeyboardMarkup["inline_keyboard"][number] = [];
-    if (options.focusedSessionId && (options.planEntries?.length ?? 0) > 0) {
-      secondaryButtons.push({
-        text: options.planExpanded
-          ? (language === "en" ? "Hide Plan" : "收起计划清单")
-          : buildCollapsedPlanButtonLabel(options.planEntries ?? [], language),
-        callback_data: options.planExpanded
-          ? encodePlanCollapseCallback(options.focusedSessionId)
-          : encodePlanExpandCallback(options.focusedSessionId)
-      });
+  } else {
+    const sessions = options.sessions ?? [];
+    if (sessions.length > 1) {
+      const sessionButtons = sessions.map((session, index) => ({
+        text: session.isFocused
+          ? `${language === "en" ? "Viewing" : "查看中"} · ${truncateText(session.sessionName, 18)}`
+          : session.isActiveInputTarget
+            ? `${language === "en" ? "Current" : "当前"} · ${truncateText(session.sessionName, 18)}`
+            : truncateText(session.sessionName, 18),
+        callback_data: encodeHubSelectCallback(options.token, options.callbackVersion, index)
+      }));
+      rows.push(...chunkButtons(sessionButtons, 2));
     }
-
-    if (options.focusedSessionId && (options.agentEntries?.length ?? 0) > 0) {
-      secondaryButtons.push({
-        text: options.agentsExpanded
-          ? (language === "en" ? "Hide Agents" : "收起 Agent")
-          : buildCollapsedAgentButtonLabel(options.agentEntries ?? [], language),
-        callback_data: options.agentsExpanded
-          ? encodeAgentCollapseCallback(options.focusedSessionId)
-          : encodeAgentExpandCallback(options.focusedSessionId)
-      });
-    }
-
-    if (secondaryButtons.length > 0) {
-      rows.push(secondaryButtons);
-    }
-
-    return {
-      inline_keyboard: rows
-    };
   }
 
-  const sessions = options.sessions ?? [];
-  if (sessions.length > 1) {
-    const sessionButtons = sessions.map((session, index) => ({
-      text: session.isFocused
-        ? `${language === "en" ? "Viewing" : "查看中"} · ${truncateText(session.sessionName, 18)}`
-        : session.isActiveInputTarget
-          ? `${language === "en" ? "Current" : "当前"} · ${truncateText(session.sessionName, 18)}`
-          : truncateText(session.sessionName, 18),
-      callback_data: encodeHubSelectCallback(options.token, options.callbackVersion, index)
-    }));
-    rows.push(...chunkButtons(sessionButtons, 2));
-  }
+  appendHubSecondaryButtons(rows, options.focusedSessionId, options.planEntries, options.planExpanded, options.agentEntries, options.agentsExpanded, language);
 
-  const secondaryButtons: TelegramInlineKeyboardMarkup["inline_keyboard"][number] = [];
-  if (options.focusedSessionId && (options.planEntries?.length ?? 0) > 0) {
-    secondaryButtons.push({
-      text: options.planExpanded
+  return { inline_keyboard: rows };
+}
+
+function appendHubSecondaryButtons(
+  rows: TelegramInlineKeyboardMarkup["inline_keyboard"],
+  focusedSessionId: string | null | undefined,
+  planEntries: string[] | undefined,
+  planExpanded: boolean | undefined,
+  agentEntries: CollabAgentStateSnapshot[] | undefined,
+  agentsExpanded: boolean | undefined,
+  language: UiLanguage
+): void {
+  const buttons: TelegramInlineKeyboardMarkup["inline_keyboard"][number] = [];
+
+  if (focusedSessionId && (planEntries?.length ?? 0) > 0) {
+    buttons.push({
+      text: planExpanded
         ? (language === "en" ? "Hide Plan" : "收起计划清单")
-        : buildCollapsedPlanButtonLabel(options.planEntries ?? [], language),
-      callback_data: options.planExpanded
-        ? encodePlanCollapseCallback(options.focusedSessionId)
-        : encodePlanExpandCallback(options.focusedSessionId)
+        : buildCollapsedPlanButtonLabel(planEntries ?? [], language),
+      callback_data: planExpanded
+        ? encodePlanCollapseCallback(focusedSessionId)
+        : encodePlanExpandCallback(focusedSessionId)
     });
   }
 
-  if (options.focusedSessionId && (options.agentEntries?.length ?? 0) > 0) {
-    secondaryButtons.push({
-      text: options.agentsExpanded
+  if (focusedSessionId && (agentEntries?.length ?? 0) > 0) {
+    buttons.push({
+      text: agentsExpanded
         ? (language === "en" ? "Hide Agents" : "收起 Agent")
-        : buildCollapsedAgentButtonLabel(options.agentEntries ?? [], language),
-      callback_data: options.agentsExpanded
-        ? encodeAgentCollapseCallback(options.focusedSessionId)
-        : encodeAgentExpandCallback(options.focusedSessionId)
+        : buildCollapsedAgentButtonLabel(agentEntries ?? [], language),
+      callback_data: agentsExpanded
+        ? encodeAgentCollapseCallback(focusedSessionId)
+        : encodeAgentExpandCallback(focusedSessionId)
     });
   }
 
-  if (secondaryButtons.length > 0) {
-    rows.push(secondaryButtons);
+  if (buttons.length > 0) {
+    rows.push(buttons);
   }
-
-  // Hubs stay as a compact multi-session navigator. Detailed inspect/interrupt
-  // actions remain on the single-session status card and the command surface.
-  return {
-    inline_keyboard: rows
-  };
 }
 
 export function buildRuntimeStatusFieldLabel(field: RuntimeStatusField): string {

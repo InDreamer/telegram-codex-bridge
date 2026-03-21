@@ -29,7 +29,8 @@ import {
   type SessionRow,
   type UiLanguage
 } from "../types.js";
-import { normalizeAndTruncate, truncateText } from "../util/text.js";
+import { normalizeAndTruncate, truncateText, summarizeTextPreview } from "../util/text.js";
+import { summarizeActivityStatus, summarizeActivityStatusList } from "../activity/serialize.js";
 import { classifyNotification } from "../codex/notification-classifier.js";
 import {
   applyRuntimeCommandDelta,
@@ -3162,37 +3163,6 @@ export class RuntimeSurfaceController {
 
     return null;
   }
-}
-
-function summarizeActivityStatus(status: ActivityStatus): Record<string, unknown> {
-  return {
-    turnStatus: status.turnStatus,
-    threadRuntimeState: status.threadRuntimeState,
-    activeItemType: status.activeItemType,
-    activeItemId: status.activeItemId,
-    activeItemLabel: summarizeTextPreview(status.activeItemLabel, 160) || null,
-    lastActivityAt: status.lastActivityAt,
-    currentItemStartedAt: status.currentItemStartedAt,
-    currentItemDurationSec: status.currentItemDurationSec,
-    lastHighValueEventType: status.lastHighValueEventType,
-    lastHighValueTitle: summarizeTextPreview(status.lastHighValueTitle, 160) || null,
-    lastHighValueDetail: summarizeTextPreview(status.lastHighValueDetail, 160) || null,
-    latestProgress: summarizeTextPreview(status.latestProgress, 160) || null,
-    recentStatusUpdates: summarizeActivityStatusList(status.recentStatusUpdates),
-    blockedReason: status.threadBlockedReason,
-    finalMessageAvailable: status.finalMessageAvailable,
-    inspectAvailable: status.inspectAvailable,
-    debugAvailable: status.debugAvailable,
-    errorState: status.errorState
-  };
-}
-
-function summarizeActivityStatusList(values: string[]): string[] {
-  return values.map((value) => summarizeTextPreview(value, 160));
-}
-
-function summarizeTextPreview(text: string | null | undefined, limit = 160): string {
-  return normalizeAndTruncate(text, limit, "...") ?? "";
 }
 
 function formatRuntimeCommandState(status: RuntimeCommandState["status"]): string {

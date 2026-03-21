@@ -1,9 +1,10 @@
 import type { ActivityStatus } from "../activity/types.js";
 import { classifyNotification } from "../codex/notification-classifier.js";
 import type { TelegramInlineKeyboardMarkup } from "../telegram/api.js";
-import { normalizeAndTruncate } from "../util/text.js";
+import { normalizeAndTruncate, normalizeNullableText, truncateText } from "../util/text.js";
 
 const RUNTIME_CARD_THROTTLE_MS = 2000;
+const RUNTIME_COMMAND_OUTPUT_LINE_SNAPSHOT_LIMIT = 1024;
 
 export type TelegramEditResult =
   | { outcome: "edited" }
@@ -44,7 +45,9 @@ export interface RuntimeCommandState {
   itemId: string;
   commandText: string;
   latestSummary: string | null;
-  outputBuffer: string;
+  outputFirstCompleteLine: string | null;
+  outputLastCompleteLine: string | null;
+  outputTrailingFragment: string;
   status: "running" | "completed" | "failed" | "interrupted";
 }
 
@@ -260,26 +263,20 @@ export function applyRuntimeCommandDelta(
     const commandResult = getOrCreateRuntimeCommand(statusCard, classified.itemId, "command");
     const command = commandResult.command;
     changed = commandResult.created || changed;
-    const nextOutputBuffer = `${command.outputBuffer}${classified.text ?? ""}`;
-    if (command.outputBuffer !== nextOutputBuffer) {
-      command.outputBuffer = nextOutputBuffer;
+    if (classified.text) {
+      appendRuntimeCommandOutputChunk(command, classified.text);
     }
-    const parsed = summarizeRuntimeCommandOutput(command.outputBuffer);
-    if (parsed.command && (isGenericCommandName(command.commandText) || command.commandText !== parsed.command)) {
-      command.commandText = parsed.command;
-      changed = true;
-    }
-    if (command.latestSummary !== parsed.detail) {
-      command.latestSummary = parsed.detail;
-      changed = true;
-    }
+    changed = updateRuntimeCommandSummary(command) || changed;
   }
 
   if (classified.kind === "item_completed" && classified.itemType === "commandExecution" && classified.itemId) {
     const command = statusCard.commandItems.get(classified.itemId);
-    if (command && command.status !== "completed") {
-      command.status = nextStatus.turnStatus === "interrupted" ? "interrupted" : "completed";
-      changed = true;
+    if (command) {
+      changed = finalizeRuntimeCommandOutput(command) || changed;
+      if (command.status !== "completed") {
+        command.status = nextStatus.turnStatus === "interrupted" ? "interrupted" : "completed";
+        changed = true;
+      }
     }
   }
 
@@ -297,6 +294,7 @@ export function applyRuntimeCommandDelta(
       if (command.status === finalCommandStatus || command.status !== "running") {
         continue;
       }
+      changed = finalizeRuntimeCommandOutput(command) || changed;
       command.status = finalCommandStatus;
       changed = true;
     }
@@ -318,39 +316,66 @@ function isGenericCommandName(value: string | null | undefined): boolean {
   return normalizeCommandName(value ?? "") === "command";
 }
 
-function summarizeRuntimeCommandOutput(text: string | null): { command: string | null; detail: string | null } {
-  if (!text) {
-    return {
-      command: null,
-      detail: null
-    };
+function normalizeRuntimeCommandOutputFragment(text: string): string | null {
+  return normalizeNullableText(truncateText(text, RUNTIME_COMMAND_OUTPUT_LINE_SNAPSHOT_LIMIT, ""));
+}
+
+function commitRuntimeCommandOutputLine(command: RuntimeCommandState, line: string): void {
+  const normalized = normalizeRuntimeCommandOutputFragment(line);
+  if (!normalized) {
+    return;
   }
 
-  const rawLines = text
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-
-  if (rawLines.length === 0) {
-    return {
-      command: null,
-      detail: null
-    };
+  if (!command.outputFirstCompleteLine) {
+    command.outputFirstCompleteLine = normalized;
   }
+  command.outputLastCompleteLine = normalized;
+}
 
-  const firstLine = rawLines[0]!;
-  const command = /^[>$#]\s*/u.test(firstLine)
+function appendRuntimeCommandOutputChunk(command: RuntimeCommandState, text: string): void {
+  const combined = `${command.outputTrailingFragment}${text}`;
+  const endsWithNewline = /\r?\n$/u.test(combined);
+  const parts = combined.split(/\r?\n/u);
+  command.outputTrailingFragment = truncateText(endsWithNewline ? "" : (parts.pop() ?? ""), RUNTIME_COMMAND_OUTPUT_LINE_SNAPSHOT_LIMIT, "");
+  for (const part of parts) {
+    commitRuntimeCommandOutputLine(command, part);
+  }
+}
+
+function updateRuntimeCommandSummary(command: RuntimeCommandState): boolean {
+  const parsed = summarizeRuntimeCommandOutput(command.outputFirstCompleteLine, command.outputLastCompleteLine);
+  let changed = false;
+  if (parsed.command && (isGenericCommandName(command.commandText) || command.commandText !== parsed.command)) {
+    command.commandText = parsed.command;
+    changed = true;
+  }
+  if (command.latestSummary !== parsed.detail) {
+    command.latestSummary = parsed.detail;
+    changed = true;
+  }
+  return changed;
+}
+
+function finalizeRuntimeCommandOutput(command: RuntimeCommandState): boolean {
+  const trailingFragment = normalizeRuntimeCommandOutputFragment(command.outputTrailingFragment);
+  command.outputTrailingFragment = "";
+  if (trailingFragment) {
+    commitRuntimeCommandOutputLine(command, trailingFragment);
+  }
+  return updateRuntimeCommandSummary(command);
+}
+
+function summarizeRuntimeCommandOutput(
+  firstLine: string | null,
+  lastLine: string | null
+): { command: string | null; detail: string | null } {
+  const command = firstLine && /^[>$#]\s*/u.test(firstLine)
     ? normalizeCommandName(firstLine.replace(/^[>$#]\s*/u, ""))
     : null;
-  const detailCandidate = rawLines.at(-1) ?? null;
-  const detail = detailCandidate && detailCandidate !== firstLine
-    ? cleanRuntimeErrorMessage(detailCandidate)
+  const detail = lastLine && lastLine !== firstLine
+    ? cleanRuntimeErrorMessage(lastLine)
     : null;
-
-  return {
-    command,
-    detail
-  };
+  return { command, detail };
 }
 
 function getOrCreateRuntimeCommand(
@@ -370,7 +395,9 @@ function getOrCreateRuntimeCommand(
     itemId,
     commandText: normalizeCommandName(label ?? "command"),
     latestSummary: null,
-    outputBuffer: "",
+    outputFirstCompleteLine: null,
+    outputLastCompleteLine: null,
+    outputTrailingFragment: "",
     status: "running"
   };
   statusCard.commandItems.set(itemId, created);

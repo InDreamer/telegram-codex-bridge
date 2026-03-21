@@ -1677,7 +1677,7 @@ test("status card refreshes when tool progress changes without commentary", asyn
   }
 });
 
-test("status card accumulates fragmented command output before rendering command summaries", async () => {
+test("status card waits for complete streamed command lines before storing command summaries", async () => {
   const { service, store, cleanup } = await createServiceContext();
   const sent: Array<{ messageId: number; text: string }> = [];
   const edited: Array<{ messageId: number; text: string }> = [];
@@ -1713,7 +1713,7 @@ test("status card accumulates fragmented command output before rendering command
       await (service as any).handleAppServerNotification("item/started", {
         threadId: "thread-command-fragments",
         turnId: "turn-command-fragments",
-        item: { id: "cmd-1", type: "commandExecution", title: "pnpm test" }
+        item: { id: "cmd-1", type: "commandExecution", title: "command" }
       });
     });
     await withMockedNow("2026-03-10T10:00:09.000Z", async () => {
@@ -1721,22 +1721,99 @@ test("status card accumulates fragmented command output before rendering command
         threadId: "thread-command-fragments",
         turnId: "turn-command-fragments",
         itemId: "cmd-1",
-        delta: "$ pnpm test\n"
+        delta: "$ pnpm"
       });
     });
+    const activeTurn = (service as any).activeTurn;
+    assert.equal(activeTurn.statusCard.commandOrder[0]?.commandText, "command");
+    assert.equal(activeTurn.statusCard.commandOrder[0]?.latestSummary, null);
     await withMockedNow("2026-03-10T10:00:12.000Z", async () => {
       await (service as any).handleAppServerNotification("item/commandExecution/outputDelta", {
         threadId: "thread-command-fragments",
         turnId: "turn-command-fragments",
         itemId: "cmd-1",
-        delta: "26/26 tests passed"
+        delta: " test\n26/26 tests"
+      });
+    });
+    assert.equal(activeTurn.statusCard.commandOrder[0]?.commandText, "pnpm test");
+    assert.equal(activeTurn.statusCard.commandOrder[0]?.latestSummary, null);
+    await withMockedNow("2026-03-10T10:00:15.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/commandExecution/outputDelta", {
+        threadId: "thread-command-fragments",
+        turnId: "turn-command-fragments",
+        itemId: "cmd-1",
+        delta: " passed"
+      });
+    });
+    assert.equal(activeTurn.statusCard.commandOrder[0]?.latestSummary, null);
+    await withMockedNow("2026-03-10T10:00:18.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/commandExecution/outputDelta", {
+        threadId: "thread-command-fragments",
+        turnId: "turn-command-fragments",
+        itemId: "cmd-1",
+        delta: "\n"
       });
     });
 
     const statusTexts = getMessageTexts(sent, edited, 620);
-    assert.match(statusTexts.at(-1) ?? "", /pnpm test -&gt; 26\/26 tests passed/u);
+    assert.equal(activeTurn.statusCard.commandOrder[0]?.commandText, "pnpm test");
+    assert.equal(activeTurn.statusCard.commandOrder[0]?.latestSummary, "26/26 tests passed");
+    assert.match(statusTexts.at(-1) ?? "", /26\/26 tests passed/u);
     assert.doesNotMatch(statusTexts.at(-1) ?? "", /Command: \$ pnpm test/u);
     assert.doesNotMatch(statusTexts.at(-1) ?? "", /Output: 26\/26 tests passed/u);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("status card flushes the trailing command fragment when command execution completes", async () => {
+  const { service, store, cleanup } = await createServiceContext();
+
+  try {
+    const session = authorizeChatWithSession(store, "chat-1");
+
+    installRunningAppServer(service, "thread-command-complete", "turn-command-complete");
+
+    await withMockedNow("2026-03-10T10:10:00.000Z", async () => {
+      await (service as any).startRealTurn("chat-1", session, "Do the work");
+    });
+    await withMockedNow("2026-03-10T10:10:03.000Z", async () => {
+      await (service as any).handleAppServerNotification("turn/started", {
+        threadId: "thread-command-complete",
+        turnId: "turn-command-complete"
+      });
+    });
+    await withMockedNow("2026-03-10T10:10:06.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/started", {
+        threadId: "thread-command-complete",
+        turnId: "turn-command-complete",
+        item: { id: "cmd-1", type: "commandExecution", title: "command" }
+      });
+    });
+    await withMockedNow("2026-03-10T10:10:09.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/commandExecution/outputDelta", {
+        threadId: "thread-command-complete",
+        turnId: "turn-command-complete",
+        itemId: "cmd-1",
+        delta: "$ git status\n26/26"
+      });
+    });
+
+    const activeTurn = (service as any).activeTurn;
+    assert.equal(activeTurn.statusCard.commandOrder[0]?.commandText, "git status");
+    assert.equal(activeTurn.statusCard.commandOrder[0]?.latestSummary, null);
+
+    await withMockedNow("2026-03-10T10:10:12.000Z", async () => {
+      await (service as any).handleAppServerNotification("item/completed", {
+        threadId: "thread-command-complete",
+        turnId: "turn-command-complete",
+        item: { id: "cmd-1", type: "commandExecution" }
+      });
+    });
+
+    assert.equal(activeTurn.statusCard.commandOrder[0]?.commandText, "git status");
+    assert.equal(activeTurn.statusCard.commandOrder[0]?.latestSummary, "26/26");
+    assert.equal(activeTurn.statusCard.commandOrder[0]?.status, "completed");
   } finally {
     await cleanup();
   }
@@ -5168,7 +5245,7 @@ test("inspect renders structured activity details while running and after comple
     assert.match(runningInspect?.text ?? "", /<b>最近命令<\/b>/u);
     assert.match(runningInspect?.text ?? "", /1\. <b>命令：<\/b> \$ pnpm test/u);
     assert.match(runningInspect?.text ?? "", /<b>状态：<\/b> 进行中/u);
-    assert.match(runningInspect?.text ?? "", /<b>结果：<\/b> 26\/26 tests passed/u);
+    assert.doesNotMatch(runningInspect?.text ?? "", /<b>结果：<\/b>/u);
     assert.match(runningInspect?.text ?? "", /Updated src\/service\.ts to enforce Telegram cooldown/u);
     assert.match(runningInspect?.text ?? "", /<b>计划清单<\/b>/u);
     assert.match(runningInspect?.text ?? "", /Collect protocol evidence \(completed\)/u);
@@ -5192,6 +5269,7 @@ test("inspect renders structured activity details while running and after comple
     assert.match(completedInspect?.text ?? "", /<b>状态：<\/b> 已完成/u);
     assert.match(completedInspect?.text ?? "", /1\. <b>命令：<\/b> \$ pnpm test/u);
     assert.match(completedInspect?.text ?? "", /<b>状态：<\/b> 已完成/u);
+    assert.match(completedInspect?.text ?? "", /<b>结果：<\/b> 26\/26 tests passed/u);
     assert.match(completedInspect?.text ?? "", /<b>最近结论：<\/b> 最终答复已生成/u);
     assert.match(completedInspect?.text ?? "", /<b>最终答复：<\/b> 已就绪/u);
   } finally {

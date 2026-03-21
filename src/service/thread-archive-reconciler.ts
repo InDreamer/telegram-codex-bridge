@@ -1,6 +1,7 @@
 import type { Logger } from "../logger.js";
 import { classifyNotification } from "../codex/notification-classifier.js";
 import type { BridgeStateStore } from "../state/store.js";
+import { nowIso } from "../util/time.js";
 
 export type PendingThreadArchiveState = "archived" | "unarchived";
 
@@ -40,7 +41,7 @@ export class ThreadArchiveReconciler {
     expectedRemoteState: PendingThreadArchiveState,
     origin: PendingThreadArchiveOp["origin"]
   ): number {
-    const requestedAt = new Date().toISOString();
+    const requestedAt = nowIso();
     const opId = this.nextPendingThreadArchiveOpId++;
     const pending: PendingThreadArchiveOp = {
       id: opId,
