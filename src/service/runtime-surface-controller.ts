@@ -169,8 +169,11 @@ interface RuntimeHubChatState {
 
 interface TurnHubAutoRefreshState {
   timer: ReturnType<typeof setTimeout> | null;
+  pendingTrigger: "start" | "recovery" | null;
   startScheduled: boolean;
   recoveryScheduled: boolean;
+  suppressNextStart: boolean;
+  suppressNextRecovery: boolean;
   reminderShown: boolean;
 }
 
@@ -275,8 +278,11 @@ export class RuntimeSurfaceController {
     if (!state) {
       state = {
         timer: null,
+        pendingTrigger: null,
         startScheduled: false,
         recoveryScheduled: false,
+        suppressNextStart: false,
+        suppressNextRecovery: false,
         reminderShown: false
       };
       this.turnHubAutoRefreshStates.set(turnId, state);
@@ -298,17 +304,20 @@ export class RuntimeSurfaceController {
     this.turnHubAutoRefreshStates.delete(turnId);
   }
 
-  private suppressStartAutoRefresh(turnId: string): void {
-    const state = this.turnHubAutoRefreshStates.get(turnId);
-    if (!state) {
+  private suppressTurnHubAutoRefresh(turnId: string, trigger: "start" | "recovery"): void {
+    const state = this.getOrCreateTurnHubAutoRefreshState(turnId);
+    if (state.timer && state.pendingTrigger === trigger) {
+      clearTimeout(state.timer);
+      state.timer = null;
+      state.pendingTrigger = null;
+    }
+
+    if (trigger === "start") {
+      state.suppressNextStart = true;
       return;
     }
 
-    if (state.timer && state.startScheduled && !state.recoveryScheduled) {
-      clearTimeout(state.timer);
-      state.timer = null;
-    }
-    state.startScheduled = false;
+    state.suppressNextRecovery = true;
   }
 
   private consumeHubCommandReminder(chatId: string, turnId: string): string | null {
@@ -932,8 +941,23 @@ export class RuntimeSurfaceController {
     chatId: string,
     runningSessionIds: ReadonlySet<string>
   ): Promise<void> {
+    await this.pruneOldestNonRunningHubs(chatId, runningSessionIds, MAX_LIVE_RUNTIME_HUBS - 1);
+  }
+
+  private async pruneOverflowNonRunningHubs(
+    chatId: string,
+    runningSessionIds: ReadonlySet<string>
+  ): Promise<void> {
+    await this.pruneOldestNonRunningHubs(chatId, runningSessionIds, MAX_LIVE_RUNTIME_HUBS);
+  }
+
+  private async pruneOldestNonRunningHubs(
+    chatId: string,
+    runningSessionIds: ReadonlySet<string>,
+    maxLiveHubs: number
+  ): Promise<void> {
     const chatState = this.getOrCreateHubChatState(chatId);
-    while (chatState.liveHubs.size >= MAX_LIVE_RUNTIME_HUBS) {
+    while (chatState.liveHubs.size > maxLiveHubs) {
       const candidate = this.getOrderedLiveHubs(chatState).find((hubState) =>
         !hubState.slots.some((slot) => slot.sessionId && runningSessionIds.has(slot.sessionId))
       );
@@ -1472,7 +1496,9 @@ export class RuntimeSurfaceController {
     const chatState = this.getOrCreateHubChatState(chatId);
     const turns = this.getActiveTurnsForChat(chatId, excludedSessionId);
     const runningTurns = turns.filter((activeTurn) => !this.isTerminalTurnStatus(activeTurn.tracker.getStatus().turnStatus));
+    const runningSessionIds = new Set(runningTurns.map((activeTurn) => activeTurn.sessionId));
     await this.ensureLiveHubSlotAssignments(chatId, runningTurns);
+    await this.pruneOverflowNonRunningHubs(chatId, runningSessionIds);
 
     for (const [windowIndex, hubState] of [...chatState.liveHubs.entries()]) {
       if (this.getHubOccupiedSlotCount(hubState) > 0) {
@@ -1856,6 +1882,17 @@ export class RuntimeSurfaceController {
     trigger: "start" | "recovery"
   ): void {
     const state = this.getOrCreateTurnHubAutoRefreshState(activeTurn.turnId);
+    if (trigger === "start" ? state.suppressNextStart : state.suppressNextRecovery) {
+      if (trigger === "start") {
+        state.suppressNextStart = false;
+        state.startScheduled = true;
+      } else {
+        state.suppressNextRecovery = false;
+        state.recoveryScheduled = true;
+      }
+      return;
+    }
+
     if ((trigger === "start" && state.startScheduled) || (trigger === "recovery" && state.recoveryScheduled)) {
       return;
     }
@@ -1870,10 +1907,12 @@ export class RuntimeSurfaceController {
       clearTimeout(state.timer);
       state.timer = null;
     }
+    state.pendingTrigger = trigger;
 
     const delayMs = trigger === "start" ? HUB_AUTO_REFRESH_START_DELAY_MS : HUB_AUTO_REFRESH_RECOVERY_DELAY_MS;
     state.timer = setTimeout(() => {
       state.timer = null;
+      state.pendingTrigger = null;
       void this.runHubChatOperation(activeTurn.chatId, async () => {
         const currentTurn = this.deps.listActiveTurns().find((candidate) =>
           candidate.chatId === activeTurn.chatId
@@ -2154,6 +2193,7 @@ export class RuntimeSurfaceController {
       if (autoRefreshState?.timer) {
         clearTimeout(autoRefreshState.timer);
         autoRefreshState.timer = null;
+        autoRefreshState.pendingTrigger = null;
       }
     }
 
@@ -2604,9 +2644,11 @@ export class RuntimeSurfaceController {
       : resolvedPreferredSessionId ?? (store?.getActiveSession(chatId)?.sessionId ?? null);
 
     const targetSession = targetSessionId ? store?.getSessionById(targetSessionId) ?? null : null;
-    if (activeTurn && (reason === "accepted_user_work" || reason === "accepted_structured_work")) {
-      this.suppressStartAutoRefresh(activeTurn.turnId);
-    }
+    const autoRefreshTrigger = reason === "accepted_user_work" || reason === "accepted_structured_work"
+      ? "start"
+      : reason === "accepted_turn_continue"
+        ? "recovery"
+        : null;
 
     // Keep actionable interaction cards at the bottom of the chat; reanchoring the
     // hub ahead of them would push the pending reply controls away from the operator.
@@ -2634,7 +2676,10 @@ export class RuntimeSurfaceController {
         return;
       }
 
-      await this.reanchorRuntimeHubToLatestMessage(targetHub, reason);
+      const reanchored = await this.reanchorRuntimeHubToLatestMessage(targetHub, reason);
+      if (reanchored && activeTurn && autoRefreshTrigger) {
+        this.suppressTurnHubAutoRefresh(activeTurn.turnId, autoRefreshTrigger);
+      }
       return;
     }
 
@@ -2650,7 +2695,10 @@ export class RuntimeSurfaceController {
       store?.getActiveSession(chatId)?.sessionId ?? null,
       { forcePreferred: true }
     );
-    await this.reanchorRuntimeHubToLatestMessage(recoveryHub, reason);
+    const reanchored = await this.reanchorRuntimeHubToLatestMessage(recoveryHub, reason);
+    if (reanchored && activeTurn && autoRefreshTrigger) {
+      this.suppressTurnHubAutoRefresh(activeTurn.turnId, autoRefreshTrigger);
+    }
   }
 
   private async reanchorRuntimeHubToLatestMessage(

@@ -1666,6 +1666,64 @@ test("RuntimeSurfaceController allows a temporary fourth live hub when the first
   }
 });
 
+test("RuntimeSurfaceController prunes temporary overflow hubs after older hubs stop running", async () => {
+  const activeTurns: unknown[] = [];
+  const { controller, store, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns
+  });
+
+  try {
+    const sessions = await Promise.all(
+      Array.from({ length: 16 }, (_, index) => store.createSession({
+        telegramChatId: "chat-1",
+        projectName: `Project ${index + 1}`,
+        projectPath: `/tmp/project-${index + 1}`
+      }))
+    );
+    for (const [index, session] of sessions.entries()) {
+      activeTurns.push({
+        sessionId: session.sessionId,
+        chatId: "chat-1",
+        threadId: `thread-${index + 1}`,
+        turnId: `turn-${index + 1}`,
+        tracker: {
+          getInspectSnapshot: () => createInspectSnapshot(),
+          getStatus: () => createActivityStatus()
+        },
+        statusCard: createStatusCard(),
+        latestStatusProgressText: null,
+        latestPlanFingerprint: "",
+        latestAgentFingerprint: "",
+        subagentIdentityBackfillStates: new Map(),
+        errorCards: [],
+        nextErrorCardId: 1,
+        surfaceQueue: Promise.resolve()
+      });
+    }
+    store.setActiveSession("chat-1", sessions[15]!.sessionId);
+
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_initialized", sessions[15]!.sessionId, undefined, {
+      forcePreferredFocus: true
+    });
+
+    activeTurns.splice(0, 5);
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_terminal", null, sessions[0]!.sessionId);
+
+    const runtimeHubStates = (controller as unknown as {
+      runtimeHubStates: Map<string, { liveHubs: Map<number, unknown> }>;
+    }).runtimeHubStates;
+    assert.equal(runtimeHubStates.get("chat-1")?.liveHubs.size ?? 0, 3);
+    const orderedHubs = [...(runtimeHubStates.get("chat-1")?.liveHubs.values() ?? [])].sort((left, right) => (left as any).windowIndex - (right as any).windowIndex);
+    const renderedHeaders = orderedHubs.map((hubState) => {
+      const text = (controller as any).buildLiveHubRenderPayload("chat-1", hubState, orderedHubs.length, activeTurns).text as string;
+      return text.match(/<b>Hub：<\/b> (\d+\/\d+)/u)?.[1] ?? null;
+    });
+    assert.deepEqual(renderedHeaders, ["1/3", "2/3", "3/3"]);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("RuntimeSurfaceController does not double-send delayed start auto-refresh after immediate accepted-work reanchor", async () => {
   const activeTurns: Array<{
     sessionId: string;
@@ -1723,6 +1781,294 @@ test("RuntimeSurfaceController does not double-send delayed start auto-refresh a
     });
     await controller.reanchorRuntimeAfterBridgeReply(activeTurn as never, "chat-1", "accepted_user_work", session.sessionId);
     await sleep(1700);
+
+    assert.equal(sentHtml.length, 2);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController keeps the delayed start auto-refresh when another session's pending interaction blocks immediate reanchor", async () => {
+  const activeTurns: Array<{
+    sessionId: string;
+    chatId: string;
+    threadId: string;
+    turnId: string;
+    tracker: {
+      getInspectSnapshot: () => InspectSnapshot;
+      getStatus: () => ActivityStatus;
+    };
+    statusCard: ReturnType<typeof createStatusCard>;
+    latestStatusProgressText: null;
+    latestPlanFingerprint: string;
+    latestAgentFingerprint: string;
+    subagentIdentityBackfillStates: Map<string, "pending" | "resolved" | "exhausted">;
+    errorCards: never[];
+    nextErrorCardId: number;
+    surfaceQueue: Promise<void>;
+  }> = [];
+  let blockedSessionId = "";
+  let otherInteractionPending = true;
+  const { controller, store, sentHtml, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns,
+    buildPendingInteractionSummaries: (session) =>
+      otherInteractionPending && session.sessionId === blockedSessionId
+        ? [{ id: "pending-1" }]
+        : []
+  });
+
+  try {
+    const blockedSession = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Blocked Project",
+      projectPath: "/tmp/project-blocked"
+    });
+    const runningSession = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Running Project",
+      projectPath: "/tmp/project-running"
+    });
+    blockedSessionId = blockedSession.sessionId;
+    store.setActiveSession("chat-1", runningSession.sessionId);
+
+    activeTurns.push({
+      sessionId: blockedSession.sessionId,
+      chatId: "chat-1",
+      threadId: "thread-blocked",
+      turnId: "turn-blocked",
+      tracker: {
+        getInspectSnapshot: () => createInspectSnapshot(),
+        getStatus: () => createActivityStatus({
+          turnStatus: "blocked",
+          threadBlockedReason: "waitingOnApproval"
+        })
+      },
+      statusCard: createStatusCard(),
+      latestStatusProgressText: null,
+      latestPlanFingerprint: "",
+      latestAgentFingerprint: "",
+      subagentIdentityBackfillStates: new Map(),
+      errorCards: [],
+      nextErrorCardId: 1,
+      surfaceQueue: Promise.resolve()
+    });
+
+    const activeTurn = {
+      sessionId: runningSession.sessionId,
+      chatId: "chat-1",
+      threadId: "thread-running",
+      turnId: "turn-running",
+      tracker: {
+        getInspectSnapshot: () => createInspectSnapshot(),
+        getStatus: () => createActivityStatus()
+      },
+      statusCard: createStatusCard(),
+      latestStatusProgressText: null,
+      latestPlanFingerprint: "",
+      latestAgentFingerprint: "",
+      subagentIdentityBackfillStates: new Map(),
+      errorCards: [],
+      nextErrorCardId: 1,
+      surfaceQueue: Promise.resolve()
+    };
+    activeTurns.push(activeTurn);
+
+    await controller.syncRuntimeCards(activeTurn as never, null, null, createActivityStatus(), {
+      force: true,
+      reason: "turn_initialized"
+    });
+    await controller.reanchorRuntimeAfterBridgeReply(activeTurn as never, "chat-1", "accepted_user_work", runningSession.sessionId);
+    otherInteractionPending = false;
+    await sleep(1700);
+
+    assert.equal(sentHtml.length, 2);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController does not double-send delayed recovery auto-refresh after immediate continuation reanchor", async () => {
+  const activeTurns: Array<{
+    sessionId: string;
+    chatId: string;
+    threadId: string;
+    turnId: string;
+    tracker: {
+      getInspectSnapshot: () => InspectSnapshot;
+      getStatus: () => ActivityStatus;
+    };
+    statusCard: ReturnType<typeof createStatusCard>;
+    latestStatusProgressText: null;
+    latestPlanFingerprint: string;
+    latestAgentFingerprint: string;
+    subagentIdentityBackfillStates: Map<string, "pending" | "resolved" | "exhausted">;
+    errorCards: never[];
+    nextErrorCardId: number;
+    surfaceQueue: Promise<void>;
+  }> = [];
+  let currentStatus = createActivityStatus({
+    turnStatus: "blocked",
+    threadBlockedReason: "waitingOnUserInput"
+  });
+  const { controller, store, sentHtml, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns
+  });
+
+  try {
+    const session = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+    store.setActiveSession("chat-1", session.sessionId);
+
+    const activeTurn = {
+      sessionId: session.sessionId,
+      chatId: "chat-1",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      tracker: {
+        getInspectSnapshot: () => createInspectSnapshot({
+          turnStatus: currentStatus.turnStatus,
+          threadBlockedReason: currentStatus.threadBlockedReason
+        }),
+        getStatus: () => currentStatus
+      },
+      statusCard: createStatusCard(),
+      latestStatusProgressText: null,
+      latestPlanFingerprint: "",
+      latestAgentFingerprint: "",
+      subagentIdentityBackfillStates: new Map(),
+      errorCards: [],
+      nextErrorCardId: 1,
+      surfaceQueue: Promise.resolve()
+    };
+    activeTurns.push(activeTurn);
+
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_blocked", session.sessionId, undefined, {
+      forcePreferredFocus: true
+    });
+    await controller.reanchorRuntimeAfterBridgeReply(activeTurn as never, "chat-1", "accepted_turn_continue", session.sessionId);
+
+    const previousStatus = currentStatus;
+    currentStatus = createActivityStatus();
+    await controller.syncRuntimeCards(activeTurn as never, null, previousStatus, currentStatus, {
+      force: true,
+      reason: "turn_resumed"
+    });
+    await sleep(1200);
+
+    assert.equal(sentHtml.length, 2);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("RuntimeSurfaceController keeps the delayed recovery auto-refresh when another session's pending interaction blocks immediate continuation reanchor", async () => {
+  const activeTurns: Array<{
+    sessionId: string;
+    chatId: string;
+    threadId: string;
+    turnId: string;
+    tracker: {
+      getInspectSnapshot: () => InspectSnapshot;
+      getStatus: () => ActivityStatus;
+    };
+    statusCard: ReturnType<typeof createStatusCard>;
+    latestStatusProgressText: null;
+    latestPlanFingerprint: string;
+    latestAgentFingerprint: string;
+    subagentIdentityBackfillStates: Map<string, "pending" | "resolved" | "exhausted">;
+    errorCards: never[];
+    nextErrorCardId: number;
+    surfaceQueue: Promise<void>;
+  }> = [];
+  let blockedSessionId = "";
+  let otherInteractionPending = true;
+  let currentStatus = createActivityStatus({
+    turnStatus: "blocked",
+    threadBlockedReason: "waitingOnUserInput"
+  });
+  const { controller, store, sentHtml, cleanup } = await createControllerContext({
+    listActiveTurns: () => activeTurns,
+    buildPendingInteractionSummaries: (session) =>
+      otherInteractionPending && session.sessionId === blockedSessionId
+        ? [{ id: "pending-1" }]
+        : []
+  });
+
+  try {
+    const blockedSession = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Blocked Project",
+      projectPath: "/tmp/project-blocked"
+    });
+    const continuedSession = await store.createSession({
+      telegramChatId: "chat-1",
+      projectName: "Continued Project",
+      projectPath: "/tmp/project-continued"
+    });
+    blockedSessionId = blockedSession.sessionId;
+    store.setActiveSession("chat-1", continuedSession.sessionId);
+
+    activeTurns.push({
+      sessionId: blockedSession.sessionId,
+      chatId: "chat-1",
+      threadId: "thread-blocked",
+      turnId: "turn-blocked",
+      tracker: {
+        getInspectSnapshot: () => createInspectSnapshot(),
+        getStatus: () => createActivityStatus({
+          turnStatus: "blocked",
+          threadBlockedReason: "waitingOnApproval"
+        })
+      },
+      statusCard: createStatusCard(),
+      latestStatusProgressText: null,
+      latestPlanFingerprint: "",
+      latestAgentFingerprint: "",
+      subagentIdentityBackfillStates: new Map(),
+      errorCards: [],
+      nextErrorCardId: 1,
+      surfaceQueue: Promise.resolve()
+    });
+
+    const activeTurn = {
+      sessionId: continuedSession.sessionId,
+      chatId: "chat-1",
+      threadId: "thread-continued",
+      turnId: "turn-continued",
+      tracker: {
+        getInspectSnapshot: () => createInspectSnapshot({
+          turnStatus: currentStatus.turnStatus,
+          threadBlockedReason: currentStatus.threadBlockedReason
+        }),
+        getStatus: () => currentStatus
+      },
+      statusCard: createStatusCard(),
+      latestStatusProgressText: null,
+      latestPlanFingerprint: "",
+      latestAgentFingerprint: "",
+      subagentIdentityBackfillStates: new Map(),
+      errorCards: [],
+      nextErrorCardId: 1,
+      surfaceQueue: Promise.resolve()
+    };
+    activeTurns.push(activeTurn);
+
+    await controller.refreshLiveRuntimeHubs("chat-1", "turn_blocked", continuedSession.sessionId, undefined, {
+      forcePreferredFocus: true
+    });
+    await controller.reanchorRuntimeAfterBridgeReply(activeTurn as never, "chat-1", "accepted_turn_continue", continuedSession.sessionId);
+
+    otherInteractionPending = false;
+    const previousStatus = currentStatus;
+    currentStatus = createActivityStatus();
+    await controller.syncRuntimeCards(activeTurn as never, null, previousStatus, currentStatus, {
+      force: true,
+      reason: "turn_resumed"
+    });
+    await sleep(1200);
 
     assert.equal(sentHtml.length, 2);
   } finally {
