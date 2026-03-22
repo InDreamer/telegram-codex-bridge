@@ -458,7 +458,7 @@ test("RuntimeSurfaceController manual hub refresh resurfaces the live hub to the
     await (controller as any).handleHub("chat-1");
 
     assert.equal(sentHtml.length, 2);
-    assert.match(sentHtml[1]?.html ?? "", /^<b>Runtime Status<\/b>|^<b>运行状态<\/b>/u);
+    assert.match(sentHtml[1]?.html ?? "", /^<b>✨ Runtime Hub<\/b>|^<b>🎯 运行概览 \(Hub\)<\/b>|^<b>Runtime Status<\/b>|^<b>运行状态<\/b>/u);
     assert.deepEqual(deletedMessages, [sentHtml[0]!.messageId]);
   } finally {
     await cleanup();
@@ -792,8 +792,8 @@ test("RuntimeSurfaceController keeps a newly created idle session out of the liv
     const replyMarkup = sentHtml[0]?.replyMarkup as TelegramInlineKeyboardMarkup | undefined;
     assert.doesNotMatch(html, /<b>当前输入会话<\/b>/u);
     assert.doesNotMatch(html, /<b>当前查看中的会话<\/b>/u);
-    assert.match(html, /<b>其他运行中的会话<\/b>/u);
-    assert.match(html, /1\. <b>Session Alpha<\/b> \/ Project One · Running/u);
+    assert.match(html, /<b>🏃 其他运行中的会话<\/b>/u);
+    assert.match(html, /1\. <b>Session Alpha<\/b> 📂 Project One[\s\S]*?状态: Running/u);
     assert.deepEqual(replyMarkup?.inline_keyboard[0]?.map((button) => button.text), ["1", "·", "·", "·", "·"]);
   } finally {
     await cleanup();
@@ -1110,7 +1110,7 @@ test("RuntimeSurfaceController retains a completed hub instead of deleting its m
     assert.deepEqual(deleteAttempts, []);
     assert.equal(chatState?.liveHubs.size, 1);
     assert.deepEqual(chatState?.retainedMessages ?? [], []);
-    assert.match(editedHtml.at(-1)?.html ?? sentHtml[0]?.html ?? "", /<b>Hub：<\/b> 1\/1 · 已完成/u);
+    assert.match(editedHtml.at(-1)?.html ?? sentHtml[0]?.html ?? "", /<b>📑 目录：<\/b> 1\/1 · 已完成/u);
   } finally {
     await cleanup();
   }
@@ -1195,7 +1195,7 @@ test("RuntimeSurfaceController keeps the completed hub visible after terminal ha
     await controller.completeTerminalRuntimeHandoff("chat-1", session.sessionId);
     assert.equal(runtimeHubStates.get("chat-1")?.liveHubs.size ?? 0, 1);
     assert.equal(runtimeHubStates.get("chat-1")?.liveHubs.get(0)?.messageId, initialMessageId);
-    assert.match(editedHtml.at(-1)?.html ?? sentHtml.at(-1)?.html ?? "", /<b>Hub：<\/b> 1\/1 · 已完成/u);
+    assert.match(editedHtml.at(-1)?.html ?? sentHtml.at(-1)?.html ?? "", /<b>📑 目录：<\/b> 1\/1 · 已完成/u);
   } finally {
     await cleanup();
   }
@@ -1273,9 +1273,9 @@ test("RuntimeSurfaceController renders slot-based hub headers and selector butto
       forcePreferredFocus: true
     });
 
-    assert.match(sentHtml[0]?.html ?? "", /<b>Hub：<\/b> 1\/1/u);
-    assert.match(sentHtml[0]?.html ?? "", /<b>当前查看中的会话<\/b>/u);
-    assert.match(sentHtml[0]?.html ?? "", /<b>其他运行中的会话<\/b>/u);
+    assert.match(sentHtml[0]?.html ?? "", /<b>📑 目录：<\/b> 1\/1/u);
+    assert.match(sentHtml[0]?.html ?? "", /<b>🎯 当前查看中的会话<\/b>/u);
+    assert.match(sentHtml[0]?.html ?? "", /<b>🏃 其他运行中的会话<\/b>/u);
     assert.deepEqual((sentHtml[0]?.replyMarkup as TelegramInlineKeyboardMarkup | undefined)?.inline_keyboard[0]?.map((button) => button.text), ["1", "2", "·", "·", "·"]);
   } finally {
     await cleanup();
@@ -1321,7 +1321,7 @@ test("RuntimeSurfaceController reuses a completed latest hub when it still has a
 
     activeTurns.length = 0;
     await controller.refreshLiveRuntimeHubs("chat-1", "turn_terminal", null, session.sessionId);
-    assert.match(editedHtml.at(-1)?.html ?? sentHtml[0]?.html ?? "", /<b>Hub：<\/b> 1\/1 · 已完成/u);
+    assert.match(editedHtml.at(-1)?.html ?? sentHtml[0]?.html ?? "", /<b>📑 目录：<\/b> 1\/1 · 已完成/u);
 
     const nextSession = await store.createSession({
       telegramChatId: "chat-1",
@@ -1354,7 +1354,7 @@ test("RuntimeSurfaceController reuses a completed latest hub when it still has a
     });
 
     assert.equal(sentHtml.length, 1);
-    assert.match(editedHtml.at(-1)?.html ?? "", /<b>Hub：<\/b> 1\/1/u);
+    assert.match(editedHtml.at(-1)?.html ?? "", /<b>📑 目录：<\/b> 1\/1/u);
     assert.deepEqual((editedHtml.at(-1)?.replyMarkup as TelegramInlineKeyboardMarkup | undefined)?.inline_keyboard[0]?.map((button) => button.text), ["1", "2", "·", "·", "·"]);
   } finally {
     await cleanup();
@@ -1442,7 +1442,7 @@ test("RuntimeSurfaceController admits new work only into the latest hub, not old
     assert.equal(orderedHubs.length, 3);
     assert.equal(orderedHubs[0]?.slots[0]?.sessionId, null);
     assert.equal(orderedHubs[2]?.slots[0]?.sessionId, nextSession.sessionId);
-    assert.match(sentHtml.at(-1)?.html ?? "", /<b>Hub：<\/b> 3\/3/u);
+    assert.match(sentHtml.at(-1)?.html ?? "", /<b>📑 目录：<\/b> 3\/3/u);
   } finally {
     await cleanup();
   }
@@ -1610,7 +1610,7 @@ test("RuntimeSurfaceController evicts the oldest non-running hub before creating
     const orderedHubs = [...(runtimeHubStates.get("chat-1")?.liveHubs.values() ?? [])].sort((left, right) => (left as any).windowIndex - (right as any).windowIndex);
     const renderedHeaders = orderedHubs.map((hubState) => {
       const text = (controller as any).buildLiveHubRenderPayload("chat-1", hubState, orderedHubs.length, activeTurns).text as string;
-      return text.match(/<b>Hub：<\/b> (\d+\/\d+)/u)?.[1] ?? null;
+      return text.match(/<b>📑 目录：<\/b> (\d+\/\d+)/u)?.[1] ?? null;
     });
     assert.deepEqual(renderedHeaders, ["1/3", "2/3", "3/3"]);
   } finally {
@@ -1717,7 +1717,7 @@ test("RuntimeSurfaceController prunes temporary overflow hubs after older hubs s
     const orderedHubs = [...(runtimeHubStates.get("chat-1")?.liveHubs.values() ?? [])].sort((left, right) => (left as any).windowIndex - (right as any).windowIndex);
     const renderedHeaders = orderedHubs.map((hubState) => {
       const text = (controller as any).buildLiveHubRenderPayload("chat-1", hubState, orderedHubs.length, activeTurns).text as string;
-      return text.match(/<b>Hub：<\/b> (\d+\/\d+)/u)?.[1] ?? null;
+      return text.match(/<b>📑 目录：<\/b> (\d+\/\d+)/u)?.[1] ?? null;
     });
     assert.deepEqual(renderedHeaders, ["1/3", "2/3", "3/3"]);
   } finally {
@@ -2234,10 +2234,10 @@ test("RuntimeSurfaceController keeps terminal slots in recent ended sessions on 
     await controller.refreshLiveRuntimeHubs("chat-1", "turn_terminal", null, sessionOne.sessionId);
 
     const latestHtml = editedHtml.at(-1)?.html ?? sentHtml[0]?.html ?? "";
-    assert.match(latestHtml, /<b>当前查看中的会话<\/b>/u);
-    assert.match(latestHtml, /<b>最近结束的会话<\/b>/u);
-    assert.match(latestHtml, /1\. <b>Session Alpha<\/b> \/ Project One · 已完成/u);
-    assert.match(latestHtml, /2\. <b>Session Alpha<\/b> \/ Project One · Running/u);
+    assert.match(latestHtml, /<b>🎯 当前查看中的会话<\/b>/u);
+    assert.match(latestHtml, /<b>🕒 最近结束的会话<\/b>/u);
+    assert.match(latestHtml, /1\. <b>Session Alpha<\/b> 📂 Project One[\s\S]*?状态: 已完成/u);
+    assert.match(latestHtml, /2\. <b>Session Alpha<\/b> 📂 Project One[\s\S]*?状态: Running/u);
   } finally {
     await cleanup();
   }
@@ -2345,11 +2345,11 @@ test("RuntimeSurfaceController shows app-server-exit failures in recent ended se
     await controller.refreshLiveRuntimeHubs("chat-1", "turn_terminal", null, sessionThree.sessionId);
 
     const latestHtml = editedHtml.at(-1)?.html ?? sentHtml[0]?.html ?? "";
-    assert.match(latestHtml, /<b>当前查看中的会话<\/b>/u);
-    assert.match(latestHtml, /3\. <b>Session Alpha<\/b> \/ Project One · failed/u);
-    assert.match(latestHtml, /<b>最近结束的会话<\/b>/u);
-    assert.match(latestHtml, /1\. <b>Session Alpha<\/b> \/ Project One · failed/u);
-    assert.match(latestHtml, /2\. <b>Session Alpha<\/b> \/ Project One · failed/u);
+    assert.match(latestHtml, /<b>🎯 当前查看中的会话<\/b>/u);
+    assert.match(latestHtml, /3\. <b>Session Alpha<\/b> 📂 Project One[\s\S]*?状态: failed/u);
+    assert.match(latestHtml, /<b>🕒 最近结束的会话<\/b>/u);
+    assert.match(latestHtml, /1\. <b>Session Alpha<\/b> 📂 Project One[\s\S]*?状态: failed/u);
+    assert.match(latestHtml, /2\. <b>Session Alpha<\/b> 📂 Project One[\s\S]*?状态: failed/u);
   } finally {
     await cleanup();
   }
@@ -2390,7 +2390,7 @@ test("RuntimeSurfaceController reanchors and localizes the recovery hub after br
 
     const delivered = await controller.sendRecoveryHub("chat-1", [sessionOne.sessionId, sessionTwo.sessionId]);
     assert.equal(delivered, true);
-    assert.match(sentHtml[0]?.html ?? "", /当前查看中的会话/u);
+    assert.match(sentHtml[0]?.html ?? "", /🎯 当前查看中的会话/u);
     assert.match(sentHtml[0]?.html ?? "", /Recovered/u);
 
     language = "en";
@@ -2398,8 +2398,8 @@ test("RuntimeSurfaceController reanchors and localizes the recovery hub after br
     await controller.reanchorRuntimeAfterBridgeReply(null, "chat-1", "language_changed");
 
     assert.equal(sentHtml.length, 2);
-    assert.match(sentHtml[1]?.html ?? "", /Focused session/u);
-    assert.match(sentHtml[1]?.html ?? "", /\[viewing \/ current input\]/u);
+    assert.match(sentHtml[1]?.html ?? "", /🎯 Focused session/u);
+    assert.match(sentHtml[1]?.html ?? "", /👁️ viewing \/ ⌨️ current input/u);
     assert.doesNotMatch(sentHtml[1]?.html ?? "", /Input target:/u);
     assert.deepEqual(deletedMessages, [sentHtml[0]?.messageId ?? 0]);
   } finally {
@@ -2441,10 +2441,10 @@ test("RuntimeSurfaceController recovery hub shows a separate current input sessi
     assert.equal(delivered, true);
 
     const html = sentHtml[0]?.html ?? "";
-    assert.match(html, /<b>当前输入会话<\/b>/u);
-    assert.match(html, /\[当前输入\]\n<b>Session Alpha<\/b> \/ Project One · 空闲/u);
-    assert.match(html, /<b>当前查看中的会话<\/b>/u);
-    assert.match(html, /\[查看中\]\n1\. <b>Recovered Project<\/b> \/ Recovered Project · Recovered/u);
+    assert.match(html, /<b>👉 当前输入会话<\/b>/u);
+    assert.match(html, /<b>Session Alpha<\/b> 📂 Project One[\s\S]*?状态: 空闲[\s\S]*?⌨️ 当前输入/u);
+    assert.match(html, /<b>🎯 当前查看中的会话<\/b>/u);
+    assert.match(html, /1\. <b>Recovered Project<\/b> 📂 Recovered Project[\s\S]*?状态: Recovered[\s\S]*?👁️ 查看中/u);
     assert.doesNotMatch(html, /当前查看中的运行会话/u);
   } finally {
     await cleanup();
@@ -2941,7 +2941,7 @@ test("RuntimeSurfaceController keeps expanded hub plan sections when the slimmer
 
     const compactEdit = editCalls[editCountBeforeRefresh];
     assert.ok(compactEdit);
-    assert.match(compactEdit?.html ?? "", /<b>运行状态<\/b>/u);
+    assert.match(compactEdit?.html ?? "", /<b>🎯 运行概览 \(Hub\)<\/b>/u);
     assert.deepEqual(compactEdit?.replyMarkup?.inline_keyboard?.[0]?.map((button) => button.text), ["1", "·", "·", "·", "·"]);
     assert.equal(compactEdit?.replyMarkup?.inline_keyboard?.[1]?.[0]?.text, "收起计划清单");
     assert.match(compactEdit?.replyMarkup?.inline_keyboard?.[1]?.[0]?.callback_data ?? "", /plan:collapse/u);

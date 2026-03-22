@@ -92,6 +92,7 @@ export interface RuntimeHubTerminalSummaryView {
 
 const RUNTIME_FIELD_PAGE_SIZE = 4;
 const ROLLBACK_TARGET_PAGE_SIZE = 6;
+const HUB_COMMAND_REMINDER_TEXT = "💡 提示：需要查看运行卡片时，可发送 /hub。";
 const INSPECT_PAGE_CHAR_LIMIT = 3200;
 
 export function buildRuntimeStatusCard(
@@ -237,18 +238,18 @@ export function buildRuntimeHubMessage(options: {
     || options.currentViewedSession !== undefined
     || options.otherSessions !== undefined
     || options.recentEndedSessions !== undefined;
-  const lines: string[] = [formatHtmlHeading(language === "en" ? "Runtime Status" : "运行状态")];
+  const lines: string[] = [formatHtmlHeading(language === "en" ? "✨ Runtime Hub" : "🎯 运行概览 (Hub)")];
 
   if (usesSlotSections) {
     lines.push(formatHtmlField(
-      language === "en" ? "Hub:" : "Hub：",
+      language === "en" ? "📑 Hub:" : "📑 目录：",
       language === "en"
         ? `${options.windowIndex + 1}/${Math.max(1, options.totalWindows)}${options.completed ? " · Completed" : ""}`
         : `${options.windowIndex + 1}/${Math.max(1, options.totalWindows)}${options.completed ? " · 已完成" : ""}`
     ));
 
     if (options.currentViewedSession) {
-      lines.push("", `<b>${language === "en" ? "Current viewed session" : "当前查看中的会话"}</b>`);
+      lines.push("", `<b>${language === "en" ? "🎯 Current viewed session" : "🎯 当前查看中的会话"}</b>`);
       pushRuntimeHubSession(lines, options.currentViewedSession, null, {
         language,
         progressTextLimit: sessionProgressTextLimit,
@@ -274,7 +275,7 @@ export function buildRuntimeHubMessage(options: {
     }
 
     if ((options.otherSessions?.length ?? 0) > 0) {
-      lines.push("", `<b>${language === "en" ? "Other running sessions" : "其他运行中的会话"}</b>`);
+      lines.push("", `<b>${language === "en" ? "🏃 Other running sessions" : "🏃 其他运行中的会话"}</b>`);
       for (const session of options.otherSessions ?? []) {
         pushRuntimeHubSession(lines, session, null, {
           language,
@@ -286,7 +287,7 @@ export function buildRuntimeHubMessage(options: {
     }
 
     if ((options.recentEndedSessions?.length ?? 0) > 0) {
-      lines.push("", `<b>${language === "en" ? "Recent ended sessions" : "最近结束的会话"}</b>`);
+      lines.push("", `<b>${language === "en" ? "🕒 Recent ended sessions" : "🕒 最近结束的会话"}</b>`);
       for (const session of options.recentEndedSessions ?? []) {
         pushRuntimeHubSession(lines, session, null, {
           language,
@@ -314,14 +315,14 @@ export function buildRuntimeHubMessage(options: {
     : null;
 
   lines.push(formatHtmlField(
-    language === "en" ? "Hub:" : "Hub：",
+    language === "en" ? "📑 Hub:" : "📑 目录：",
     language === "en"
       ? `${options.windowIndex + 1}/${Math.max(1, options.totalWindows)} · ${(options.totalSessions ?? sessions.length)} session${(options.totalSessions ?? sessions.length) === 1 ? "" : "s"}`
       : `${options.windowIndex + 1}/${Math.max(1, options.totalWindows)} · ${options.totalSessions ?? sessions.length} 个会话`
   ));
 
   if (activeInputSession) {
-    lines.push("", `<b>${language === "en" ? "Current input session" : "当前输入会话"}</b>`);
+    lines.push("", `<b>${language === "en" ? "👉 Current input session" : "👉 当前输入会话"}</b>`);
     pushRuntimeHubSession(lines, activeInputSession, null, {
       language,
       progressTextLimit: sessionProgressTextLimit,
@@ -333,8 +334,8 @@ export function buildRuntimeHubMessage(options: {
   if (focusedSession) {
     lines.push("", `<b>${
       sessionCollectionKind === "running"
-        ? (language === "en" ? "Focused running session" : "当前查看中的运行会话")
-        : (language === "en" ? "Focused session" : "当前查看中的会话")
+        ? (language === "en" ? "🎯 Focused running session" : "🎯 当前查看中的运行会话")
+        : (language === "en" ? "🎯 Focused session" : "🎯 当前查看中的会话")
     }</b>`);
     pushRuntimeHubSession(lines, focusedSession, 1, {
       language,
@@ -363,8 +364,8 @@ export function buildRuntimeHubMessage(options: {
   if (otherSessions.length > 0) {
     lines.push("", `<b>${
       sessionCollectionKind === "running"
-        ? (language === "en" ? "Other running sessions" : "其他运行中的会话")
-        : (language === "en" ? "Other sessions" : "其他会话")
+        ? (language === "en" ? "🏃 Other running sessions" : "🏃 其他运行中的会话")
+        : (language === "en" ? "📋 Other sessions" : "📋 其他会话")
     }</b>`);
     for (const [index, session] of otherSessions.entries()) {
       pushRuntimeHubSession(lines, session, index + 2, {
@@ -377,11 +378,12 @@ export function buildRuntimeHubMessage(options: {
   }
 
   if (options.isMainHub && (options.terminalSummaries?.length ?? 0) > 0) {
-    lines.push("", `<b>${language === "en" ? "Recent terminal sessions" : "最近结束的会话"}</b>`);
+    lines.push("", `<b>${language === "en" ? "🕒 Recent terminal sessions" : "🕒 最近结束的会话"}</b>`);
 
     for (const [index, summary] of (options.terminalSummaries ?? []).entries()) {
-      const projectName = summary.projectName?.trim() ? ` / ${escapeHtml(summary.projectName.trim())}` : "";
-      lines.push(`${index + 1}. <b>${escapeHtml(summary.sessionName)}</b>${projectName} · ${escapeHtml(summary.state)}`);
+      const projectName = summary.projectName?.trim() ? ` 📂 ${escapeHtml(summary.projectName.trim())}` : "";
+      lines.push(`${index + 1}. <b>${escapeHtml(summary.sessionName)}</b>${projectName}`);
+      lines.push(`  └ ${language === "en" ? "State:" : "状态:"} ${escapeHtml(summary.state)}`);
     }
   }
 
@@ -459,32 +461,35 @@ function pushRuntimeHubSession(
 ): void {
   const markers = options.showMarkers
     ? [
-      session.isFocused ? (options.language === "en" ? "viewing" : "查看中") : null,
-      session.isActiveInputTarget ? (options.language === "en" ? "current input" : "当前输入") : null
+      session.isFocused ? (options.language === "en" ? "👁️ viewing" : "👁️ 查看中") : null,
+      session.isActiveInputTarget ? (options.language === "en" ? "⌨️ current input" : "⌨️ 当前输入") : null
     ].filter((value): value is string => Boolean(value))
     : [];
 
-  if (options.emphasizeMarkers && markers.length > 0) {
-    lines.push(`[${markers.join(" / ")}]`);
-  }
-
-  const markerText = !options.emphasizeMarkers && markers.length > 0 ? ` [${markers.join(" / ")}]` : "";
-  const projectName = session.projectName?.trim() ? ` / ${escapeHtml(session.projectName.trim())}` : "";
+  const markerText = markers.length > 0 ? ` [${markers.join(" ")}]` : "";
+  const projectName = session.projectName?.trim() ? ` 📂 ${escapeHtml(session.projectName.trim())}` : "";
   const displayIndex = session.slot ?? index;
   const prefix = displayIndex === null || displayIndex === undefined ? "" : `${displayIndex}. `;
-  lines.push(
-    `${prefix}<b>${escapeHtml(session.sessionName)}</b>${projectName}${markerText} · ${escapeHtml(session.state)}`
-  );
+  const statePrefix = options.language === "en" ? "State:" : "状态:";
+
+  lines.push(`${prefix}<b>${escapeHtml(session.sessionName)}</b>${projectName}`);
+
+  if (options.emphasizeMarkers && markers.length > 0) {
+    lines.push(`  └ ${statePrefix} ${escapeHtml(session.state)}`);
+    lines.push(`    ${markers.join(" / ")}`);
+  } else {
+    lines.push(`  └ ${statePrefix} ${escapeHtml(session.state)}${markerText}`);
+  }
 
   if (session.progressText && options.progressTextLimit > 0) {
-    lines.push(`   ${renderInlineMarkdown(truncateText(session.progressText, options.progressTextLimit))}`);
+    lines.push(`    ${renderInlineMarkdown(truncateText(session.progressText, options.progressTextLimit))}`);
   }
 }
 
 function buildRuntimeSurfaceFooter(language: UiLanguage): string {
   return language === "en"
-    ? "Use /inspect for full details. Use /interrupt to stop the current turn. Use /status for runtime details."
-    : "使用 /inspect 查看完整详情，使用 /interrupt 打断当前操作，使用 /status 查看运行详情";
+    ? "💡 Tip: Use /inspect for full details. Use /interrupt to stop the current turn. Use /status for runtime details."
+    : "💡 提示：使用 /inspect 查看详情，使用 /interrupt 打断，使用 /status 查看状态。";
 }
 
 export function buildRuntimeHubReplyMarkup(options: {

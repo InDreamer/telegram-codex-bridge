@@ -555,7 +555,7 @@ test("buildRuntimeStatusCard keeps only fixed runtime fields and renders progres
       "<b>Session</b> · ansi-escape",
       "<b>State</b> · Completed",
       "<b>Progress</b> · 确认 <code>ansi-escape</code> 是 <b>codex-tui</b> 的 ANSI 到 <code>ratatui</code> 适配边界层。",
-      "Use /inspect for full details. Use /interrupt to stop the current turn. Use /status for runtime details."
+      "💡 Tip: Use /inspect for full details. Use /interrupt to stop the current turn. Use /status for runtime details."
     ].join("\n")
   );
 
@@ -689,7 +689,7 @@ test("buildRuntimeStatusCard keeps expanded sections below progress", () => {
   assert.ok(text.indexOf("<b>Plan:</b>") > text.indexOf("<b>Progress</b>"));
   assert.ok(text.indexOf("<b>Agents:</b>") > text.indexOf("<b>Plan:</b>"));
   assert.ok(
-    text.indexOf("Use /inspect for full details. Use /interrupt to stop the current turn. Use /status for runtime details.")
+    text.indexOf("💡 Tip: Use /inspect for full details. Use /interrupt to stop the current turn. Use /status for runtime details.")
       > text.indexOf("<b>Agents:</b>")
   );
 });
@@ -709,7 +709,7 @@ test("buildRuntimeStatusCard uses compact label-dot-value rows and zh localizati
       "<b>会话</b> · 会话 Alpha",
       "<b>状态</b> · 运行中",
       "<b>进度</b> · 短进度",
-      "使用 /inspect 查看完整详情，使用 /interrupt 打断当前操作，使用 /status 查看运行详情"
+      "💡 提示：使用 /inspect 查看详情，使用 /interrupt 打断，使用 /status 查看状态。"
     ].join("\n")
   );
 });
@@ -778,16 +778,16 @@ test("buildRuntimeHubMessage renders slot-based live sections with stable slot n
     completed: false
   });
 
-  assert.match(text, /<b>Hub：<\/b> 1\/2/u);
-  assert.match(text, /<b>当前查看中的会话<\/b>/u);
-  assert.match(text, /3\. <b>telegram-codex-bridge<\/b> \/ telegram-codex-bridge · Running/u);
-  assert.match(text, /<b>其他运行中的会话<\/b>/u);
-  assert.match(text, /1\. <b>algo-research<\/b> \/ algo-research · Running/u);
-  assert.match(text, /<b>最近结束的会话<\/b>/u);
-  assert.match(text, /2\. <b>app-server-test-client<\/b> \/ app-server-test-client · 已完成/u);
+  assert.match(text, /<b>📑 目录：<\/b> 1\/2/u);
+  assert.match(text, /<b>🎯 当前查看中的会话<\/b>/u);
+  assert.match(text, /3\. <b>telegram-codex-bridge<\/b> 📂 telegram-codex-bridge[\s\S]*?状态: Running/u);
+  assert.match(text, /<b>🏃 其他运行中的会话<\/b>/u);
+  assert.match(text, /1\. <b>algo-research<\/b> 📂 algo-research[\s\S]*?状态: Running/u);
+  assert.match(text, /<b>🕒 最近结束的会话<\/b>/u);
+  assert.match(text, /2\. <b>app-server-test-client<\/b> 📂 app-server-test-client[\s\S]*?状态: 已完成/u);
   assert.doesNotMatch(text, /\[查看中/u);
   assert.doesNotMatch(text, /<b>当前输入会话<\/b>/u);
-  assert.match(text, /使用 \/inspect 查看完整详情，使用 \/interrupt 打断当前操作，使用 \/status 查看运行详情/u);
+  assert.match(text, /💡 提示：使用 \/inspect 查看详情，使用 \/interrupt 打断，使用 \/status 查看状态。/u);
 });
 
 test("buildRuntimeHubMessage hides empty slot sections and marks completed hubs", () => {
@@ -812,9 +812,9 @@ test("buildRuntimeHubMessage hides empty slot sections and marks completed hubs"
     completed: true
   });
 
-  assert.match(text, /<b>Hub：<\/b> 2\/2 · 已完成/u);
-  assert.match(text, /<b>最近结束的会话<\/b>/u);
-  assert.match(text, /1\. <b>algo-research<\/b> \/ algo-research · 已完成/u);
+  assert.match(text, /<b>📑 目录：<\/b> 2\/2 · 已完成/u);
+  assert.match(text, /<b>🕒 最近结束的会话<\/b>/u);
+  assert.match(text, /1\. <b>algo-research<\/b> 📂 algo-research[\s\S]*?状态: 已完成/u);
   assert.doesNotMatch(text, /当前查看中的会话/u);
   assert.doesNotMatch(text, /其他运行中的会话/u);
 });
@@ -861,12 +861,12 @@ test("buildRuntimeHubMessage renders a separate current input session when the f
     isMainHub: true
   });
 
-  assert.match(text, /<b>当前输入会话<\/b>/u);
-  assert.match(text, /\[当前输入\]\n<b>tweakcc<\/b> \/ tweakcc · 空闲/u);
-  assert.match(text, /<b>当前查看中的运行会话<\/b>/u);
-  assert.match(text, /\[查看中\]\n1\. <b>t3code<\/b> \/ t3code · Running/u);
-  assert.match(text, /<b>其他运行中的会话<\/b>/u);
-  assert.match(text, /2\. <b>sub2api<\/b> \/ sub2api · Running/u);
+  assert.match(text, /<b>👉 当前输入会话<\/b>/u);
+  assert.match(text, /<b>tweakcc<\/b> 📂 tweakcc[\s\S]*?状态: 空闲[\s\S]*?⌨️ 当前输入/u);
+  assert.match(text, /<b>🎯 当前查看中的运行会话<\/b>/u);
+  assert.match(text, /1\. <b>t3code<\/b> 📂 t3code[\s\S]*?状态: Running[\s\S]*?👁️ 查看中/u);
+  assert.match(text, /<b>🏃 其他运行中的会话<\/b>/u);
+  assert.match(text, /2\. <b>sub2api<\/b> 📂 sub2api[\s\S]*?状态: Running/u);
   assert.doesNotMatch(text, /\[查看中 \/ 当前输入\]/u);
 });
 
