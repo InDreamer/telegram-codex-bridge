@@ -20,29 +20,29 @@ Do **not** use it as a behavior spec.
 
 ## Current Repo Size Snapshot
 
-Measured against the current `src/` tree on 2026-03-21.
+Measured against the current `src/` tree on 2026-03-22.
 
-- production TypeScript: `57` files, `30,877` lines
-- test TypeScript: `28` files, `22,260` lines
+- production TypeScript: `59` files, `32,429` lines
+- test TypeScript: `31` files, `25,383` lines
 
 Largest current non-test modules:
-- `src/service.ts` — `3125`
-- `src/service/runtime-surface-controller.ts` — `2878`
-- `src/telegram/ui-runtime.ts` — `2057`
-- `src/service/interaction-broker.ts` — `1561`
-- `src/activity/tracker.ts` — `1547`
-- `src/service/turn-coordinator.ts` — `1427`
-- `src/service/codex-command-coordinator.ts` — `1272`
-- `src/install.ts` — `1064`
-- `src/codex/app-server.ts` — `1014`
-- `src/service/session-project-coordinator.ts` — `991`
+- `src/service/runtime-surface-controller.ts` — `3362`
+- `src/service.ts` — `3112`
+- `src/telegram/ui-runtime.ts` — `2198`
+- `src/service/interaction-broker.ts` — `1572`
+- `src/activity/tracker.ts` — `1548`
+- `src/service/turn-coordinator.ts` — `1510`
+- `src/install.ts` — `1350`
+- `src/service/codex-command-coordinator.ts` — `1257`
+- `src/codex/app-server.ts` — `1018`
+- `src/service/session-project-coordinator.ts` — `987`
 
 Largest current test modules:
-- `src/service.test.ts` — `8744`
-- `src/service/runtime-surface-controller.test.ts` — `2130`
-- `src/telegram/ui.test.ts` — `1608`
+- `src/service.test.ts` — `8968`
+- `src/service/runtime-surface-controller.test.ts` — `3094`
+- `src/telegram/ui.test.ts` — `1715`
+- `src/service/turn-coordinator.test.ts` — `1653`
 - `src/state/store.test.ts` — `1539`
-- `src/activity/tracker.test.ts` — `1529`
 
 ## Refresh Hints
 

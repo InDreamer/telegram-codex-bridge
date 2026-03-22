@@ -133,10 +133,17 @@ While a turn is running:
 - new running work is admitted only into the latest live hub
 - if the latest live hub still has an empty slot, reuse that hub even when it is currently rendered as completed, filling the smallest empty slot
 - if the latest live hub is full, create a new hub; before creating a fourth live hub, evict the oldest hub that no longer owns a running session, but allow temporary overflow beyond three while all existing hubs still have running work
-- show at most one `当前查看中的会话` section on the hub that owns the active viewed session; hide that section entirely when the active session has not joined any hub yet
-- show `其他运行中的会话` and `最近结束的会话` from that hub's own slots only
-- keep completed hubs visible in chat and render their header as `Hub：x/y · 已完成`
+- live and recovery hubs share the `🎯 Active Hub [...]` header shell; live hubs render `目录：x/y`, and completed live hubs append `· 已完成`
+- live-hub section headings render as bracketed labels such as `[当前查看中的会话]`, `[其他运行中的会话]`, and `[最近结束的会话]`
+- show at most one `[当前查看中的会话]` section on the hub that owns the active viewed session; hide that section entirely when the active session has not joined any hub yet
+- show `[其他运行中的会话]` and `[最近结束的会话]` from that hub's own slots only
 - use a fixed one-row slot selector with `1..5` for occupied slots and `·` for empty positions; ended slots remain selectable, and archive-driven removal may leave middle holes
+- each visible hub session renders as a divider-separated block with a state badge, a `SESSION #n` label, an optional `Folder:` line only when the project name differs from the session name, and a short runtime preview block when progress text is shown
+- a separate current-input block outside the slot set uses `SESSION:` without a slot number and may carry the `当前输入` marker
+- generic recovery hubs use the same `Active Hub` shell but are not slot-based; when the active input target is outside the recovered set, they may render a separate `当前输入会话` section
+- when a recovery hub would exceed the Telegram-safe text budget, compact it in stages: drop progress previews, switch to compact session metadata rows, truncate long session and project names, and finally hide tail sessions behind `... 还有 N 个会话未显示`
+- recovery-hub compaction keeps the full session selector buttons so hidden recovered sessions are still reachable
+- the hub footer is the compact hint `💡 /status | /inspect | /interrupt`
 - keep richer runtime rows such as model, directory, token, and plan-mode fields out of the hub and available through `/status`
 - when plan state becomes available, expose it through a collapsed button on the viewed runtime surface
 - the collapsed Chinese plan label is fixed `计划清单`, `收起计划清单`, and plan/agent controls share one row when both are present
