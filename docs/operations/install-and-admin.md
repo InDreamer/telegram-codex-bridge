@@ -10,11 +10,11 @@ Package manager and build scripts:
 
 Actual admin and runtime surface:
 - `ctb ...` is the operator command surface
-- `ctb service run` is the long-lived service entrypoint used by `systemd --user`, `launchd`, or another supervisor
+- `ctb service run` is the long-lived service entrypoint used by `systemd --user`, `launchd`, Windows Task Scheduler, or another supervisor
 - `ctb install-skill` installs the bundled Codex skill into `${CODEX_HOME:-~/.codex}/skills/telegram-codex-linker`
 
 Node requirement:
-- Node `>=25.0.0`
+- Node `>=24.0.0`
 
 Voice-input backend rule:
 - when voice input is enabled, the bridge tries OpenAI audio transcription first if `VOICE_OPENAI_API_KEY` is configured
@@ -37,6 +37,7 @@ Supported config keys in `bridge.env`:
 `PROJECT_SCAN_ROOTS` rules:
 - path-delimited root list written into `bridge.env`
 - on Linux and macOS, use `:`
+- on Windows, use `;`
 - when set, project discovery scans only those roots
 - when empty or unset, runtime falls back to scanning the user's `HOME` as one bounded root
 - runtime fallback does not rewrite config; persistence belongs to install or repair flow
@@ -50,16 +51,20 @@ macOS note:
 
 Install root:
 - `~/.local/share/codex-telegram-bridge`
+- `%LOCALAPPDATA%\codex-telegram-bridge` on Windows
 
 Installed command:
 - `~/.local/share/codex-telegram-bridge/bin/ctb`
+- `%LOCALAPPDATA%\codex-telegram-bridge\bin\ctb.cmd` on Windows
 
 Service definition paths:
 - `~/.config/systemd/user/codex-telegram-bridge.service` on Linux
 - `~/Library/LaunchAgents/com.codex.telegram-bridge.plist` on macOS
+- Task Scheduler task `CodexTelegramBridge` on Windows
 
 State directory:
 - `~/.local/state/codex-telegram-bridge`
+- `%LOCALAPPDATA%\codex-telegram-bridge` on Windows
 
 State contents:
 - `bridge.db`
@@ -91,6 +96,7 @@ Log files:
 
 Config directory:
 - `~/.config/codex-telegram-bridge`
+- `%APPDATA%\codex-telegram-bridge` on Windows
 
 Config file:
 - `bridge.env`
@@ -105,11 +111,15 @@ Use:
 - service name `codex-telegram-bridge.service`
 - or on macOS, `launchd`
 - LaunchAgent label `com.codex.telegram-bridge`
+- or on Windows, Task Scheduler
+- task name `CodexTelegramBridge`
 
 Selected v1 ownership model:
 - `systemd --user` manages only `codex-telegram-bridge.service` on Linux
 - `launchd` manages only `com.codex.telegram-bridge` on macOS
+- Task Scheduler manages only `CodexTelegramBridge` on Windows
 - the bridge process starts, monitors, restarts, and reconnects its own local `codex app-server` child process
+- Windows support is intentionally user-session scoped: login keeps the bridge online; logout is not a supported always-on mode
 
 Reason:
 - one outer supervisor
@@ -136,7 +146,8 @@ Supported subcommands:
 Platform note:
 - `ctb start`, `ctb stop`, and `ctb restart` use `systemd --user` on Linux
 - `ctb start`, `ctb stop`, and `ctb restart` use `launchctl` and a per-user LaunchAgent on macOS
-- when neither `systemctl` nor `launchctl` is available, install still writes release files and validates readiness, but does not enable a long-lived service
+- `ctb start`, `ctb stop`, and `ctb restart` use PowerShell ScheduledTasks commands against the `CodexTelegramBridge` per-user task on Windows
+- when neither `systemctl`, `launchctl`, nor `powershell.exe` is available, install still writes release files and validates readiness, but does not enable a long-lived service
 - on those hosts, the operator must run `ctb service run` under another supervisor or in a persistent shell
 
 ## GitHub Install Shortcuts
@@ -145,6 +156,14 @@ Recommended public entry:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/master/scripts/install-skill-from-github.sh | bash
+```
+
+Windows PowerShell entry:
+
+```powershell
+$script = Join-Path $env:TEMP "install-skill-from-github.ps1"
+Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/master/scripts/install-skill-from-github.ps1" -OutFile $script
+powershell -ExecutionPolicy Bypass -File $script
 ```
 
 Then in Codex:
@@ -164,6 +183,14 @@ Bridge install from GitHub:
 curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/master/scripts/install-from-github.sh | bash -s -- --telegram-token "<BOT_TOKEN>" --project-scan-roots "$HOME/projects:$HOME/work"
 ```
 
+Windows bridge install from GitHub:
+
+```powershell
+$script = Join-Path $env:TEMP "install-from-github.ps1"
+Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/master/scripts/install-from-github.ps1" -OutFile $script
+powershell -ExecutionPolicy Bypass -File $script -TelegramToken "<BOT_TOKEN>" -ProjectScanRoots "$HOME\projects;$HOME\work"
+```
+
 Bundled Codex skill install from GitHub:
 
 ```bash
@@ -172,10 +199,13 @@ curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/mas
 
 Notes:
 - the bridge install shortcut downloads a repository archive, runs `npm install`, runs `npm run build`, and then runs `node dist/cli.js install`
+- the Windows PowerShell bridge install shortcut downloads a ZIP archive, expands it with `Expand-Archive`, runs `npm install`, runs `npm run build`, and then runs `node dist/cli.js install`
+- Node `22` is intentionally not a supported operator baseline even if some local runs appear to work
 - GitHub archive installs persist source metadata in the install manifest so later `ctb update` can redownload the same repo/ref instead of depending on a retained temp directory
 - the skill install shortcut copies `skills/telegram-codex-linker` into `${CODEX_HOME:-~/.codex}/skills/`
 - both scripts accept `--ref <name>` plus `--ref-type branch|tag`; default is `master`
 - the bridge install shortcut also accepts `--project-scan-roots <path1:path2:...>` and forwards it into `ctb install`
+- the Windows PowerShell bridge install shortcut accepts `-ProjectScanRoots "<path1;path2;...>"`
 - after skill install, restart Codex so the new skill is discovered
 
 Authorization intent:
@@ -212,6 +242,7 @@ Primary operator diagnostics:
 - `ctb doctor`
 - `journalctl --user -u codex-telegram-bridge.service -n 200`
 - `launchctl print gui/$(id -u)/com.codex.telegram-bridge`
+- `powershell.exe -NoProfile -Command "Get-ScheduledTask -TaskName CodexTelegramBridge | Format-List *"`
 - `sqlite3 ~/.local/state/codex-telegram-bridge/bridge.db`
 - inspect the per-turn JSONL files under `~/.local/state/codex-telegram-bridge/runtime/debug/`
 - inspect Telegram session-surface trace logs under `~/.local/state/codex-telegram-bridge/logs/telegram-session-flow/`
@@ -226,6 +257,7 @@ Primary operator diagnostics:
 - install and state roots
 - config and service presence
 - detected service manager and active state
+- on Windows: task existence, task state, last run result, and resolved `codex` / `ffmpeg` paths
 - installed version and timestamp
 - whether the SQLite state store opened successfully
 - active session summary
@@ -287,16 +319,18 @@ State-store safety rule:
 ## Update Behavior
 
 `ctb update` currently:
-1. reads the retained `sourceRoot` from `install-manifest.json`
-2. fails if the install did not keep a usable source checkout
-3. runs `npm install` in that source checkout
-4. runs `npm run build`
-5. reruns `dist/cli.js install` with the saved bridge config
+1. reads `install-manifest.json`
+2. if the install came from a GitHub archive, redownloads the same repo/ref from the saved archive metadata
+3. otherwise uses the retained `sourceRoot` checkout and fails if that checkout is missing
+4. runs `npm install`
+5. runs `npm run build`
+6. reruns `dist/cli.js install` with the saved bridge config
 
 Operational effect:
 - state, database, and logs remain in place
 - the reinstall path rewrites the local release files and the active service definition
 - the reinstall path reruns readiness checks and Telegram command sync
+- Windows GitHub archive updates prefer `curl` for download when available and fall back to PowerShell download only when `curl` is unavailable
 - when `systemd --user` or `launchd` is managing the bridge, the reinstall path reloads or restarts that managed service automatically
 - when no supported local service manager exists, the operator must restart the external supervisor or rerun `ctb service run`
 - the CLI prints `update complete`, not a full status summary

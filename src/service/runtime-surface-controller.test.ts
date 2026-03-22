@@ -254,6 +254,7 @@ async function createControllerContext(options: {
     deletedMessages,
     traceEvents,
     cleanup: async () => {
+      controller.disposeAllRuntimeHubs();
       store.close();
       await rm(root, { recursive: true, force: true });
     }

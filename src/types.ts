@@ -112,11 +112,12 @@ export interface ReadinessDetails {
   nodeVersionSupported?: boolean;
   codexVersion?: string;
   codexVersionSupported?: boolean;
+  codexBinResolvedPath?: string;
   codexLoginStatus?: string;
   telegramBotUsername?: string;
   telegramBotId?: string;
   systemdAvailable?: boolean;
-  serviceManager?: "systemd" | "launchd" | "none";
+  serviceManager?: "systemd" | "launchd" | "task_scheduler" | "none";
   serviceManagerHealth?: "ok" | "warning" | "error";
   stateRootWritable?: boolean;
   configRootWritable?: boolean;
@@ -126,6 +127,7 @@ export interface ReadinessDetails {
   voiceInputEnabled?: boolean;
   voiceOpenaiConfigured?: boolean;
   voiceFfmpegAvailable?: boolean;
+  voiceFfmpegResolvedPath?: string;
   voiceRealtimeSupported?: boolean;
 }
 

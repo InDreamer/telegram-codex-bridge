@@ -4,7 +4,7 @@ import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { ensureBridgeDirectories, type BridgePaths } from "./paths.js";
+import { ensureBridgeDirectories, getBridgePaths, type BridgePaths } from "./paths.js";
 
 function createCustomPaths(root: string): BridgePaths {
   const installRoot = join(root, "install-root");
@@ -67,4 +67,27 @@ test("ensureBridgeDirectories creates install and state roots for custom path la
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("getBridgePaths uses Windows-friendly roots and wrappers on win32", () => {
+  if (process.platform !== "win32") {
+    return;
+  }
+
+  const paths = getBridgePaths(
+    "file:///C:/Users/example/repo/src/cli.ts",
+    "C:\\Users\\example",
+    "win32",
+    {
+      LOCALAPPDATA: "C:\\Users\\example\\AppData\\Local",
+      APPDATA: "C:\\Users\\example\\AppData\\Roaming"
+    }
+  );
+
+  assert.match(paths.installRoot, /AppData\\Local\\codex-telegram-bridge$/u);
+  assert.match(paths.stateRoot, /AppData\\Local\\codex-telegram-bridge$/u);
+  assert.match(paths.configRoot, /AppData\\Roaming\\codex-telegram-bridge$/u);
+  assert.match(paths.binPath, /codex-telegram-bridge\\bin\\ctb\.cmd$/u);
+  assert.equal(paths.taskSchedulerName, "CodexTelegramBridge");
+  assert.match(paths.powershellWrapperPath ?? "", /codex-telegram-bridge\\bin\\ctb\.ps1$/u);
 });

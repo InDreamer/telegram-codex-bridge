@@ -1,9 +1,10 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { delimiter } from "node:path";
 
+import { getHostPlatform } from "./platform.js";
 import type { BridgePaths } from "./paths.js";
 import { parseBooleanLike } from "./util/boolean.js";
-import { expandHomePath } from "./util/path.js";
+import { expandHomePath, normalizeComparablePath } from "./util/path.js";
 
 export interface BridgeConfig {
   telegramBotToken: string;
@@ -62,14 +63,16 @@ export function parseProjectScanRootsValue(value: string | undefined, homeDir: s
 
   const seen = new Set<string>();
   const roots: string[] = [];
+  const hostPlatform = getHostPlatform();
 
   for (const entry of value.split(delimiter).map((part) => part.trim()).filter((part) => part.length > 0)) {
     const resolved = expandHomePath(entry, homeDir);
-    if (seen.has(resolved)) {
+    const comparable = normalizeComparablePath(resolved, hostPlatform);
+    if (seen.has(comparable)) {
       continue;
     }
 
-    seen.add(resolved);
+    seen.add(comparable);
     roots.push(resolved);
   }
 

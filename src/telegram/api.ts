@@ -1,6 +1,7 @@
-import { execFile } from "node:child_process";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname } from "node:path";
+
+import { commandExists, runCommand, type CommandResult } from "../process.js";
 
 export interface TelegramUser {
   id: number;
@@ -149,7 +150,7 @@ export class TelegramApi {
     }
   ): Promise<TelegramMessage> {
     const url = `${this.baseUrl}/bot${this.token}/sendPhoto`;
-    if (shouldPreferCurl()) {
+    if (shouldPreferCurl() && await this.canUseCurl()) {
       return await this.sendPhotoWithCurl(chatId, photoPath, options, 20_000, "proxy-environment");
     }
 
@@ -210,7 +211,7 @@ export class TelegramApi {
     const tempPath = `${destinationPath}.${process.pid}.${Date.now()}.tmp`;
     const url = this.buildFileUrl(resolvedFile.file_path);
 
-    if (shouldPreferCurl()) {
+    if (shouldPreferCurl() && await this.canUseCurl()) {
       try {
         await this.downloadWithCurl(url, tempPath, 20_000, "proxy-environment");
         await rename(tempPath, destinationPath);
@@ -291,7 +292,7 @@ export class TelegramApi {
   }
 
   private async call<T>(method: string, body: Record<string, unknown>, timeoutMs: number): Promise<T> {
-    if (shouldPreferCurl()) {
+    if (shouldPreferCurl() && await this.canUseCurl()) {
       return await this.callWithCurl<T>(method, body, timeoutMs, "proxy-environment");
     }
 
@@ -324,40 +325,22 @@ export class TelegramApi {
   ): Promise<T> {
     const url = `${this.baseUrl}/bot${this.token}/${method}`;
     const payloadText = JSON.stringify(body);
-    const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
-      const child = execFile(
-        "curl",
-        [
-          "--silent",
-          "--show-error",
-          "--max-time",
-          `${Math.ceil(timeoutMs / 1000)}`,
-          "--header",
-          "content-type: application/json",
-          "--data",
-          payloadText,
-          url
-        ],
-        (error, stdout, stderr) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-
-          resolve({
-            stdout,
-            stderr,
-            code: 0
-          });
-        }
-      );
-
-      child.on("error", reject);
-    }).catch((curlError) => {
+    const result = await runCommand("curl", [
+      "--silent",
+      "--show-error",
+      "--max-time",
+      `${Math.ceil(timeoutMs / 1000)}`,
+      "--header",
+      "content-type: application/json",
+      "--data",
+      payloadText,
+      url
+    ]).catch((curlError) => {
       throw new Error(
         `Telegram API request failed via fetch and curl: ${String(originalError)} | ${String(curlError)}`
       );
     });
+    this.assertCurlExitCode("Telegram API request", result, originalError);
 
     const payload = JSON.parse(result.stdout) as TelegramResponse<T>;
     if (!payload.ok || payload.result === undefined) {
@@ -377,31 +360,18 @@ export class TelegramApi {
     timeoutMs: number,
     originalError: unknown
   ): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
-      const child = execFile(
-        "curl",
-        [
-          "--silent",
-          "--show-error",
-          "--fail",
-          "--location",
-          "--max-time",
-          `${Math.ceil(timeoutMs / 1000)}`,
-          "--output",
-          destinationPath,
-          url
-        ],
-        (error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-
-          resolve();
-        }
-      );
-
-      child.on("error", reject);
+    await runCommand("curl", [
+      "--silent",
+      "--show-error",
+      "--fail",
+      "--location",
+      "--max-time",
+      `${Math.ceil(timeoutMs / 1000)}`,
+      "--output",
+      destinationPath,
+      url
+    ]).then((result) => {
+      this.assertCurlExitCode("Telegram file download", result, originalError);
     }).catch((curlError) => {
       throw new Error(
         `Telegram file download failed via fetch and curl: ${String(originalError)} | ${String(curlError)}`
@@ -440,22 +410,12 @@ export class TelegramApi {
 
     args.push(url);
 
-    const result = await new Promise<{ stdout: string }>((resolve, reject) => {
-      const child = execFile("curl", args, (error, stdout) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-
-        resolve({ stdout });
-      });
-
-      child.on("error", reject);
-    }).catch((curlError) => {
+    const result = await runCommand("curl", args).catch((curlError) => {
       throw new Error(
         `Telegram photo upload failed via fetch and curl: ${String(originalError)} | ${String(curlError)}`
       );
     });
+    this.assertCurlExitCode("Telegram photo upload", result, originalError);
 
     const payload = JSON.parse(result.stdout) as TelegramResponse<TelegramMessage>;
     if (!payload.ok || payload.result === undefined) {
@@ -463,6 +423,20 @@ export class TelegramApi {
     }
 
     return payload.result;
+  }
+
+  private async canUseCurl(): Promise<boolean> {
+    return await commandExists("curl");
+  }
+
+  private assertCurlExitCode(action: string, result: CommandResult, originalError: unknown): void {
+    if (result.exitCode === 0) {
+      return;
+    }
+
+    throw new Error(
+      `${action} failed via fetch and curl: ${String(originalError)} | ${result.stderr || result.stdout || `curl exited with code ${result.exitCode}`}`
+    );
   }
 }
 

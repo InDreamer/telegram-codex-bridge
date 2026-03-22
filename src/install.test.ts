@@ -6,7 +6,17 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { loadConfig } from "./config.js";
-import { buildLaunchAgentPlist, getStatus, installBridge, installCodexSkill, prepareRelease, runDoctor, updateBridge } from "./install.js";
+import {
+  buildLaunchAgentPlist,
+  buildTaskSchedulerRegistrationScript,
+  getStatus,
+  installBridge,
+  installCodexSkill,
+  prepareRelease,
+  runDoctor,
+  uninstallBridge,
+  updateBridge
+} from "./install.js";
 import type { Logger } from "./logger.js";
 import { BridgeStateStore } from "./state/store.js";
 import type { BridgePaths } from "./paths.js";
@@ -17,8 +27,10 @@ function createTestPaths(root: string): BridgePaths {
   const logsDir = join(root, "logs");
   const telegramSessionFlowLogsDir = join(logsDir, "telegram-session-flow");
   const runtimeDir = join(root, "runtime");
+  const binPath = join(root, "install", "bin", process.platform === "win32" ? "ctb.cmd" : "ctb");
 
-  return {
+  const paths: BridgePaths = {
+    platform: process.platform === "win32" ? "win32" : process.platform === "darwin" ? "darwin" : "linux",
     homeDir: root,
     repoRoot: join(root, "repo"),
     installRoot: join(root, "install"),
@@ -33,7 +45,8 @@ function createTestPaths(root: string): BridgePaths {
     envPath: join(root, "config", "bridge.env"),
     servicePath: join(root, "service", "bridge.service"),
     launchAgentPath: join(root, "LaunchAgents", "bridge.plist"),
-    binPath: join(root, "install", "bin", "ctb"),
+    taskSchedulerName: "CodexTelegramBridge",
+    binPath,
     manifestPath: join(root, "install", "install-manifest.json"),
     offsetPath: join(runtimeDir, "telegram-offset.json"),
     bridgeLogPath: join(logsDir, "bridge.log"),
@@ -43,6 +56,12 @@ function createTestPaths(root: string): BridgePaths {
     telegramPlanCardLogPath: join(telegramSessionFlowLogsDir, "plan-card.log"),
     telegramErrorCardLogPath: join(telegramSessionFlowLogsDir, "error-card.log")
   };
+
+  if (process.platform === "win32") {
+    paths.powershellWrapperPath = join(root, "install", "bin", "ctb.ps1");
+  }
+
+  return paths;
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -64,6 +83,35 @@ async function createReleaseFixture(paths: BridgePaths): Promise<void> {
   await writeFile(paths.repoRoot + "/package.json", '{ "name": "telegram-codex-bridge" }\n', "utf8");
 }
 
+async function createGithubArchiveUpdateFixture(paths: BridgePaths): Promise<void> {
+  await Promise.all([
+    mkdir(paths.configRoot, { recursive: true }),
+    mkdir(paths.installRoot, { recursive: true })
+  ]);
+  await writeFile(
+    paths.envPath,
+    [
+      "TELEGRAM_BOT_TOKEN=test-token",
+      "CODEX_BIN=/usr/local/bin/codex",
+      "PROJECT_SCAN_ROOTS=/Users/example/projects:/Users/example/work",
+      "VOICE_INPUT_ENABLED=0"
+    ].join("\n") + "\n",
+    "utf8"
+  );
+  await writeFile(paths.manifestPath, JSON.stringify({
+    version: "0.1.0",
+    sourceRoot: null,
+    installedAt: "2026-03-14T09:00:00.000Z",
+    installSource: {
+      kind: "github-archive",
+      repoOwner: "InDreamer",
+      repoName: "telegram-codex-bridge",
+      ref: "master",
+      refType: "branch"
+    }
+  }, null, 2));
+}
+
 async function createSkillFixture(root: string, description = "test skill"): Promise<void> {
   const skillDir = join(root, "skills", "telegram-codex-linker");
   await mkdir(join(skillDir, "agents"), { recursive: true });
@@ -77,6 +125,25 @@ async function createSkillFixture(root: string, description = "test skill"): Pro
   );
   await writeFile(join(skillDir, "references", "install-strategy.md"), "# test strategy\n", "utf8");
   await writeFile(join(skillDir, "scripts", "install-bridge-from-github.sh"), "#!/usr/bin/env bash\n", "utf8");
+  await writeFile(join(skillDir, "scripts", "install-bridge-from-github.ps1"), "Write-Output 'ok'\r\n", "utf8");
+}
+
+async function writeExecutableFixture(binDir: string, name: string, body: {
+  posix: string;
+  win32: string;
+}): Promise<string> {
+  const filePath = join(binDir, process.platform === "win32" ? `${name}.cmd` : name);
+  await writeFile(filePath, process.platform === "win32" ? body.win32 : body.posix, "utf8");
+  if (process.platform !== "win32") {
+    await chmod(filePath, 0o755);
+  }
+  return filePath;
+}
+
+function extendPath(binDir: string): string {
+  return process.platform === "win32"
+    ? `${binDir};${process.env.PATH ?? ""}`
+    : `${binDir}:${process.env.PATH ?? ""}`;
 }
 
 function withEnvironment<T>(overrides: Record<string, string | undefined>, run: () => Promise<T>): Promise<T> {
@@ -124,7 +191,7 @@ function createReadinessSnapshot(
       telegramTokenValid: true,
       authorizedUserBound: true,
       issues: [],
-      nodeVersion: "v25.8.1",
+      nodeVersion: "v24.13.1",
       nodeVersionSupported: true,
       codexVersion: "codex-cli 0.114.0",
       codexVersionSupported: true,
@@ -309,21 +376,33 @@ test("installCodexSkill prefers the current checkout bundle over an older instal
 });
 
 test("bundled bridge install script parses cleanly in bash", async () => {
+  if (process.platform === "win32") {
+    return;
+  }
   const result = await runCommand("bash", ["-n", "skills/telegram-codex-linker/scripts/install-bridge-from-github.sh"]);
   assert.equal(result.exitCode, 0, result.stderr || result.stdout);
 });
 
 test("project root discovery script parses cleanly in bash", async () => {
+  if (process.platform === "win32") {
+    return;
+  }
   const result = await runCommand("bash", ["-n", "skills/telegram-codex-linker/scripts/discover-project-scan-roots.sh"]);
   assert.equal(result.exitCode, 0, result.stderr || result.stdout);
 });
 
 test("public install script parses cleanly in bash", async () => {
+  if (process.platform === "win32") {
+    return;
+  }
   const result = await runCommand("bash", ["-n", "scripts/install-from-github.sh"]);
   assert.equal(result.exitCode, 0, result.stderr || result.stdout);
 });
 
 test("project root discovery script selects likely disjoint roots", async () => {
+  if (process.platform === "win32") {
+    return;
+  }
   const homeRoot = await mkdtemp(join(tmpdir(), "ctb-scan-roots-"));
   const projectsRoot = join(homeRoot, "projects");
   const workRoot = join(homeRoot, "work");
@@ -360,6 +439,9 @@ test("project root discovery script selects likely disjoint roots", async () => 
 });
 
 test("project root discovery script can emit one recommended root per line", async () => {
+  if (process.platform === "win32") {
+    return;
+  }
   const homeRoot = await mkdtemp(join(tmpdir(), "ctb-scan-roots-lines-"));
   const projectsRoot = join(homeRoot, "projects");
   const workRoot = join(homeRoot, "work");
@@ -414,16 +496,14 @@ test("installBridge validates and persists non-overlapping project scan roots", 
       mkdir(secondRoot, { recursive: true })
     ]);
     await writeFile(join(paths.repoRoot, "dist", "cli.js"), "console.log('ok');\n", "utf8");
-    await writeFile(
-      join(binDir, "npm"),
-      "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n",
-      "utf8"
-    );
-    await chmod(join(binDir, "npm"), 0o755);
+    await writeExecutableFixture(binDir, "npm", {
+      posix: "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n",
+      win32: "@echo off\r\nexit /b 0\r\n"
+    });
 
     await withEnvironment(
       {
-        PATH: `${binDir}:${process.env.PATH ?? ""}`
+        PATH: extendPath(binDir)
       },
       async () => {
         await installBridge(paths, testLogger, {
@@ -471,17 +551,15 @@ test("installBridge restarts an already-active systemd service so the new build 
       mkdir(binDir, { recursive: true })
     ]);
     await writeFile(join(paths.repoRoot, "dist", "cli.js"), "console.log('ok');\n", "utf8");
-    await writeFile(
-      join(binDir, "npm"),
-      `#!/usr/bin/env bash
+    await writeExecutableFixture(binDir, "npm", {
+      posix: `#!/usr/bin/env bash
 set -euo pipefail
 printf 'npm %s\\n' "$*" >> ${JSON.stringify(npmLogPath)}
 `,
-      "utf8"
-    );
-    await writeFile(
-      join(binDir, "systemctl"),
-      `#!/usr/bin/env bash
+      win32: `@echo off\r\necho npm %*>> ${JSON.stringify(npmLogPath)}\r\nexit /b 0\r\n`
+    });
+    await writeExecutableFixture(binDir, "systemctl", {
+      posix: `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$*" >> ${JSON.stringify(systemctlLogPath)}
 if [ "$1" = "--user" ] && [ "$2" = "is-active" ]; then
@@ -490,16 +568,12 @@ if [ "$1" = "--user" ] && [ "$2" = "is-active" ]; then
 fi
 exit 0
 `,
-      "utf8"
-    );
-    await Promise.all([
-      chmod(join(binDir, "npm"), 0o755),
-      chmod(join(binDir, "systemctl"), 0o755)
-    ]);
+      win32: `@echo off\r\necho %*>> ${JSON.stringify(systemctlLogPath)}\r\nif "%1"=="--user" if "%2"=="is-active" (\r\n  echo active\r\n)\r\nexit /b 0\r\n`
+    });
 
     await withEnvironment(
       {
-        PATH: `${binDir}:${process.env.PATH ?? ""}`
+        PATH: extendPath(binDir)
       },
       async () => {
         await installBridge(paths, testLogger, {
@@ -548,16 +622,14 @@ test("installBridge writes GitHub archive metadata into the install manifest", a
       mkdir(binDir, { recursive: true })
     ]);
     await writeFile(join(paths.repoRoot, "dist", "cli.js"), "console.log('ok');\n", "utf8");
-    await writeFile(
-      join(binDir, "npm"),
-      "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n",
-      "utf8"
-    );
-    await chmod(join(binDir, "npm"), 0o755);
+    await writeExecutableFixture(binDir, "npm", {
+      posix: "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n",
+      win32: "@echo off\r\nexit /b 0\r\n"
+    });
 
     await withEnvironment(
       {
-        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        PATH: extendPath(binDir),
         CTB_INSTALL_SOURCE_KIND: "github-archive",
         CTB_INSTALL_SOURCE_REPO_OWNER: "InDreamer",
         CTB_INSTALL_SOURCE_REPO_NAME: "telegram-codex-bridge",
@@ -634,6 +706,108 @@ test("buildLaunchAgentPlist keeps launchd passthrough env only and does not pin 
   }
 });
 
+test("buildTaskSchedulerRegistrationScript targets the Windows wrapper and login trigger", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctb-install-test-"));
+  const paths = createTestPaths(root);
+
+  try {
+    const script = buildTaskSchedulerRegistrationScript({
+      ...paths,
+      platform: "win32",
+      binPath: join(root, "install", "bin", "ctb.cmd"),
+      installRoot: join(root, "install"),
+      taskSchedulerName: "CodexTelegramBridge"
+    });
+
+    assert.match(script, /New-ScheduledTaskAction/u);
+    assert.match(script, /New-ScheduledTaskTrigger -AtLogOn/u);
+    assert.match(script, /RestartCount 999/u);
+    assert.match(script, /ctb\.cmd/u);
+    assert.match(script, /service run/u);
+    assert.match(script, /CodexTelegramBridge/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("uninstallBridge preserves shared Windows state when purgeState is false", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctb-install-test-"));
+  const installRoot = join(root, "LocalAppData", "codex-telegram-bridge");
+  const configRoot = join(root, "RoamingAppData", "codex-telegram-bridge");
+  const logsDir = join(installRoot, "logs");
+  const telegramSessionFlowLogsDir = join(logsDir, "telegram-session-flow");
+  const runtimeDir = join(installRoot, "runtime");
+  const cacheDir = join(installRoot, "cache");
+  const paths: BridgePaths = {
+    platform: "win32",
+    homeDir: root,
+    repoRoot: join(root, "repo"),
+    installRoot,
+    stateRoot: installRoot,
+    configRoot,
+    logsDir,
+    telegramSessionFlowLogsDir,
+    runtimeDir,
+    cacheDir,
+    dbPath: join(installRoot, "bridge.db"),
+    stateStoreFailurePath: join(installRoot, "state-store-open-failure.json"),
+    envPath: join(configRoot, "bridge.env"),
+    servicePath: join(configRoot, "tasks", "CodexTelegramBridge.ps1"),
+    launchAgentPath: join(root, "LaunchAgents", "bridge.plist"),
+    taskSchedulerName: "CodexTelegramBridge",
+    binPath: join(installRoot, "bin", "ctb.cmd"),
+    powershellWrapperPath: join(installRoot, "bin", "ctb.ps1"),
+    manifestPath: join(installRoot, "install-manifest.json"),
+    offsetPath: join(runtimeDir, "telegram-offset.json"),
+    bridgeLogPath: join(logsDir, "bridge.log"),
+    bootstrapLogPath: join(logsDir, "bootstrap.log"),
+    appServerLogPath: join(logsDir, "app-server.log"),
+    telegramStatusCardLogPath: join(telegramSessionFlowLogsDir, "status-card.log"),
+    telegramPlanCardLogPath: join(telegramSessionFlowLogsDir, "plan-card.log"),
+    telegramErrorCardLogPath: join(telegramSessionFlowLogsDir, "error-card.log")
+  };
+
+  try {
+    await Promise.all([
+      mkdir(join(paths.installRoot, "dist"), { recursive: true }),
+      mkdir(join(paths.installRoot, "skills"), { recursive: true }),
+      mkdir(join(paths.installRoot, "bin"), { recursive: true }),
+      mkdir(paths.logsDir, { recursive: true }),
+      mkdir(paths.runtimeDir, { recursive: true }),
+      mkdir(paths.cacheDir, { recursive: true }),
+      mkdir(paths.configRoot, { recursive: true })
+    ]);
+    await Promise.all([
+      writeFile(join(paths.installRoot, "dist", "cli.js"), "console.log('ok');\n", "utf8"),
+      writeFile(join(paths.installRoot, "skills", "skill.txt"), "skill\n", "utf8"),
+      writeFile(paths.binPath, "@echo off\r\n", "utf8"),
+      writeFile(paths.powershellWrapperPath!, "Write-Output 'ok'\r\n", "utf8"),
+      writeFile(join(paths.installRoot, "package.json"), "{ }\n", "utf8"),
+      writeFile(paths.manifestPath, "{ }\n", "utf8"),
+      writeFile(paths.dbPath, "sqlite\n", "utf8"),
+      writeFile(paths.bridgeLogPath, "keep\n", "utf8"),
+      writeFile(paths.offsetPath, "{ }\n", "utf8"),
+      writeFile(join(paths.cacheDir, "persist.txt"), "keep\n", "utf8"),
+      writeFile(paths.envPath, "TELEGRAM_BOT_TOKEN=test-token\n", "utf8")
+    ]);
+
+    await uninstallBridge(paths, false);
+
+    assert.equal(await pathExists(paths.dbPath), true);
+    assert.equal(await pathExists(paths.bridgeLogPath), true);
+    assert.equal(await pathExists(paths.offsetPath), true);
+    assert.equal(await pathExists(join(paths.cacheDir, "persist.txt")), true);
+    assert.equal(await pathExists(join(paths.installRoot, "dist")), false);
+    assert.equal(await pathExists(join(paths.installRoot, "skills")), false);
+    assert.equal(await pathExists(join(paths.installRoot, "bin")), false);
+    assert.equal(await pathExists(join(paths.installRoot, "package.json")), false);
+    assert.equal(await pathExists(paths.manifestPath), false);
+    assert.equal(await pathExists(paths.configRoot), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("getStatus returns state-store failure diagnostics when the database cannot be opened", async () => {
   const root = await mkdtemp(join(tmpdir(), "ctb-install-test-"));
   const paths = createTestPaths(root);
@@ -657,7 +831,7 @@ test("getStatus returns state-store failure diagnostics when the database cannot
   }
 });
 
-test("updateBridge redownloads GitHub archive installs from manifest metadata", async () => {
+test("updateBridge redownloads non-Windows GitHub archive installs from manifest metadata", async () => {
   const root = await mkdtemp(join(tmpdir(), "ctb-update-test-"));
   const paths = createTestPaths(root);
   const calls: Array<{
@@ -668,43 +842,26 @@ test("updateBridge redownloads GitHub archive installs from manifest metadata", 
   }> = [];
 
   try {
-    await Promise.all([
-      mkdir(paths.configRoot, { recursive: true }),
-      mkdir(paths.installRoot, { recursive: true })
-    ]);
-    await writeFile(
-      paths.envPath,
-      [
-        "TELEGRAM_BOT_TOKEN=test-token",
-        "CODEX_BIN=/usr/local/bin/codex",
-        "PROJECT_SCAN_ROOTS=/Users/example/projects:/Users/example/work",
-        "VOICE_INPUT_ENABLED=0"
-      ].join("\n") + "\n",
-      "utf8"
-    );
-    await writeFile(paths.manifestPath, JSON.stringify({
-      version: "0.1.0",
-      sourceRoot: null,
-      installedAt: "2026-03-14T09:00:00.000Z",
-      installSource: {
-        kind: "github-archive",
-        repoOwner: "InDreamer",
-        repoName: "telegram-codex-bridge",
-        ref: "master",
-        refType: "branch"
-      }
-    }, null, 2));
+    paths.platform = "linux";
+    await createGithubArchiveUpdateFixture(paths);
 
     await updateBridge(paths, {
       runCommand: async (command, args, options) => {
         calls.push({ command, args, cwd: options?.cwd, env: options?.env as NodeJS.ProcessEnv | undefined });
 
-        if (command === "curl") {
+        if (command === "tar") {
+          const workDir = args[3];
+          if (!workDir) {
+            throw new Error("missing extraction workdir");
+          }
+          await mkdir(join(workDir, "telegram-codex-bridge-master"), { recursive: true });
           return { exitCode: 0, stdout: "", stderr: "" };
         }
 
-        if (command === "tar") {
-          const workDir = args[3];
+        if (command === "powershell.exe") {
+          const commandText = args.at(-1) ?? "";
+          const match = commandText.match(/DestinationPath '([^']+)'/u);
+          const workDir = match?.[1];
           if (!workDir) {
             throw new Error("missing extraction workdir");
           }
@@ -730,6 +887,107 @@ test("updateBridge redownloads GitHub archive installs from manifest metadata", 
     assert.equal(calls[2]?.env?.CTB_INSTALL_SOURCE_KIND, "github-archive");
     assert.equal(calls[2]?.env?.CTB_INSTALL_SOURCE_REPO_OWNER, "InDreamer");
     assert.equal(calls[2]?.env?.TELEGRAM_BOT_TOKEN, "test-token");
+    assert.equal(calls[3]?.command, "npm");
+    assert.deepEqual(calls[3]?.args, ["run", "build"]);
+    assert.equal(calls[4]?.command, process.execPath);
+    assert.deepEqual(calls[4]?.args, ["dist/cli.js", "install"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("updateBridge prefers curl for win32 GitHub archive installs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctb-update-win32-test-"));
+  const paths = createTestPaths(root);
+  const calls: Array<{
+    command: string;
+    args: string[];
+    cwd: string | URL | undefined;
+    env: NodeJS.ProcessEnv | undefined;
+  }> = [];
+
+  try {
+    paths.platform = "win32";
+    await createGithubArchiveUpdateFixture(paths);
+
+    await updateBridge(paths, {
+      commandExists: async (command, options) => command === "curl" && options?.platform === "win32",
+      runCommand: async (command, args, options) => {
+        calls.push({ command, args, cwd: options?.cwd, env: options?.env as NodeJS.ProcessEnv | undefined });
+
+        if (command === "powershell.exe") {
+          const commandText = args.at(-1) ?? "";
+          const match = commandText.match(/DestinationPath '([^']+)'/u);
+          const workDir = match?.[1];
+          if (workDir) {
+            await mkdir(join(workDir, "telegram-codex-bridge-master"), { recursive: true });
+          }
+        }
+
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+    });
+
+    assert.equal(calls[0]?.command, "curl");
+    assert.deepEqual(calls[0]?.args, [
+      "-fsSL",
+      "https://codeload.github.com/InDreamer/telegram-codex-bridge/zip/refs/heads/master",
+      "-o",
+      calls[0]?.args[3] ?? ""
+    ]);
+    assert.equal(calls[1]?.command, "powershell.exe");
+    assert.match(calls[1]?.args.at(-1) ?? "", /Expand-Archive/u);
+    assert.equal(calls[2]?.command, "npm");
+    assert.deepEqual(calls[2]?.args, ["install"]);
+    assert.equal(calls[2]?.cwd, join((calls[1]?.args.at(-1)?.match(/DestinationPath '([^']+)'/u)?.[1] as string), "telegram-codex-bridge-master"));
+    assert.equal(calls[3]?.command, "npm");
+    assert.deepEqual(calls[3]?.args, ["run", "build"]);
+    assert.equal(calls[4]?.command, process.execPath);
+    assert.deepEqual(calls[4]?.args, ["dist/cli.js", "install"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("updateBridge falls back to PowerShell download when curl is unavailable on win32", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ctb-update-win32-fallback-test-"));
+  const paths = createTestPaths(root);
+  const calls: Array<{
+    command: string;
+    args: string[];
+    cwd: string | URL | undefined;
+    env: NodeJS.ProcessEnv | undefined;
+  }> = [];
+
+  try {
+    paths.platform = "win32";
+    await createGithubArchiveUpdateFixture(paths);
+
+    await updateBridge(paths, {
+      commandExists: async () => false,
+      runCommand: async (command, args, options) => {
+        calls.push({ command, args, cwd: options?.cwd, env: options?.env as NodeJS.ProcessEnv | undefined });
+
+        if (command === "powershell.exe") {
+          const commandText = args.at(-1) ?? "";
+          const match = commandText.match(/DestinationPath '([^']+)'/u);
+          const workDir = match?.[1];
+          if (workDir) {
+            await mkdir(join(workDir, "telegram-codex-bridge-master"), { recursive: true });
+          }
+        }
+
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+    });
+
+    assert.equal(calls[0]?.command, "powershell.exe");
+    assert.match(calls[0]?.args.at(-1) ?? "", /Invoke-WebRequest/u);
+    assert.match(calls[0]?.args.at(-1) ?? "", /zip\/refs\/heads\/master/u);
+    assert.equal(calls[1]?.command, "powershell.exe");
+    assert.match(calls[1]?.args.at(-1) ?? "", /Expand-Archive/u);
+    assert.equal(calls[2]?.command, "npm");
+    assert.deepEqual(calls[2]?.args, ["install"]);
     assert.equal(calls[3]?.command, "npm");
     assert.deepEqual(calls[3]?.args, ["run", "build"]);
     assert.equal(calls[4]?.command, process.execPath);
@@ -799,7 +1057,7 @@ test("getStatus renders the expanded readiness summary fields", async () => {
       await writeFile(join(paths.installRoot, "dist", "cli.js"), "console.log('ok');\n", "utf8");
     });
     await mkdir(join(paths.binPath, ".."), { recursive: true });
-    await writeFile(paths.binPath, "#!/usr/bin/env bash\n", "utf8");
+    await writeFile(paths.binPath, process.platform === "win32" ? "@echo off\r\n" : "#!/usr/bin/env bash\n", "utf8");
     await writeFile(paths.envPath, "TELEGRAM_BOT_TOKEN=test-token\n", "utf8");
 
     const store = await BridgeStateStore.open(paths, testLogger);
@@ -826,7 +1084,7 @@ test("getStatus renders the expanded readiness summary fields", async () => {
       })
     } as any);
 
-    assert.match(output, /node_version=v25\.8\.1/u);
+    assert.match(output, /node_version=v24\.13\.1/u);
     assert.match(output, /node_version_supported=true/u);
     assert.match(output, /codex_version=codex-cli 0\.114\.0/u);
     assert.match(output, /codex_version_supported=true/u);
@@ -870,7 +1128,7 @@ test("runDoctor prints the expanded readiness matrix without syncing Telegram wh
     } as any);
 
     assert.match(output, /readiness=telegram_token_invalid/u);
-    assert.match(output, /node_version=v25\.8\.1/u);
+    assert.match(output, /node_version=v24\.13\.1/u);
     assert.match(output, /capability_check_passed=true/u);
     assert.match(output, /issues=telegram rejected the configured token/u);
     assert.match(output, /pending_runtime_notices=0/u);

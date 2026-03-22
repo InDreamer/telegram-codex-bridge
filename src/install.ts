@@ -8,7 +8,15 @@ import { collectArchiveDriftDiagnostics } from "./archive-drift.js";
 import { CodexAppServerClient } from "./codex/app-server.js";
 import type { Logger } from "./logger.js";
 import { ensureBridgeDirectories, type BridgePaths } from "./paths.js";
-import { commandExists, runCommand, type CommandResult } from "./process.js";
+import { commandExists, resolveCommand, runCommand, type CommandResult } from "./process.js";
+import {
+  getHostPlatform,
+  type HostPlatform,
+  LAUNCHD_SERVICE_LABEL,
+  SYSTEMD_SERVICE_NAME,
+  type ServiceManager,
+  WINDOWS_TASK_NAME
+} from "./platform.js";
 import { probeReadiness } from "./readiness.js";
 import {
   BridgeStateStore,
@@ -25,6 +33,7 @@ import {
   type PendingAuthorizationRow,
   type ReadinessSnapshot
 } from "./types.js";
+import { normalizeComparablePath, pathStartsWithin, pathsOverlap } from "./util/path.js";
 import { readRepoPackageJson } from "./util/package-json.js";
 
 type CommandRunner = (
@@ -32,8 +41,6 @@ type CommandRunner = (
   args: string[],
   options?: Parameters<typeof runCommand>[2]
 ) => Promise<CommandResult>;
-
-type ServiceManager = "systemd" | "launchd" | "none";
 
 interface InstallDependencies {
   detectServiceManager?: () => Promise<ServiceManager>;
@@ -55,7 +62,6 @@ interface InstallDependencies {
   }>;
 }
 
-const SERVICE_LABEL = "com.codex.telegram-bridge";
 const CODEX_SKILL_NAME = "telegram-codex-linker";
 const GITHUB_ARCHIVE_INSTALL_SOURCE_KIND = "github-archive";
 const INSTALL_SOURCE_ENV_KEYS = {
@@ -65,10 +71,6 @@ const INSTALL_SOURCE_ENV_KEYS = {
   ref: "CTB_INSTALL_SOURCE_REF",
   refType: "CTB_INSTALL_SOURCE_REF_TYPE"
 } as const;
-
-function pathsOverlap(left: string, right: string): boolean {
-  return left === right || left.startsWith(`${right}${sep}`) || right.startsWith(`${left}${sep}`);
-}
 
 async function validateProjectScanRoots(
   homeDir: string,
@@ -100,7 +102,7 @@ async function validateProjectScanRoots(
       continue;
     }
 
-    if (validatedRoots.some((existingRoot) => pathsOverlap(existingRoot, resolvedRoot))) {
+    if (validatedRoots.some((existingRoot) => pathsOverlap(existingRoot, resolvedRoot, getHostPlatform()))) {
       await logger.warn("skipping overlapping project scan root", {
         root: resolvedRoot,
         keptRoots: validatedRoots
@@ -162,6 +164,7 @@ function formatSnapshot(snapshot: ReadinessSnapshot | null): string {
     `codex_installed=${snapshot.details.codexInstalled}`,
     `codex_version=${formatOptionalValue(snapshot.details.codexVersion)}`,
     `codex_version_supported=${formatOptionalBoolean(snapshot.details.codexVersionSupported)}`,
+    `codex_bin_resolved=${formatOptionalValue(snapshot.details.codexBinResolvedPath)}`,
     `codex_authenticated=${snapshot.details.codexAuthenticated}`,
     `telegram_token_valid=${snapshot.details.telegramTokenValid}`,
     `app_server_available=${snapshot.details.appServerAvailable}`,
@@ -173,6 +176,7 @@ function formatSnapshot(snapshot: ReadinessSnapshot | null): string {
     `voice_input_enabled=${formatOptionalBoolean(snapshot.details.voiceInputEnabled)}`,
     `voice_openai_configured=${formatOptionalBoolean(snapshot.details.voiceOpenaiConfigured)}`,
     `voice_ffmpeg_available=${formatOptionalBoolean(snapshot.details.voiceFfmpegAvailable)}`,
+    `voice_ffmpeg_resolved=${formatOptionalValue(snapshot.details.voiceFfmpegResolvedPath)}`,
     `voice_realtime_supported=${formatOptionalBoolean(snapshot.details.voiceRealtimeSupported)}`,
     `capability_check_passed=${formatOptionalBoolean(snapshot.details.capabilityCheckPassed)}`,
     `capability_check_source=${formatOptionalValue(snapshot.details.capabilityCheckSource)}`,
@@ -271,7 +275,7 @@ async function writeInstallManifest(paths: BridgePaths): Promise<void> {
   const installSource = parseInstallSourceMetadataFromEnv();
   const manifest: InstallManifest = {
     version: await readPackageVersion(paths),
-    sourceRoot: installSource ? null : (paths.repoRoot.startsWith(paths.installRoot) ? null : paths.repoRoot),
+    sourceRoot: installSource ? null : (pathStartsWithin(paths.repoRoot, paths.installRoot, getHostPlatform()) ? null : paths.repoRoot),
     installedAt: new Date().toISOString(),
     installSource
   };
@@ -292,13 +296,41 @@ async function readInstallManifest(paths: BridgePaths): Promise<InstallManifest 
   }
 }
 
-async function writeWrapperScript(paths: BridgePaths): Promise<void> {
-  const content = `#!/usr/bin/env bash
-set -euo pipefail
-exec ${JSON.stringify(process.execPath)} --disable-warning=ExperimentalWarning ${JSON.stringify(join(paths.installRoot, "dist", "cli.js"))} "$@"
-`;
+function cliEntryPath(paths: BridgePaths): string {
+  return join(paths.installRoot, "dist", "cli.js");
+}
 
-  await writeFile(paths.binPath, content, "utf8");
+function buildShellWrapper(paths: BridgePaths): string {
+  return `#!/usr/bin/env bash
+set -euo pipefail
+exec ${JSON.stringify(process.execPath)} --disable-warning=ExperimentalWarning ${JSON.stringify(cliEntryPath(paths))} "$@"
+`;
+}
+
+function buildWindowsCmdWrapper(paths: BridgePaths): string {
+  return [
+    "@echo off",
+    `"${process.execPath}" --disable-warning=ExperimentalWarning "${cliEntryPath(paths)}" %*`
+  ].join("\r\n") + "\r\n";
+}
+
+function buildWindowsPowerShellWrapper(paths: BridgePaths): string {
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    `& '${escapePowerShell(process.execPath)}' '--disable-warning=ExperimentalWarning' '${escapePowerShell(cliEntryPath(paths))}' @Args`
+  ].join("\r\n") + "\r\n";
+}
+
+async function writeWrapperScript(paths: BridgePaths): Promise<void> {
+  if ((paths.platform ?? getHostPlatform()) === "win32") {
+    await writeFile(paths.binPath, buildWindowsCmdWrapper(paths), "utf8");
+    if (paths.powershellWrapperPath) {
+      await writeFile(paths.powershellWrapperPath, buildWindowsPowerShellWrapper(paths), "utf8");
+    }
+    return;
+  }
+
+  await writeFile(paths.binPath, buildShellWrapper(paths), "utf8");
   await chmod(paths.binPath, 0o755);
 }
 
@@ -311,7 +343,7 @@ After=default.target
 Type=simple
 WorkingDirectory=${paths.installRoot}
 EnvironmentFile=${paths.envPath}
-ExecStart=${process.execPath} --disable-warning=ExperimentalWarning ${join(paths.installRoot, "dist", "cli.js")} service run
+ExecStart=${process.execPath} --disable-warning=ExperimentalWarning ${cliEntryPath(paths)} service run
 Restart=on-failure
 RestartSec=2
 
@@ -366,7 +398,7 @@ export function buildLaunchAgentPlist(paths: BridgePaths): string {
   const programArguments = [
     process.execPath,
     "--disable-warning=ExperimentalWarning",
-    join(paths.installRoot, "dist", "cli.js"),
+    cliEntryPath(paths),
     "service",
     "run"
   ];
@@ -377,7 +409,7 @@ export function buildLaunchAgentPlist(paths: BridgePaths): string {
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>${SERVICE_LABEL}</string>
+  <string>${LAUNCHD_SERVICE_LABEL}</string>
   <key>ProgramArguments</key>
   <array>
 ${programArguments.map((value) => `    <string>${escapeXml(value)}</string>`).join("\n")}
@@ -412,6 +444,14 @@ async function writeLaunchAgent(paths: BridgePaths): Promise<void> {
   await writeFile(paths.launchAgentPath, buildLaunchAgentPlist(paths), "utf8");
 }
 
+function escapePowerShell(value: string): string {
+  return value.replace(/'/gu, "''");
+}
+
+function taskSchedulerName(paths: BridgePaths): string {
+  return paths.taskSchedulerName ?? WINDOWS_TASK_NAME;
+}
+
 async function systemctlAvailable(): Promise<boolean> {
   return await commandExists("systemctl");
 }
@@ -420,7 +460,15 @@ async function launchctlAvailable(): Promise<boolean> {
   return process.platform === "darwin" && await commandExists("launchctl");
 }
 
+async function windowsTaskSchedulerAvailable(): Promise<boolean> {
+  return process.platform === "win32" && await commandExists("powershell.exe");
+}
+
 async function detectServiceManager(): Promise<ServiceManager> {
+  if (await windowsTaskSchedulerAvailable()) {
+    return "task_scheduler";
+  }
+
   if (await launchctlAvailable()) {
     return "launchd";
   }
@@ -443,6 +491,99 @@ async function callSystemctl(args: string[]): Promise<void> {
   }
 }
 
+async function callPowerShell(script: string): Promise<CommandResult> {
+  const encodedScript = Buffer.from(script, "utf16le").toString("base64");
+  const result = await runCommand("powershell.exe", [
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-EncodedCommand",
+    encodedScript
+  ]);
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr || result.stdout || "powershell command failed");
+  }
+  return result;
+}
+
+export function buildTaskSchedulerRegistrationScript(paths: BridgePaths): string {
+  const taskName = escapePowerShell(taskSchedulerName(paths));
+  const executable = escapePowerShell(paths.binPath);
+  const installRoot = escapePowerShell(paths.installRoot);
+
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    `$taskName = '${taskName}'`,
+    `$task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue`,
+    "if ($null -ne $task) { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false }",
+    `$action = New-ScheduledTaskAction -Execute '${executable}' -Argument 'service run' -WorkingDirectory '${installRoot}'`,
+    "$trigger = New-ScheduledTaskTrigger -AtLogOn",
+    "$userId = if ($env:UserDomain) { \"$($env:UserDomain)\\$($env:UserName)\" } else { $env:UserName }",
+    "$principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited",
+    "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)",
+    "Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null"
+  ].join(";");
+}
+
+async function registerTaskSchedulerTask(paths: BridgePaths): Promise<void> {
+  await callPowerShell(buildTaskSchedulerRegistrationScript(paths));
+}
+
+function buildTaskSchedulerStatusScript(paths: BridgePaths): string {
+  const taskName = escapePowerShell(taskSchedulerName(paths));
+
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    `$taskName = '${taskName}'`,
+    "$task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue",
+    "if ($null -eq $task) { [pscustomobject]@{ exists = $false; state = 'missing'; lastRunResult = ''; lastRunTime = ''; taskToRun = '' } | ConvertTo-Json -Compress; exit 0 }",
+    "$info = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue",
+    "$taskToRun = ''",
+    "if ($task.Actions.Count -gt 0) { $taskToRun = ($task.Actions[0].Execute + ' ' + $task.Actions[0].Arguments).Trim() }",
+    "[pscustomobject]@{",
+    "  exists = $true;",
+    "  state = [string]$task.State;",
+    "  lastRunResult = if ($null -ne $info) { [string]$info.LastTaskResult } else { '' };",
+    "  lastRunTime = if ($null -ne $info -and $info.LastRunTime) { $info.LastRunTime.ToString('o') } else { '' };",
+    "  taskToRun = $taskToRun",
+    "} | ConvertTo-Json -Compress"
+  ].join(";");
+}
+
+async function getTaskSchedulerStatus(paths: BridgePaths): Promise<{
+  exists: boolean;
+  state: string;
+  lastRunResult: string;
+  lastRunTime: string;
+  taskToRun: string;
+}> {
+  const result = await callPowerShell(buildTaskSchedulerStatusScript(paths));
+  return JSON.parse(result.stdout) as {
+    exists: boolean;
+    state: string;
+    lastRunResult: string;
+    lastRunTime: string;
+    taskToRun: string;
+  };
+}
+
+async function startTaskSchedulerTask(paths: BridgePaths): Promise<void> {
+  await callPowerShell(`Start-ScheduledTask -TaskName '${escapePowerShell(taskSchedulerName(paths))}'`);
+}
+
+async function stopTaskSchedulerTask(paths: BridgePaths): Promise<void> {
+  await callPowerShell(
+    `$task = Get-ScheduledTask -TaskName '${escapePowerShell(taskSchedulerName(paths))}' -ErrorAction SilentlyContinue; if ($null -ne $task) { Stop-ScheduledTask -TaskName '${escapePowerShell(taskSchedulerName(paths))}' -ErrorAction SilentlyContinue }`
+  );
+}
+
+async function unregisterTaskSchedulerTask(paths: BridgePaths): Promise<void> {
+  await callPowerShell(
+    `$task = Get-ScheduledTask -TaskName '${escapePowerShell(taskSchedulerName(paths))}' -ErrorAction SilentlyContinue; if ($null -ne $task) { Unregister-ScheduledTask -TaskName '${escapePowerShell(taskSchedulerName(paths))}' -Confirm:$false }`
+  );
+}
+
 function launchctlDomain(): string {
   if (typeof process.getuid !== "function") {
     throw new Error("launchctl integration requires process.getuid()");
@@ -452,7 +593,7 @@ function launchctlDomain(): string {
 }
 
 function launchctlServiceTarget(): string {
-  return `${launchctlDomain()}/${SERVICE_LABEL}`;
+  return `${launchctlDomain()}/${LAUNCHD_SERVICE_LABEL}`;
 }
 
 function isLaunchctlNotLoadedMessage(message: string): boolean {
@@ -562,9 +703,20 @@ export async function installCodexSkill(paths: BridgePaths): Promise<string> {
   return `codex skill ${CODEX_SKILL_NAME} installed at ${targetPath}; restart Codex to load it`;
 }
 
-function githubArchiveUrl(installSource: InstallSourceMetadata): string {
+function githubArchiveUrl(
+  installSource: InstallSourceMetadata,
+  hostPlatform: HostPlatform = getHostPlatform()
+): string {
   if (installSource.kind !== GITHUB_ARCHIVE_INSTALL_SOURCE_KIND) {
     throw new Error(`unsupported install source kind: ${installSource.kind}`);
+  }
+
+  if (hostPlatform === "win32" && installSource.refType === "branch") {
+    return `https://codeload.github.com/${installSource.repoOwner}/${installSource.repoName}/zip/refs/heads/${installSource.ref}`;
+  }
+
+  if (hostPlatform === "win32" && installSource.refType === "tag") {
+    return `https://codeload.github.com/${installSource.repoOwner}/${installSource.repoName}/zip/refs/tags/${installSource.ref}`;
   }
 
   if (installSource.refType === "branch") {
@@ -576,22 +728,65 @@ function githubArchiveUrl(installSource: InstallSourceMetadata): string {
 
 async function downloadGithubArchiveSource(
   installSource: InstallSourceMetadata,
-  run: CommandRunner
-): Promise<{ sourceRoot: string; workDir: string }> {
-  const workDir = await mkdtemp(join(tmpdir(), "ctb-github-update-"));
-  const archivePath = join(workDir, "source.tar.gz");
-  const archiveUrl = githubArchiveUrl(installSource);
-
-  const download = await run("curl", ["-fsSL", archiveUrl, "-o", archivePath]);
-  if (download.exitCode !== 0) {
-    await rm(workDir, { recursive: true, force: true });
-    throw new Error(download.stderr || download.stdout || `failed to download ${archiveUrl}`);
+  deps: {
+    run: CommandRunner;
+    commandExists?: typeof commandExists;
+    hostPlatform?: HostPlatform;
   }
+): Promise<{ sourceRoot: string; workDir: string }> {
+  const run = deps.run;
+  const hostPlatform = deps.hostPlatform ?? getHostPlatform();
+  const hasCommand = deps.commandExists ?? commandExists;
+  const workDir = await mkdtemp(join(tmpdir(), "ctb-github-update-"));
+  const archivePath = join(workDir, hostPlatform === "win32" ? "source.zip" : "source.tar.gz");
+  const archiveUrl = githubArchiveUrl(installSource, hostPlatform);
 
-  const extract = await run("tar", ["-xzf", archivePath, "-C", workDir]);
-  if (extract.exitCode !== 0) {
+  try {
+    if (hostPlatform === "win32") {
+      if (await hasCommand("curl", { platform: "win32" })) {
+        const download = await run("curl", ["-fsSL", archiveUrl, "-o", archivePath]);
+        if (download.exitCode !== 0) {
+          throw new Error(download.stderr || download.stdout || `failed to download ${archiveUrl}`);
+        }
+      } else {
+        const download = await run("powershell.exe", [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          `Invoke-WebRequest -UseBasicParsing -Uri '${escapePowerShell(archiveUrl)}' -OutFile '${escapePowerShell(archivePath)}'`
+        ]);
+        if (download.exitCode !== 0) {
+          throw new Error(download.stderr || download.stdout || `failed to download ${archiveUrl}`);
+        }
+      }
+
+      const extract = await run("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        `Expand-Archive -LiteralPath '${escapePowerShell(archivePath)}' -DestinationPath '${escapePowerShell(workDir)}' -Force`
+      ]);
+      if (extract.exitCode !== 0) {
+        throw new Error(extract.stderr || extract.stdout || "failed to extract GitHub archive");
+      }
+    } else {
+      const download = await run("curl", ["-fsSL", archiveUrl, "-o", archivePath]);
+      if (download.exitCode !== 0) {
+        throw new Error(download.stderr || download.stdout || `failed to download ${archiveUrl}`);
+      }
+
+      const extract = await run("tar", ["-xzf", archivePath, "-C", workDir]);
+      if (extract.exitCode !== 0) {
+        throw new Error(extract.stderr || extract.stdout || "failed to extract GitHub archive");
+      }
+    }
+  } catch (error) {
     await rm(workDir, { recursive: true, force: true });
-    throw new Error(extract.stderr || extract.stdout || "failed to extract GitHub archive");
+    throw error;
   }
 
   const sourceEntry = (await readdir(workDir, { withFileTypes: true }))
@@ -706,11 +901,13 @@ export async function installBridge(
     await writeSystemdUnit(paths);
   } else if (serviceManager === "launchd") {
     await writeLaunchAgent(paths);
+  } else if (serviceManager === "task_scheduler") {
+    await writeFile(paths.servicePath, `${buildTaskSchedulerRegistrationScript(paths)}\n`, "utf8");
   }
 
   // Preserve an already-running unit by restarting it after the new release lands.
   const systemdServiceWasActive = serviceManager === "systemd"
-    ? (await run("systemctl", ["--user", "is-active", "codex-telegram-bridge.service"])).exitCode === 0
+    ? (await run("systemctl", ["--user", "is-active", SYSTEMD_SERVICE_NAME])).exitCode === 0
     : false;
 
   const store = await BridgeStateStore.open(paths, logger);
@@ -736,13 +933,16 @@ export async function installBridge(
   if (serviceManager === "systemd") {
     await callSystemctl(["daemon-reload"]);
     if (systemdServiceWasActive) {
-      await callSystemctl(["enable", "codex-telegram-bridge.service"]);
-      await callSystemctl(["restart", "codex-telegram-bridge.service"]);
+      await callSystemctl(["enable", SYSTEMD_SERVICE_NAME]);
+      await callSystemctl(["restart", SYSTEMD_SERVICE_NAME]);
     } else {
-      await callSystemctl(["enable", "--now", "codex-telegram-bridge.service"]);
+      await callSystemctl(["enable", "--now", SYSTEMD_SERVICE_NAME]);
     }
   } else if (serviceManager === "launchd") {
     await startLaunchAgent(paths);
+  } else if (serviceManager === "task_scheduler") {
+    await registerTaskSchedulerTask(paths);
+    await startTaskSchedulerTask(paths);
   } else {
     await logger.warn("no supported service manager found; service files were not enabled");
   }
@@ -754,10 +954,18 @@ export async function getStatus(paths: BridgePaths, deps: InstallDependencies = 
   const manifest = await readInstallManifest(paths);
   const configExists = await pathExists(paths.envPath);
   const serviceManager = await detectManager();
-  const serviceDefinitionPath = serviceManager === "launchd" ? paths.launchAgentPath : paths.servicePath;
-  const serviceExists = await pathExists(serviceDefinitionPath);
-  const systemdServiceExists = await pathExists(paths.servicePath);
-  const launchAgentExists = await pathExists(paths.launchAgentPath);
+  const taskSchedulerStatus = serviceManager === "task_scheduler"
+    ? await getTaskSchedulerStatus(paths)
+    : null;
+  const serviceDefinitionPath = serviceManager === "launchd"
+    ? paths.launchAgentPath
+    : paths.servicePath;
+  const serviceExists = serviceManager === "task_scheduler"
+    ? taskSchedulerStatus?.exists ?? false
+    : await pathExists(serviceDefinitionPath);
+  const systemdServiceExists = serviceManager === "systemd" ? await pathExists(paths.servicePath) : false;
+  const launchAgentExists = serviceManager === "launchd" ? await pathExists(paths.launchAgentPath) : false;
+  const taskSchedulerDefinitionExists = serviceManager === "task_scheduler" ? await pathExists(paths.servicePath) : false;
   const installExists =
     manifest !== null &&
     (await pathExists(join(paths.installRoot, "dist", "cli.js"))) &&
@@ -769,11 +977,13 @@ export async function getStatus(paths: BridgePaths, deps: InstallDependencies = 
     const result = await run("systemctl", [
       "--user",
       "is-active",
-      "codex-telegram-bridge.service"
+      SYSTEMD_SERVICE_NAME
     ]);
     serviceState = result.exitCode === 0 ? result.stdout : result.stdout || result.stderr || "inactive";
   } else if (serviceManager === "launchd") {
     serviceState = await getLaunchdServiceState();
+  } else if (serviceManager === "task_scheduler") {
+    serviceState = taskSchedulerStatus?.state ?? "missing";
   }
 
   let snapshot: ReadinessSnapshot | null = null;
@@ -813,8 +1023,13 @@ export async function getStatus(paths: BridgePaths, deps: InstallDependencies = 
     `service_file_present=${serviceExists}`,
     `systemd_service_file_present=${systemdServiceExists}`,
     `launchd_service_file_present=${launchAgentExists}`,
+    `task_scheduler_task_present=${taskSchedulerStatus?.exists ?? false}`,
+    `task_scheduler_definition_present=${taskSchedulerDefinitionExists}`,
     `service_manager=${serviceManager}`,
     `service_state=${serviceState}`,
+    `task_scheduler_last_run_result=${taskSchedulerStatus?.lastRunResult ?? "unknown"}`,
+    `task_scheduler_last_run_time=${taskSchedulerStatus?.lastRunTime ?? "unknown"}`,
+    `task_scheduler_task_to_run=${taskSchedulerStatus?.taskToRun ?? "unknown"}`,
     `version=${manifest?.version ?? "unknown"}`,
     `installed_at=${manifest?.installedAt ?? "unknown"}`,
     `state_dir_present=${stateExists}`,
@@ -833,6 +1048,7 @@ export async function getStatus(paths: BridgePaths, deps: InstallDependencies = 
 
 export async function runDoctor(paths: BridgePaths, logger: Logger, deps: InstallDependencies = {}): Promise<string> {
   const readinessProbe = deps.probeReadiness ?? probeReadiness;
+  const detectManager = deps.detectServiceManager ?? detectServiceManager;
   const createTelegramApi = deps.createTelegramApi ?? ((token: string, baseUrl: string) => new TelegramApi(token, baseUrl));
   const syncCommands = deps.syncTelegramCommands ?? syncTelegramCommands;
   const scanArchiveDrift = deps.scanArchiveDrift ?? collectArchiveDriftDiagnostics;
@@ -850,6 +1066,10 @@ export async function runDoctor(paths: BridgePaths, logger: Logger, deps: Instal
 
   try {
     const config = await loadConfig(paths);
+    const serviceManager = await detectManager();
+    const taskSchedulerStatus = serviceManager === "task_scheduler"
+      ? await getTaskSchedulerStatus(paths)
+      : null;
     const result = await readinessProbe({
       config,
       store,
@@ -865,7 +1085,15 @@ export async function runDoctor(paths: BridgePaths, logger: Logger, deps: Instal
       const telegramApi = createTelegramApi(config.telegramBotToken, config.telegramApiBaseUrl);
       await syncCommands(telegramApi);
     }
-    const lines = ["state_store_open=ok", formatSnapshot(snapshot), `pending_runtime_notices=${pendingNoticeCount}`];
+    const lines = [
+      "state_store_open=ok",
+      `service_manager=${serviceManager}`,
+      `task_scheduler_task_present=${taskSchedulerStatus?.exists ?? false}`,
+      `task_scheduler_state=${taskSchedulerStatus?.state ?? "unknown"}`,
+      `task_scheduler_last_run_result=${taskSchedulerStatus?.lastRunResult ?? "unknown"}`,
+      formatSnapshot(snapshot),
+      `pending_runtime_notices=${pendingNoticeCount}`
+    ];
     if (isOperationalReadinessState(snapshot.state) && appServer) {
       try {
         const driftSummary = await scanArchiveDrift({
@@ -894,12 +1122,17 @@ export async function runDoctor(paths: BridgePaths, logger: Logger, deps: Instal
 export async function startService(paths: BridgePaths): Promise<void> {
   const serviceManager = await detectServiceManager();
   if (serviceManager === "systemd") {
-    await callSystemctl(["start", "codex-telegram-bridge.service"]);
+    await callSystemctl(["start", SYSTEMD_SERVICE_NAME]);
     return;
   }
 
   if (serviceManager === "launchd") {
     await startLaunchAgent(paths);
+    return;
+  }
+
+  if (serviceManager === "task_scheduler") {
+    await startTaskSchedulerTask(paths);
     return;
   }
 
@@ -909,12 +1142,17 @@ export async function startService(paths: BridgePaths): Promise<void> {
 export async function stopService(paths: BridgePaths): Promise<void> {
   const serviceManager = await detectServiceManager();
   if (serviceManager === "systemd") {
-    await callSystemctl(["stop", "codex-telegram-bridge.service"]);
+    await callSystemctl(["stop", SYSTEMD_SERVICE_NAME]);
     return;
   }
 
   if (serviceManager === "launchd") {
     await stopLaunchAgent(paths);
+    return;
+  }
+
+  if (serviceManager === "task_scheduler") {
+    await stopTaskSchedulerTask(paths);
     return;
   }
 
@@ -924,12 +1162,18 @@ export async function stopService(paths: BridgePaths): Promise<void> {
 export async function restartService(paths: BridgePaths): Promise<void> {
   const serviceManager = await detectServiceManager();
   if (serviceManager === "systemd") {
-    await callSystemctl(["restart", "codex-telegram-bridge.service"]);
+    await callSystemctl(["restart", SYSTEMD_SERVICE_NAME]);
     return;
   }
 
   if (serviceManager === "launchd") {
     await startLaunchAgent(paths);
+    return;
+  }
+
+  if (serviceManager === "task_scheduler") {
+    await stopTaskSchedulerTask(paths);
+    await startTaskSchedulerTask(paths);
     return;
   }
 
@@ -940,9 +1184,11 @@ export async function updateBridge(
   paths: BridgePaths,
   deps: {
     runCommand?: typeof runCommand;
+    commandExists?: typeof commandExists;
   } = {}
 ): Promise<void> {
   const run = deps.runCommand ?? runCommand;
+  const hasCommand = deps.commandExists ?? commandExists;
   const manifest = await readInstallManifest(paths);
   if (!manifest) {
     throw new Error("update requires an existing install manifest; reinstall first");
@@ -951,7 +1197,14 @@ export async function updateBridge(
   const config = await loadConfig(paths);
 
   if (manifest.installSource?.kind === GITHUB_ARCHIVE_INSTALL_SOURCE_KIND) {
-    const { sourceRoot, workDir } = await downloadGithubArchiveSource(manifest.installSource, run);
+    const { sourceRoot, workDir } = await downloadGithubArchiveSource(
+      manifest.installSource,
+      {
+        run,
+        commandExists: hasCommand,
+        hostPlatform: paths.platform ?? getHostPlatform()
+      }
+    );
     try {
       await reinstallFromSourceRoot(sourceRoot, config, manifest.installSource, run);
       return;
@@ -972,21 +1225,53 @@ export async function updateBridge(
 }
 
 export async function uninstallBridge(paths: BridgePaths, purgeState: boolean): Promise<void> {
+  const hostPlatform = paths.platform ?? getHostPlatform();
+  const sharedInstallAndStateRoot = normalizeComparablePath(paths.installRoot, hostPlatform)
+    === normalizeComparablePath(paths.stateRoot, hostPlatform);
   const serviceManager = await detectServiceManager();
   if (serviceManager === "systemd") {
-    await runCommand("systemctl", ["--user", "disable", "--now", "codex-telegram-bridge.service"]);
+    await runCommand("systemctl", ["--user", "disable", "--now", SYSTEMD_SERVICE_NAME]);
     await runCommand("systemctl", ["--user", "daemon-reload"]);
   } else if (serviceManager === "launchd") {
     await stopLaunchAgent(paths).catch(() => {});
+  } else if (serviceManager === "task_scheduler") {
+    await stopTaskSchedulerTask(paths).catch(() => {});
+    await unregisterTaskSchedulerTask(paths).catch(() => {});
   }
 
   await unlink(paths.servicePath).catch(() => {});
   await unlink(paths.launchAgentPath).catch(() => {});
-  await rm(paths.installRoot, { recursive: true, force: true });
+  if (purgeState || !sharedInstallAndStateRoot) {
+    await rm(paths.installRoot, { recursive: true, force: true });
+  } else {
+    await removeSharedInstallArtifacts(paths);
+  }
   await rm(paths.configRoot, { recursive: true, force: true });
 
-  if (purgeState) {
+  if (purgeState && !sharedInstallAndStateRoot) {
     await rm(paths.stateRoot, { recursive: true, force: true });
+  }
+}
+
+async function removeSharedInstallArtifacts(paths: BridgePaths): Promise<void> {
+  await Promise.all([
+    rm(join(paths.installRoot, "bin"), { recursive: true, force: true }),
+    rm(join(paths.installRoot, "dist"), { recursive: true, force: true }),
+    rm(join(paths.installRoot, "skills"), { recursive: true, force: true }),
+    rm(join(paths.installRoot, "package.json"), { recursive: true, force: true }),
+    rm(paths.manifestPath, { recursive: true, force: true })
+  ]);
+
+  const remainingEntries = await readdir(paths.installRoot).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") {
+      return null;
+    }
+
+    throw error;
+  });
+
+  if (remainingEntries && remainingEntries.length === 0) {
+    await rm(paths.installRoot, { recursive: true, force: true });
   }
 }
 

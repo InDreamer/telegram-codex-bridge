@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 
 import type { Logger } from "../logger.js";
+import { buildSpawnPlan } from "../process.js";
 import type { ReasoningEffort } from "../types.js";
 
 interface JsonRpcSuccess {
@@ -442,7 +443,8 @@ export class CodexAppServerClient {
     await mkdir(dirname(this.logPath), { recursive: true });
     this.stderrStream = createWriteStream(this.logPath, { flags: "a" });
 
-    const child = spawn(this.codexBin, ["app-server", "--listen", "stdio://"], {
+    const spawnPlan = await buildSpawnPlan(this.codexBin, ["app-server", "--listen", "stdio://"]);
+    const child = spawn(spawnPlan.command, spawnPlan.args, {
       stdio: ["pipe", "pipe", "pipe"]
     });
 

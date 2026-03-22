@@ -15,6 +15,14 @@ Usage:
 EOF
 }
 
+if [[ "${1:-}" == "--windows-help" ]]; then
+  cat <<'EOF'
+Windows entry:
+  powershell -ExecutionPolicy Bypass -File scripts/install-skill-from-github.ps1 [-Ref <name>] [-RefType branch|tag]
+EOF
+  exit 0
+fi
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ref)

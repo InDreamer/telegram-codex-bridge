@@ -2573,6 +2573,9 @@ export class RuntimeSurfaceController {
         this.clearRetainedHubTimer(retained);
       }
     }
+    for (const turnId of this.turnHubAutoRefreshStates.keys()) {
+      this.clearTurnHubAutoRefreshState(turnId);
+    }
   }
 
   async handleHub(chatId: string): Promise<{ kind: "refreshed" | "no_running" | "interaction_pending" }> {

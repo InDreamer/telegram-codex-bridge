@@ -1,6 +1,6 @@
 # Current Snapshot
 
-Updated: 2026-03-21
+Updated: 2026-03-22
 
 This file is the home for high-drift facts that change more often than the narrative docs should.
 Use it for version baselines, repo-size snapshots, and similar volatile counts.
@@ -9,7 +9,8 @@ Do **not** use it as a behavior spec.
 ## Current Host And Tooling Snapshot
 
 - package version: `0.1.0`
-- required Node engine from `package.json`: `>=25.0.0`
+- required Node engine from `package.json`: `>=24.0.0`
+- supported Node lines in CI: `24`, `25`
 - live `codex --version`: `codex-cli 0.116.0`
 - live `codex app-server --help` confirms:
   - `--listen stdio://` default transport

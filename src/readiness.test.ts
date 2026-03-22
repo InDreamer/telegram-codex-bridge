@@ -102,7 +102,7 @@ async function createReadinessContext(): Promise<{
   await writeFile(join(paths.repoRoot, "package.json"), JSON.stringify({
     name: "telegram-codex-bridge",
     engines: {
-      node: ">=25.0.0"
+      node: ">=24.0.0"
     }
   }, null, 2));
 
@@ -151,13 +151,13 @@ test("probeReadiness fails hard when Node does not satisfy the declared engine f
       logger: testLogger,
       persist: false,
       deps: {
-        nodeVersion: "v24.9.0",
+        nodeVersion: "v23.9.0",
         commandExists: async () => true
       }
     } as any);
 
     assert.equal(result.snapshot.state, "bridge_unhealthy");
-    assert.equal(result.snapshot.details.nodeVersion, "v24.9.0");
+    assert.equal(result.snapshot.details.nodeVersion, "v23.9.0");
     assert.equal(result.snapshot.details.nodeVersionSupported, false);
     assert.match(result.snapshot.details.issues.join("\n"), /Node/u);
   } finally {

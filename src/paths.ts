@@ -3,7 +3,17 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  getHostPlatform,
+  getWindowsLocalAppData,
+  getWindowsRoamingAppData,
+  LAUNCHD_SERVICE_LABEL,
+  type HostPlatform,
+  WINDOWS_TASK_NAME
+} from "./platform.js";
+
 export interface BridgePaths {
+  platform?: HostPlatform;
   homeDir: string;
   repoRoot: string;
   installRoot: string;
@@ -18,7 +28,10 @@ export interface BridgePaths {
   envPath: string;
   servicePath: string;
   launchAgentPath: string;
+  taskSchedulerName?: string;
   binPath: string;
+  powershellBinPath?: string;
+  powershellWrapperPath?: string;
   manifestPath: string;
   offsetPath: string;
   bridgeLogPath: string;
@@ -37,16 +50,29 @@ export function getDebugRuntimeDir(runtimeDir: string): string {
   return join(runtimeDir, "debug");
 }
 
-export function getBridgePaths(importMetaUrl: string, homeDir = homedir()): BridgePaths {
-  const installRoot = join(homeDir, ".local", "share", "codex-telegram-bridge");
-  const stateRoot = join(homeDir, ".local", "state", "codex-telegram-bridge");
-  const configRoot = join(homeDir, ".config", "codex-telegram-bridge");
+export function getBridgePaths(
+  importMetaUrl: string,
+  homeDir = homedir(),
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env
+): BridgePaths {
+  const hostPlatform = getHostPlatform(platform);
+  const installRoot = hostPlatform === "win32"
+    ? join(getWindowsLocalAppData(homeDir, env), "codex-telegram-bridge")
+    : join(homeDir, ".local", "share", "codex-telegram-bridge");
+  const stateRoot = hostPlatform === "win32"
+    ? installRoot
+    : join(homeDir, ".local", "state", "codex-telegram-bridge");
+  const configRoot = hostPlatform === "win32"
+    ? join(getWindowsRoamingAppData(homeDir, env), "codex-telegram-bridge")
+    : join(homeDir, ".config", "codex-telegram-bridge");
   const logsDir = join(stateRoot, "logs");
   const telegramSessionFlowLogsDir = join(logsDir, "telegram-session-flow");
   const runtimeDir = join(stateRoot, "runtime");
   const cacheDir = join(stateRoot, "cache");
-
-  return {
+  const binBaseName = hostPlatform === "win32" ? "ctb.cmd" : "ctb";
+  const paths: BridgePaths = {
+    platform: hostPlatform,
     homeDir,
     repoRoot: getRepoRoot(importMetaUrl),
     installRoot,
@@ -59,9 +85,11 @@ export function getBridgePaths(importMetaUrl: string, homeDir = homedir()): Brid
     dbPath: join(stateRoot, "bridge.db"),
     stateStoreFailurePath: join(stateRoot, "state-store-open-failure.json"),
     envPath: join(configRoot, "bridge.env"),
-    servicePath: join(homeDir, ".config", "systemd", "user", "codex-telegram-bridge.service"),
-    launchAgentPath: join(homeDir, "Library", "LaunchAgents", "com.codex.telegram-bridge.plist"),
-    binPath: join(installRoot, "bin", "ctb"),
+    servicePath: hostPlatform === "win32"
+      ? join(configRoot, "tasks", `${WINDOWS_TASK_NAME}.ps1`)
+      : join(homeDir, ".config", "systemd", "user", "codex-telegram-bridge.service"),
+    launchAgentPath: join(homeDir, "Library", "LaunchAgents", `${LAUNCHD_SERVICE_LABEL}.plist`),
+    binPath: join(installRoot, "bin", binBaseName),
     manifestPath: join(installRoot, "install-manifest.json"),
     offsetPath: join(runtimeDir, "telegram-offset.json"),
     bridgeLogPath: join(logsDir, "bridge.log"),
@@ -71,6 +99,14 @@ export function getBridgePaths(importMetaUrl: string, homeDir = homedir()): Brid
     telegramPlanCardLogPath: join(telegramSessionFlowLogsDir, "plan-card.log"),
     telegramErrorCardLogPath: join(telegramSessionFlowLogsDir, "error-card.log")
   };
+
+  if (hostPlatform === "win32") {
+    paths.taskSchedulerName = WINDOWS_TASK_NAME;
+    paths.powershellBinPath = join(installRoot, "bin", "ctb.ps1");
+    paths.powershellWrapperPath = paths.powershellBinPath;
+  }
+
+  return paths;
 }
 
 export async function ensureBridgeDirectories(paths: BridgePaths): Promise<void> {
@@ -84,6 +120,7 @@ export async function ensureBridgeDirectories(paths: BridgePaths): Promise<void>
     mkdir(getDebugRuntimeDir(paths.runtimeDir), { recursive: true }),
     mkdir(dirname(paths.servicePath), { recursive: true }),
     mkdir(dirname(paths.launchAgentPath), { recursive: true }),
-    mkdir(dirname(paths.binPath), { recursive: true })
+    mkdir(dirname(paths.binPath), { recursive: true }),
+    ...(paths.powershellWrapperPath ? [mkdir(dirname(paths.powershellWrapperPath), { recursive: true })] : [])
   ]);
 }

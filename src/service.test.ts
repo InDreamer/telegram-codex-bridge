@@ -323,7 +323,7 @@ function createReadinessSnapshot(
       telegramTokenValid: true,
       authorizedUserBound: false,
       issues: [],
-      nodeVersion: "v25.8.1",
+      nodeVersion: "v24.13.1",
       nodeVersionSupported: true,
       codexVersion: "codex-cli 0.114.0",
       codexVersionSupported: true,
@@ -462,7 +462,7 @@ test("BridgeService.run refuses to enter the poll loop when readiness is bridge_
         snapshot: createReadinessSnapshot({
           state: "bridge_unhealthy",
           details: {
-            issues: ["Node v24.9.0 does not satisfy required range >=25.0.0"]
+            issues: ["Node v23.9.0 does not satisfy required range >=24.0.0"]
           }
         }),
         appServer: null

@@ -12,8 +12,18 @@ permissions:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+        node-version:
+          - "24"
+          - "25"
 
     steps:
       - name: Check out repository
@@ -22,7 +32,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "25"
+          node-version: ${{ matrix.node-version }}
           cache: npm
 
       - name: Install dependencies

@@ -15,6 +15,22 @@ if [[ -z "$CTB" && -x "$CTB_BIN" ]]; then
 fi
 ```
 
+Windows PowerShell equivalents:
+
+```powershell
+$codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
+$localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $HOME "AppData\Local" }
+$skillRoot = Join-Path $codexHome "skills\telegram-codex-linker"
+$installScript = Join-Path $skillRoot "scripts\install-bridge-from-github.ps1"
+$rootDiscoveryScript = Join-Path $skillRoot "scripts\discover-project-scan-roots.ps1"
+$ctbBin = Join-Path $localAppData "codex-telegram-bridge\bin\ctb.cmd"
+$ctbCommand = Get-Command ctb -ErrorAction SilentlyContinue
+$ctb = if ($ctbCommand) { $ctbCommand.Source } else { $null }
+if (-not $ctb -and (Test-Path $ctbBin)) {
+  $ctb = $ctbBin
+}
+```
+
 ## 0. Language
 
 Choose the user-facing language from the user's recent messages.
@@ -61,6 +77,7 @@ Rules:
 - prefer roots that contain multiple child directories that look like projects or repos
 - do not keep overlapping parent-child roots
 - if no good roots are obvious, omit the install flag and let runtime fall back to scanning `HOME`
+- on Windows, use `;` instead of `:` when passing `PROJECT_SCAN_ROOTS`
 
 ## 2. Decide
 
@@ -92,6 +109,12 @@ Command:
 bash "$INSTALL_SCRIPT" --telegram-token '<token>' --project-scan-roots '<path1:path2:path3>'
 ```
 
+Windows command:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File $installScript -TelegramToken '<token>' -ProjectScanRoots '<path1;path2;path3>'
+```
+
 ### Bridge installed
 
 - trust `ctb status` and `ctb doctor`
@@ -108,6 +131,11 @@ When explicit roots are missing:
 4. include the default set you will use if the user does nothing
 5. let the user override with explicit choices or paths
 6. canonicalize, deduplicate, and remove overlaps before install
+
+Windows variant:
+
+1. run `$rootDiscoveryScript -Format lines` when you want to show recommendations
+2. run `$rootDiscoveryScript` when you want the `;`-joined default install value
 
 Recommended interaction shape:
 

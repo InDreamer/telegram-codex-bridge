@@ -8,8 +8,16 @@ import { TurnDebugJournal } from "./debug-journal.js";
 import { getBridgePaths, getDebugRuntimeDir } from "../paths.js";
 
 test("bridge paths expose a canonical debug runtime directory", () => {
-  const paths = getBridgePaths("file:///tmp/repo/src/cli.ts", "/tmp/home");
-  assert.equal(getDebugRuntimeDir(paths.runtimeDir), "/tmp/home/.local/state/codex-telegram-bridge/runtime/debug");
+  const homeDir = process.platform === "win32" ? "C:\\Users\\bridge" : "/tmp/home";
+  const paths = getBridgePaths("file:///tmp/repo/src/cli.ts", homeDir);
+  const debugDir = getDebugRuntimeDir(paths.runtimeDir);
+
+  if (process.platform === "win32") {
+    assert.match(debugDir, /codex-telegram-bridge\\runtime\\debug$/u);
+    return;
+  }
+
+  assert.equal(debugDir, "/tmp/home/.local/state/codex-telegram-bridge/runtime/debug");
 });
 
 test("turn debug journal writes newline-delimited JSON records under thread and turn paths", async () => {

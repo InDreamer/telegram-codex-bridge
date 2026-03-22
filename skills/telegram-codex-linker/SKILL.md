@@ -35,10 +35,27 @@ ROOT_DISCOVERY_SCRIPT="$SKILL_ROOT/scripts/discover-project-scan-roots.sh"
 CTB_BIN="${HOME}/.local/share/codex-telegram-bridge/bin/ctb"
 ```
 
+Windows PowerShell equivalents:
+
+```powershell
+$codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
+$localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $HOME "AppData\Local" }
+$skillRoot = Join-Path $codexHome "skills\telegram-codex-linker"
+$installScript = Join-Path $skillRoot "scripts\install-bridge-from-github.ps1"
+$rootDiscoveryScript = Join-Path $skillRoot "scripts\discover-project-scan-roots.ps1"
+$ctbBin = Join-Path $localAppData "codex-telegram-bridge\bin\ctb.cmd"
+```
+
 For first install, use the bundled script:
 
 ```bash
 bash "$INSTALL_SCRIPT" --telegram-token '<token>' --project-scan-roots '<path1:path2:path3>'
+```
+
+On Windows, use PowerShell instead:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File $installScript -TelegramToken '<token>' -ProjectScanRoots '<path1;path2;path3>'
 ```
 
 That script is the default install path. Do not narrate the build steps unless the install fails.
@@ -54,6 +71,7 @@ That script is the default install path. Do not narrate the build steps unless t
 - use the bundled install script for first install
 - use `ctb` for post-install status, repair, authorization, restart, and update
 - if `ctb` is not on `PATH`, use `$CTB_BIN`
+- on Windows, use the bundled `.ps1` install script and `ctb.cmd`
 - collect or infer project scan roots before first install and pass them through `--project-scan-roots`
 - if the user gives roots, use them
 - if the user gives none, run `$ROOT_DISCOVERY_SCRIPT` and prepare recommended roots before install
@@ -129,6 +147,12 @@ When the user does not provide roots:
 4. Tell the user that if they do nothing, the default set will be used.
 5. If the user chooses specific roots, use those instead.
 6. Never pass duplicate or overlapping roots.
+
+On Windows:
+
+1. Run the PowerShell discovery script.
+2. Use `;` as the root delimiter.
+3. Prefer user-space paths like `C:\Users\<name>\projects`.
 
 Recommended prompt shape:
 

@@ -17,6 +17,14 @@ Usage:
 EOF
 }
 
+if [[ "${1:-}" == "--windows-help" ]]; then
+  cat <<'EOF'
+Windows entry:
+  powershell -ExecutionPolicy Bypass -File scripts/install-from-github.ps1 -TelegramToken "<token>" [-CodexBin "<path>"] [-ProjectScanRoots "<path1;path2;...>"] [-Ref <name>] [-RefType branch|tag]
+EOF
+  exit 0
+fi
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --telegram-token)
@@ -64,9 +72,13 @@ for cmd in curl tar node npm; do
   fi
 done
 
-NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
-if [[ "${NODE_MAJOR}" -lt 25 ]]; then
-  echo "Node >=25 is required; found $(node -v)" >&2
+if ! node - <<'NODE'
+const [major, minor, patch] = process.versions.node.split(".").map(Number);
+const supported = major > 24 || (major === 24 && (minor > 0 || (minor === 0 && patch >= 0)));
+process.exit(supported ? 0 : 1);
+NODE
+then
+  echo "Node >=24.0.0 is required; found $(node -v)" >&2
   exit 1
 fi
 

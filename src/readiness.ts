@@ -7,14 +7,15 @@ import { TelegramApi } from "./telegram/api.js";
 import { CodexAppServerClient } from "./codex/app-server.js";
 import type { Logger } from "./logger.js";
 import type { BridgePaths } from "./paths.js";
-import { commandExists, runCommand, type CommandResult } from "./process.js";
+import { commandExists, resolveCommand, runCommand, type CommandResult } from "./process.js";
+import { getHostPlatform, type ServiceManager } from "./platform.js";
 import type { BridgeConfig } from "./config.js";
 import type { BridgeStateStore } from "./state/store.js";
 import type { ReadinessDetails, ReadinessSnapshot } from "./types.js";
 import { normalizeWhitespace } from "./util/text.js";
 import { readRepoPackageJson } from "./util/package-json.js";
 
-const NODE_ENGINE_FALLBACK = ">=25.0.0";
+const NODE_ENGINE_FALLBACK = ">=24.0.0";
 const MIN_CODEX_VERSION = [0, 114, 0] as const;
 const REQUIRED_CLIENT_REQUESTS = [
   "thread/list",
@@ -46,12 +47,11 @@ const CAPABILITY_REQUIREMENTS_FINGERPRINT = JSON.stringify({
   serverNotifications: [...REQUIRED_SERVER_NOTIFICATIONS]
 });
 
-type ServiceManagerName = "systemd" | "launchd" | "none";
 type ServiceManagerHealth = "ok" | "warning" | "error";
 type CapabilityCheckSource = "cache" | "generated_schema" | "unknown";
 
 interface ServiceManagerStatus {
-  manager: ServiceManagerName;
+  manager: ServiceManager;
   health: ServiceManagerHealth;
   issues: string[];
 }
@@ -94,6 +94,7 @@ interface AppServerLifecycle {
 interface ReadinessDependencies {
   nodeVersion?: string;
   commandExists?: typeof commandExists;
+  resolveCommand?: typeof resolveCommand;
   runCommand?: typeof runCommand;
   detectServiceManager?: (deps: {
     commandExists: typeof commandExists;
@@ -207,9 +208,19 @@ async function isDirectoryWritable(path: string): Promise<boolean> {
 async function defaultDetectServiceManager(deps: {
   commandExists: typeof commandExists;
 }): Promise<ServiceManagerStatus> {
-  if (process.platform === "darwin" && await deps.commandExists("launchctl")) {
+  const hostPlatform = getHostPlatform();
+
+  if (hostPlatform === "darwin" && await deps.commandExists("launchctl")) {
     return {
       manager: "launchd",
+      health: "ok",
+      issues: []
+    };
+  }
+
+  if (hostPlatform === "win32" && await deps.commandExists("powershell.exe")) {
+    return {
+      manager: "task_scheduler",
       health: "ok",
       issues: []
     };
@@ -435,6 +446,38 @@ export async function probeReadiness(options: {
   const deps = {
     nodeVersion: options.deps?.nodeVersion ?? process.version,
     commandExists: options.deps?.commandExists ?? commandExists,
+    resolveCommand: options.deps?.resolveCommand ?? (async (command: string) => {
+      if (options.deps?.commandExists) {
+        if (await options.deps.commandExists(command)) {
+          return {
+            requestedCommand: command,
+            resolvedPath: command,
+            invocation: "direct" as const,
+            launchCommand: command,
+            launchArgsPrefix: []
+          };
+        }
+
+        return null;
+      }
+
+      const resolved = await resolveCommand(command);
+      if (resolved) {
+        return resolved;
+      }
+
+      if (await commandExists(command)) {
+        return {
+          requestedCommand: command,
+          resolvedPath: command,
+          invocation: "direct" as const,
+          launchCommand: command,
+          launchArgsPrefix: []
+        };
+      }
+
+      return null;
+    }),
     runCommand: options.deps?.runCommand ?? runCommand,
     detectServiceManager: options.deps?.detectServiceManager ?? defaultDetectServiceManager,
     validateTelegramToken: options.deps?.validateTelegramToken ?? defaultValidateTelegramToken,
@@ -452,13 +495,20 @@ export async function probeReadiness(options: {
     voiceInputEnabled: config.voiceInputEnabled,
     ...(config.voiceInputEnabled ? {
       voiceOpenaiConfigured: config.voiceOpenaiApiKey.trim().length > 0,
-      voiceFfmpegAvailable: await deps.commandExists(config.voiceFfmpegBin),
       voiceRealtimeSupported: false
     } : {})
   };
 
+  if (config.voiceInputEnabled) {
+    const resolvedFfmpeg = await deps.resolveCommand(config.voiceFfmpegBin);
+    details.voiceFfmpegAvailable = resolvedFfmpeg !== null;
+    if (resolvedFfmpeg) {
+      details.voiceFfmpegResolvedPath = resolvedFfmpeg.resolvedPath;
+    }
+  }
+
   const requiredNodeRange = await readDeclaredNodeEngine(paths);
-  details.nodeVersionSupported = isVersionAtLeast(deps.nodeVersion, parseVersionParts(requiredNodeRange) ?? [25, 0, 0]);
+  details.nodeVersionSupported = isVersionAtLeast(deps.nodeVersion, parseVersionParts(requiredNodeRange) ?? [24, 0, 0]);
   if (!details.nodeVersionSupported) {
     details.issues.push(`Node ${deps.nodeVersion} does not satisfy required range ${requiredNodeRange}`);
     return finalizeFailure("bridge_unhealthy", details, store, persist);
@@ -489,8 +539,11 @@ export async function probeReadiness(options: {
     details.issues.push(...serviceManager.issues.map((issue) => normalizeIssue(`service manager warning: ${issue}`)));
   }
 
-  const codexAvailable = await deps.commandExists(config.codexBin);
-  if (!codexAvailable) {
+  const resolvedCodexBin = await deps.resolveCommand(config.codexBin);
+  if (resolvedCodexBin) {
+    details.codexBinResolvedPath = resolvedCodexBin.resolvedPath;
+  }
+  if (!resolvedCodexBin) {
     details.issues.push("codex binary not found in PATH");
     return finalizeFailure("bridge_unhealthy", details, store, persist);
   }
