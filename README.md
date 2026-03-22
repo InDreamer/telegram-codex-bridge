@@ -1,63 +1,37 @@
-# Telegram Codex Bridge
+<h1 align="center">telegram-codex-bridge</h1>
 
-[![CI](https://github.com/InDreamer/telegram-codex-bridge/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/InDreamer/telegram-codex-bridge/actions/workflows/ci.yml)
-[![GitHub stars](https://img.shields.io/github/stars/InDreamer/telegram-codex-bridge?style=flat-square)](https://github.com/InDreamer/telegram-codex-bridge/stargazers)
-[![Node >= 25](https://img.shields.io/badge/node-%3E%3D25-43853d?style=flat-square)](https://nodejs.org/)
-[![Telegram UX](https://img.shields.io/badge/interface-Telegram-26A5E4?style=flat-square)](https://telegram.org/)
+<p align="center">
+  <strong>Control Codex from Telegram. No terminal. No laptop. Just your phone.</strong>
+</p>
 
-Use Codex from Telegram with project-aware sessions, approval cards, runtime visibility, and a self-hosted install path that does not pretend your phone is a terminal.
+<p align="center">
+  <a href="https://github.com/InDreamer/telegram-codex-bridge/actions/workflows/ci.yml"><img src="https://github.com/InDreamer/telegram-codex-bridge/actions/workflows/ci.yml/badge.svg?branch=master" alt="CI"></a>
+  <a href="https://github.com/InDreamer/telegram-codex-bridge/stargazers"><img src="https://img.shields.io/github/stars/InDreamer/telegram-codex-bridge?style=flat" alt="GitHub stars"></a>
+  <a href="https://github.com/InDreamer/telegram-codex-bridge/releases"><img src="https://img.shields.io/github/v/release/InDreamer/telegram-codex-bridge?include_prereleases&label=version" alt="Version"></a>
+  <img src="https://img.shields.io/badge/node-%E2%89%A525-brightgreen" alt="Node >= 25">
+  <img src="https://img.shields.io/badge/platform-linux%20%7C%20macos-blue" alt="Platform">
+</p>
 
-`telegram-codex-bridge` is for people who already run Codex on a VPS, workstation, or always-on machine and want a cleaner remote control surface from their phone.
+---
+
+## The Problem
+
+Codex on a VPS is powerful. But reaching it from your phone through a raw SSH session is awful — no project awareness, no structured feedback, no approval flow. Just a wall of text in a tiny terminal.
+
+## The Solution
+
+`telegram-codex-bridge` turns Telegram into a **native control surface** for your existing Codex installation. It's not a second Codex, not a chatbot wrapper — it's a proper remote control.
 
 ```mermaid
 flowchart LR
-  TG[Telegram chat] --> BR[telegram-codex-bridge]
-  BR --> CX[local Codex app-server]
-  CX --> PRJ[project files on the server]
+  TG["📱 Telegram"] --> BR["🔗 telegram-codex-bridge"]
+  BR --> CX["⚙️ Codex on your server"]
+  CX --> PRJ["📁 Your project files"]
 ```
 
-## Why This Exists
+## Quick Install
 
-Running Codex remotely is useful. Driving it from a raw terminal on a phone is not.
-
-This project gives Codex a Telegram-native control plane:
-
-- choose the project before the first real task instead of silently guessing a directory
-- monitor progress with compact runtime cards instead of terminal spam
-- answer approvals and questionnaires with bridge-owned Telegram UI
-- switch, archive, rename, and inspect sessions without dropping into SSH
-- send text, photos, and optional voice input from the same chat
-
-## Highlights
-
-- project-aware session startup with explicit project selection
-- one authorized Telegram user, private-chat-first trust model
-- `/inspect`, `/where`, `/status`, `/interrupt`, `/review`, `/rollback`, `/compact`, `/model`, `/plugins`, `/apps`, `/mcp`
-- photo upload mapped into `localImage` input
-- optional voice-message transcription
-- Linux and macOS install/admin surface with `ctb install`, `ctb status`, `ctb doctor`, and service management
-- runtime state, recovery, and diagnostics designed for long-lived operation
-
-## What It Is
-
-- Telegram is the control surface
-- Codex remains the execution engine
-- the bridge reuses the Codex environment already on your machine
-- the bridge is optimized for a high-trust, self-hosted setup
-
-## What It Is Not
-
-- not a second Codex environment
-- not a second permission system
-- not a provider-management layer
-- not a multi-user team bot
-- not a fake terminal squeezed into Telegram
-
-## Fastest Install
-
-### Option 1: Let Codex Set It Up
-
-Install the bundled skill:
+### Recommended: Let Codex set it up
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/master/scripts/install-skill-from-github.sh | bash
@@ -65,83 +39,126 @@ curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/mas
 
 Then tell Codex:
 
-```text
+```
 Use $telegram-codex-linker to set up my Telegram bridge.
 ```
 
-This is the cleanest path. The skill handles bridge install, repair, token collection, authorization, and verification, and only stops for the parts that require you.
+The skill handles everything — bridge install, token collection, authorization, and verification.
 
-### Option 2: Install The Bridge Directly
+### Alternative: Direct install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/master/scripts/install-from-github.sh | bash -s -- --telegram-token "<BOT_TOKEN>" --project-scan-roots "$HOME/projects:$HOME/work"
+curl -fsSL https://raw.githubusercontent.com/InDreamer/telegram-codex-bridge/master/scripts/install-from-github.sh | bash -s -- \
+  --telegram-token "<YOUR_BOT_TOKEN>" \
+  --project-scan-roots "$HOME/projects:$HOME/work"
 ```
+
+### Requirements
+
+- An always-on Linux or macOS machine
+- An existing [Codex](https://codex.new) installation
+- A Telegram bot token (from [@BotFather](https://t.me/BotFather))
+- Node >= 25 (if building from source)
 
 ## Who This Is For
 
-- you already use Codex on a server, desktop, or always-on machine
-- you want a cleaner phone workflow than SSH plus tmux
-- you prefer self-hosted tools and explicit operator control
-- you are okay with Telegram being the control plane into a high-trust runtime
+- You already run Codex on a server, desktop, or always-on machine
+- You want a cleaner phone workflow than SSH plus tmux
+- You prefer self-hosted tools and explicit operator control
+- You are okay with Telegram being the control plane into a high-trust runtime
 
-## Typical Telegram Flow
+## What You Get
 
-1. Run `/new` and choose the project.
-2. Send a task, a photo, or a voice message.
-3. Watch the runtime card and use `/inspect` or `/interrupt` when needed.
-4. Use `/sessions`, `/review`, `/rollback`, `/compact`, `/model`, `/plugins`, `/apps`, or `/mcp` as the task evolves.
+### Project-Aware Sessions
 
-## Why It Feels Reliable
+Run `/new` and **choose your project** before starting. No blind execution, no guessing which directory you're in.
 
-- explicit project selection before work starts
-- service-oriented install flow instead of ad hoc shell sessions
-- persistent SQLite-backed state and recovery behavior
-- runtime diagnostics for operators, not just end users
-- docs split into product, architecture, operations, and research so behavior is easier to verify
+### Runtime Visibility
 
-## Requirements
+Watch task progress through clean **runtime cards** instead of terminal noise. Use `/inspect` for details, `/where` for current location.
 
-- Linux or macOS
-- an existing Codex installation on that machine
-- a Telegram bot token
-- Node `>=25.0.0` if you build from source
+### Approval Flows in Telegram
+
+When Codex needs your input — approval, questionnaire, or a decision — the bridge renders it as native Telegram UI. No raw protocol messages.
+
+### Rich Input
+
+- Send a **photo** and it maps directly to Codex image input
+- Send a **voice message** and it gets transcribed into text
+- Full support for skills, mentions, and local images
+
+### Session Management
+
+Archive, unarchive, rename, pin, and switch between sessions — organized like Telegram chats but linked to your server projects.
+
+### Full Command Surface
+
+| Command | What it does |
+|---------|-------------|
+| `/new` | Start a new session with project picker |
+| `/sessions` | List and switch between sessions |
+| `/inspect` | Detailed view of current activity |
+| `/interrupt` | Stop a running task |
+| `/review` | Review changes in current session |
+| `/rollback` | Undo changes |
+| `/model` | Switch models and reasoning effort |
+| `/plan` | Toggle plan mode |
+| `/compact` | Compact conversation context |
+| `/browse` | Read-only file browser |
+| `/plugins` `/apps` `/mcp` | Manage extensions |
+
+## How It Works
+
+```
+You (Telegram) → bridge (on your server) → Codex app-server → your project files
+```
+
+- **Telegram** is the control surface (your phone)
+- **The bridge** translates between Telegram UX and Codex protocol
+- **Codex** remains the execution engine
+- Everything runs on **your machine** — self-hosted, single-user, high-trust
+
+## What It Is Not
+
+- Not a second Codex — it controls your existing one
+- Not a multi-user team bot — it's a personal remote control
+- Not a fake terminal in Telegram — it's a proper native UI
+- Not a provider layer — your Codex config handles that
+
+## After Install
+
+The `ctb` CLI manages your bridge:
+
+```bash
+ctb service run         # Start the bridge
+ctb status              # Health check
+ctb authorize pending   # Bind your Telegram account (one-time)
+ctb doctor              # Run diagnostics
+ctb update              # Self-update
+```
+
+Service management is built in — systemd on Linux, LaunchAgent on macOS.
 
 ## Development
 
 ```bash
-npm ci
-npm run check
-npm run test
-npm run build
-```
-
-For local development:
-
-```bash
-npm run dev
-```
-
-CLI entrypoint:
-
-```bash
-ctb
+npm ci                  # Install dependencies
+npm run check           # Type-check
+npm run test            # Run tests
+npm run build           # Build
+npm run dev             # Dev mode with hot reload
 ```
 
 ## Documentation
 
-If you are evaluating the project:
+For detailed docs, start here:
 
-- [`docs/product/v1-scope.md`](docs/product/v1-scope.md) for product boundary and trust model
-- [`docs/operations/install-and-admin.md`](docs/operations/install-and-admin.md) for install and admin flow
-- [`docs/architecture/runtime-and-state.md`](docs/architecture/runtime-and-state.md) for lifecycle, state, and recovery
+- [`docs/README.md`](docs/README.md) — documentation map
+- [`docs/product/v1-scope.md`](docs/product/v1-scope.md) — product boundary and trust model
+- [`docs/operations/install-and-admin.md`](docs/operations/install-and-admin.md) — admin reference
+- [`docs/architecture/current-code-organization.md`](docs/architecture/current-code-organization.md) — code organization
 
-If you are a coding agent:
-
-1. `AGENTS.md`
-2. exactly one domain agent
-3. exactly one leaf doc or one narrow source file
-
-The repo is intentionally documented for shallow, incremental retrieval instead of whole-repo preload.
+For coding agents, see [`AGENTS.md`](AGENTS.md).
 
 ## Contributing
 
@@ -149,4 +166,10 @@ Read [`CONTRIBUTING.md`](CONTRIBUTING.md), keep the scope tight, and update the 
 
 ## If This Is Useful
 
-Star the repo, try it on a real Codex host, and open an issue if the install flow or Telegram UX still feels rough.
+Star the repo, try it on a real Codex host, and [open an issue](https://github.com/InDreamer/telegram-codex-bridge/issues) if the install flow or Telegram UX still feels rough.
+
+---
+
+<p align="center">
+  <strong>Built by <a href="https://github.com/InDreamer">VainProphet</a></strong> — a prophet who ships tools, not predictions.
+</p>
