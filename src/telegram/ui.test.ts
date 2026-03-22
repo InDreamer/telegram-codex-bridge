@@ -778,16 +778,17 @@ test("buildRuntimeHubMessage renders slot-based live sections with stable slot n
     completed: false
   });
 
-  assert.match(text, /<b>📑 目录：<\/b> 1\/2/u);
-  assert.match(text, /<b>🎯 当前查看中的会话<\/b>/u);
-  assert.match(text, /3\. <b>telegram-codex-bridge<\/b> 📂 telegram-codex-bridge[\s\S]*?状态: Running/u);
-  assert.match(text, /<b>🏃 其他运行中的会话<\/b>/u);
-  assert.match(text, /1\. <b>algo-research<\/b> 📂 algo-research[\s\S]*?状态: Running/u);
-  assert.match(text, /<b>🕒 最近结束的会话<\/b>/u);
-  assert.match(text, /2\. <b>app-server-test-client<\/b> 📂 app-server-test-client[\s\S]*?状态: 已完成/u);
-  assert.doesNotMatch(text, /\[查看中/u);
-  assert.doesNotMatch(text, /<b>当前输入会话<\/b>/u);
-  assert.match(text, /💡 提示：使用 \/inspect 查看详情，使用 \/interrupt 打断，使用 \/status 查看状态。/u);
+  assert.match(text, /🎯 <b>Active Hub<\/b> \[目录：1\/2\]/u);
+  assert.match(text, /<b>\[当前查看中的会话\]<\/b>/u);
+  assert.match(text, /━━━━━━━━━━━━━━━━━━[\s\S]*?🟢 <b>SESSION #3: telegram-codex-bridge<\/b>[\s\S]*?<i>\(状态: Running\)<\/i>[\s\S]*?<blockquote expandable>验证已经有积极信号了。<\/blockquote>/u);
+  assert.match(text, /<b>\[其他运行中的会话\]<\/b>/u);
+  assert.match(text, /🟢 <b>SESSION #1: algo-research<\/b>[\s\S]*?<i>\(状态: Running\)<\/i>[\s\S]*?<blockquote expandable>测试结果里有一个很有价值的现状信号。<\/blockquote>/u);
+  assert.match(text, /<b>\[最近结束的会话\]<\/b>/u);
+  assert.match(text, /🏁 <b>SESSION #2: app-server-test-client<\/b>[\s\S]*?<i>\(状态: 已完成\)<\/i>/u);
+  assert.doesNotMatch(text, /Folder: telegram-codex-bridge/u);
+  assert.doesNotMatch(text, /<i>\(状态: Running · 查看中\)<\/i>/u);
+  assert.doesNotMatch(text, /<b>\[当前输入会话\]<\/b>/u);
+  assert.match(text, /💡 <i>\/status \| \/inspect \| \/interrupt<\/i>/u);
 });
 
 test("buildRuntimeHubMessage hides empty slot sections and marks completed hubs", () => {
@@ -812,9 +813,9 @@ test("buildRuntimeHubMessage hides empty slot sections and marks completed hubs"
     completed: true
   });
 
-  assert.match(text, /<b>📑 目录：<\/b> 2\/2 · 已完成/u);
-  assert.match(text, /<b>🕒 最近结束的会话<\/b>/u);
-  assert.match(text, /1\. <b>algo-research<\/b> 📂 algo-research[\s\S]*?状态: 已完成/u);
+  assert.match(text, /🎯 <b>Active Hub<\/b> \[目录：2\/2 · 已完成\]/u);
+  assert.match(text, /<b>\[最近结束的会话\]<\/b>/u);
+  assert.match(text, /🏁 <b>SESSION #1: algo-research<\/b>[\s\S]*?<i>\(状态: 已完成\)<\/i>/u);
   assert.doesNotMatch(text, /当前查看中的会话/u);
   assert.doesNotMatch(text, /其他运行中的会话/u);
 });
@@ -861,13 +862,51 @@ test("buildRuntimeHubMessage renders a separate current input session when the f
     isMainHub: true
   });
 
-  assert.match(text, /<b>👉 当前输入会话<\/b>/u);
-  assert.match(text, /<b>tweakcc<\/b> 📂 tweakcc[\s\S]*?状态: 空闲[\s\S]*?⌨️ 当前输入/u);
-  assert.match(text, /<b>🎯 当前查看中的运行会话<\/b>/u);
-  assert.match(text, /1\. <b>t3code<\/b> 📂 t3code[\s\S]*?状态: Running[\s\S]*?👁️ 查看中/u);
-  assert.match(text, /<b>🏃 其他运行中的会话<\/b>/u);
-  assert.match(text, /2\. <b>sub2api<\/b> 📂 sub2api[\s\S]*?状态: Running/u);
-  assert.doesNotMatch(text, /\[查看中 \/ 当前输入\]/u);
+  assert.match(text, /🎯 <b>Active Hub<\/b> \[目录：1\/1 · 2 个会话\]/u);
+  assert.match(text, /<b>\[当前输入会话\]<\/b>/u);
+  assert.match(text, /🟡 <b>SESSION: tweakcc<\/b>[\s\S]*?<i>\(状态: 空闲\)<\/i>[\s\S]*?<i>\(当前输入\)<\/i>/u);
+  assert.match(text, /<b>\[当前查看中的运行会话\]<\/b>/u);
+  assert.match(text, /🟢 <b>SESSION #1: t3code<\/b>[\s\S]*?<i>\(状态: Running\)<\/i>[\s\S]*?<i>\(查看中\)<\/i>[\s\S]*?<blockquote expandable>文本给的是骨架，但代码已经漂移了。<\/blockquote>/u);
+  assert.match(text, /<b>\[其他运行中的会话\]<\/b>/u);
+  assert.match(text, /🟢 <b>SESSION #2: sub2api<\/b>[\s\S]*?<i>\(状态: Running\)<\/i>[\s\S]*?<blockquote expandable>前端和引导流都要核对。<\/blockquote>/u);
+  assert.doesNotMatch(text, /Folder: tweakcc/u);
+  assert.doesNotMatch(text, /Folder: t3code/u);
+});
+
+test("buildRuntimeHubMessage only renders folder metadata when it differs from the session name", () => {
+  const text = buildRuntimeHubMessage({
+    language: "zh",
+    windowIndex: 0,
+    totalWindows: 1,
+    totalSessions: 2,
+    sessions: [
+      {
+        sessionId: "session-1",
+        sessionName: "bridge",
+        projectName: "bridge-dev",
+        state: "Running",
+        progressText: "UI 只改外观，不改逻辑。",
+        isFocused: true,
+        isActiveInputTarget: false
+      },
+      {
+        sessionId: "session-2",
+        sessionName: "worker",
+        projectName: "worker",
+        state: "Idle",
+        progressText: null,
+        isFocused: false,
+        isActiveInputTarget: false
+      }
+    ],
+    planEntries: [],
+    planExpanded: false,
+    agentEntries: [],
+    agentsExpanded: false
+  });
+
+  assert.match(text, /<i>\(Folder: bridge-dev\)<\/i>/u);
+  assert.doesNotMatch(text, /<i>\(Folder: worker\)<\/i>/u);
 });
 
 test("buildRuntimeStatusCard puts long progress on a second line", () => {

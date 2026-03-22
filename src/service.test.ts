@@ -182,7 +182,9 @@ function getLatestNonStatusMessage<T extends { text: string }>(sent: T[]): T | u
 }
 
 function isRuntimeStatusText(text: string): boolean {
-  return text.startsWith("<b>Runtime Status</b>") || text.startsWith("<b>运行状态</b>");
+  return text.startsWith("<b>Runtime Status</b>")
+    || text.startsWith("<b>运行状态</b>")
+    || text.startsWith("🎯 <b>Active Hub</b>");
 }
 
 async function withMockedNow<T>(nowIso: string, callback: () => Promise<T>): Promise<T> {
@@ -979,9 +981,9 @@ test("runtime cards keep command activity on the status message and final answer
     assert.equal(sent.filter((entry) => entry.text.startsWith("Command")).length, 0);
 
     const statusTexts = getMessageTexts(sent, edited, 100);
-    assert.ok(statusTexts.some((text) => /· Starting/u.test(text)));
-    assert.ok(statusTexts.some((text) => /· Running/u.test(text)));
-    assert.ok(statusTexts.some((text) => /· Completed/u.test(text)));
+    assert.ok(statusTexts.some((text) => /(状态|State): Starting/u.test(text)));
+    assert.ok(statusTexts.some((text) => /(状态|State): Running/u.test(text)));
+    assert.ok(statusTexts.some((text) => /(状态|State): (Completed|已完成)/u.test(text)));
     assert.ok(statusTexts.some((text) => /pnpm test -&gt; 26\/26 tests passed/u.test(text)));
     assert.equal(statusTexts.some((text) => /Command: /u.test(text)), false);
     assert.equal(statusTexts.some((text) => /Output: /u.test(text)), false);
@@ -1189,7 +1191,7 @@ test("completed turns fall back to thread history when task_complete is missing"
     );
     assert.equal(sent.filter((entry) => isRuntimeStatusText(entry.text)).length, 1);
     assert.ok(sent.some((entry) => entry.text.includes("Recovered from thread history.") && entry.parseMode === "HTML"));
-    assert.ok(edited.some((entry) => /· Completed/u.test(entry.text)));
+    assert.ok(edited.some((entry) => /(状态|State): (Completed|已完成)/u.test(entry.text)));
     assert.equal(store.getSessionById(session.sessionId)?.status, "idle");
     assert.equal((service as any).activeTurn, null);
   } finally {
@@ -1537,7 +1539,7 @@ test("runtime card edit failures retry the same message instead of sending a rep
 
     assert.equal(sent.length, 2);
     assert.ok(edited.length >= 1);
-    assert.match(activeTurn.statusCard.lastRenderedText, /· Running/u);
+    assert.match(activeTurn.statusCard.lastRenderedText, /(状态|State): Running/u);
     (service as any).runtimeSurfaceController.clearRuntimeCardTimer(activeTurn.statusCard);
   } finally {
     await cleanup();
@@ -1571,8 +1573,8 @@ test("startRealTurn sends an initial runtime status card immediately", async () 
 
     assert.equal(sent.length, 1);
     assert.equal(isRuntimeStatusText(sent[0]?.text ?? ""), true);
-    assert.match(sent[0]?.text ?? "", /· Starting/u);
-    assert.match(sent[0]?.text ?? "", /使用 \/inspect 查看完整详情/u);
+    assert.match(sent[0]?.text ?? "", /(状态|State): Starting/u);
+    assert.match(sent[0]?.text ?? "", /\/status \| \/inspect \| \/interrupt/u);
     assert.equal(sent[0]?.parseMode, "HTML");
     assert.deepEqual(sent[0]?.replyMarkup?.inline_keyboard?.[0]?.map((button: { text: string }) => button.text), ["1", "·", "·", "·", "·"]);
     assert.equal((service as any).activeTurn.statusCard.messageId, 800);
@@ -1614,10 +1616,11 @@ test("runtime hub omits optional runtime fields that now live under /status", as
     });
 
     assert.equal(sent.length, 1);
-    assert.match(sent[0]?.text ?? "", /1\. <b>Session Alpha<\/b> \/ Project One · Starting/u);
+    assert.match(sent[0]?.text ?? "", /🟢 <b>SESSION #1: Session Alpha<\/b>/u);
+    assert.match(sent[0]?.text ?? "", /<i>\(Folder: Project One\)<\/i>/u);
+    assert.match(sent[0]?.text ?? "", /<i>\(状态: Starting\)<\/i>/u);
     assert.doesNotMatch(sent[0]?.text ?? "", /<b>Model Reasoning<\/b>/u);
     assert.doesNotMatch(sent[0]?.text ?? "", /<b>Plan Mode<\/b>/u);
-    assert.doesNotMatch(sent[0]?.text ?? "", /\|/u);
   } finally {
     await cleanup();
   }
@@ -2037,7 +2040,7 @@ test("status card keeps commentary progress visible when structured thread statu
     });
 
     const latest = edited.at(-1)?.text ?? "";
-    assert.match(latest, /· Blocked/u);
+    assert.match(latest, /(状态|State): Blocked/u);
     assert.match(latest, /先确认 Codex 当前运行阶段，再决定下一步。/u);
   } finally {
     await cleanup();
@@ -3642,7 +3645,7 @@ test("runtime errors create a separate error card without polluting the status c
       ...sent.filter((entry) => isRuntimeStatusText(entry.text)).map((entry) => entry.text),
       ...edited.map((entry) => entry.text)
     ];
-    assert.ok(allStatusTexts.some((text) => /· Failed/u.test(text)));
+    assert.ok(allStatusTexts.some((text) => /(状态|State): (Failed|失败)/u.test(text)));
     assert.equal(allStatusTexts.some((text) => /tool crashed/u.test(text)), false);
 
     const errorTexts = getMessageTexts(sent, edited, 301);
@@ -3698,7 +3701,7 @@ test("runtime card rate limits keep the same message and retry later without rep
     assert.equal(sent.length, 1);
     assert.equal(edited.length, 1);
     assert.equal(activeTurn.statusCard.messageId, 700);
-    assert.match(activeTurn.statusCard.pendingText ?? "", /· Running/u);
+    assert.match(activeTurn.statusCard.pendingText ?? "", /(状态|State): Running/u);
 
     await withMockedNow("2026-03-10T10:00:10.000Z", async () => {
       await (service as any).handleAppServerNotification("item/started", {
@@ -3717,7 +3720,7 @@ test("runtime card rate limits keep the same message and retry later without rep
 
     assert.equal(sent.length, 1);
     assert.equal(edited.length, 2);
-    assert.match(activeTurn.statusCard.lastRenderedText, /· Running/u);
+    assert.match(activeTurn.statusCard.lastRenderedText, /(状态|State): Running/u);
     assert.doesNotMatch(activeTurn.statusCard.lastRenderedText, /Command: \$ pnpm test/u);
     (service as any).runtimeSurfaceController.clearRuntimeCardTimer(activeTurn.statusCard);
   } finally {
@@ -5329,7 +5332,7 @@ test("debug journal write failures do not break inspect or turn progress handlin
     assert.ok(sent.some((entry) => isRuntimeStatusText(entry.text)));
     assert.equal(sent.some((entry) => /^Command/u.test(entry.text)), false);
     assert.equal(edited.some((text) => /Command: \$ pnpm test/u.test(text)), false);
-    assert.ok(edited.some((text) => /· Running/u.test(text)));
+    assert.ok(edited.some((text) => /(状态|State): Running/u.test(text)));
     assert.equal(inspectMessage?.parseMode, "HTML");
     assert.match(inspectMessage?.text ?? "", /<b>当前任务详情<\/b>/u);
     assert.match(inspectMessage?.text ?? "", /<b>最近命令<\/b>/u);
@@ -5478,7 +5481,7 @@ test("runtime card flow writes dedicated per-surface trace logs with rendered co
     assert.match(statusLog, /Checking Telegram session flow rendering\./u);
     assert.match(statusLog, /"text":"计划清单"/u);
     assert.match(statusLog, /Trace plan card \(inProgress\)/u);
-    assert.match(statusLog, /"renderedText":"<b>(Runtime Status|运行状态)/u);
+    assert.match(statusLog, /"renderedText":"(🎯 <b>Active Hub<\/b>|<b>Runtime Status|<b>运行状态)/u);
 
     assert.match(errorLog, /"message":"card_created"/u);
     assert.match(errorLog, /Telegram edit failed/u);
@@ -5671,7 +5674,7 @@ test("bridge commands while blocked do not reanchor runtime ahead of the pending
     await (service as any).routeCommand("chat-1", "where", "");
 
     assert.equal(sent.length, 3);
-    assert.match(sent[0]?.text ?? "", /^<b>Runtime Status<\/b>|^<b>运行状态<\/b>/u);
+    assert.equal(isRuntimeStatusText(sent[0]?.text ?? ""), true);
     assert.match(sent[1]?.text ?? "", /Codex 需要命令批准/u);
     assert.match(sent[2]?.text ?? "", /当前会话|Current Session/u);
     assert.equal((service as any).activeTurn?.statusCard.messageId, sent[0]?.messageId);

@@ -61,6 +61,8 @@ const RUNTIME_HUB_SLOT_COUNT = 5;
 const RUNTIME_HUB_TEXT_SOFT_LIMIT = 3200;
 const RUNTIME_HUB_SESSION_PROGRESS_TEXT_LIMIT = 120;
 const RUNTIME_HUB_COMPACT_SESSION_PROGRESS_TEXT_LIMIT = 80;
+const RECOVERY_HUB_COMPACT_SESSION_NAME_LIMIT = 32;
+const RECOVERY_HUB_TIGHT_SESSION_NAME_LIMIT = 24;
 const HUB_AUTO_REFRESH_START_DELAY_MS = 1500;
 const HUB_AUTO_REFRESH_RECOVERY_DELAY_MS = 1000;
 const HUB_COMMAND_REMINDER_TEXT = "需要查看运行卡片时，可发送 /hub。";
@@ -1362,7 +1364,7 @@ export class RuntimeSurfaceController {
   } {
     const visibleState = this.getDesiredRuntimeHubVisibleState(hubState);
     const store = this.deps.getStore();
-    const sessions = visibleState.sessionIds
+    const allSessions = visibleState.sessionIds
       .map((sessionId) => store?.getSessionById(sessionId) ?? null)
       .filter((session): session is SessionRow => Boolean(session))
       .map((session) => ({
@@ -1378,41 +1380,123 @@ export class RuntimeSurfaceController {
         isFocused: session.sessionId === visibleState.focusedSessionId,
         isActiveInputTarget: session.sessionId === (store?.getActiveSession(chatId)?.sessionId ?? null)
       }));
-    const activeInputSession = this.buildSeparateHubActiveInputSession(chatId, new Set(visibleState.sessionIds));
-
-    const text = buildRuntimeHubMessage({
-      language: this.deps.getUiLanguage(),
-      windowIndex: 0,
-      totalWindows: 1,
-      totalSessions: sessions.length,
-      sessions,
-      activeInputSession,
-      sessionCollectionKind: "generic",
-      terminalSummaries: [],
-      isMainHub: true,
-      ...(reminderText !== undefined ? { reminderText } : {})
-    });
-
-    return {
-      text,
-      replyMarkup: buildRuntimeHubReplyMarkup({
-        token: hubState.token,
-        callbackVersion: visibleState.callbackVersion,
+    const render = (options?: {
+      sessionProgressTextLimit?: number;
+      compactSessions?: boolean;
+      sessionNameLimit?: number;
+      projectNameLimit?: number;
+      visibleSessionLimit?: number;
+    }): {
+      text: string;
+      replyMarkup: TelegramInlineKeyboardMarkup;
+      visibleState: RuntimeHubVisibleState;
+    } => {
+      const sessions = allSessions.map((session) => ({
+        ...session,
+        sessionName: this.truncateRecoveryHubField(session.sessionName, options?.sessionNameLimit) ?? session.sessionName,
+        projectName: this.truncateRecoveryHubField(session.projectName, options?.projectNameLimit),
+        progressText: options?.sessionProgressTextLimit === 0 ? null : session.progressText
+      }));
+      const activeInputSession = this.buildSeparateHubActiveInputSession(chatId, new Set(visibleState.sessionIds), {
+        ...(options?.sessionNameLimit !== undefined ? { sessionNameLimit: options.sessionNameLimit } : {}),
+        ...(options?.projectNameLimit !== undefined ? { projectNameLimit: options.projectNameLimit } : {})
+      });
+      const text = buildRuntimeHubMessage({
         language: this.deps.getUiLanguage(),
+        windowIndex: 0,
+        totalWindows: 1,
+        totalSessions: allSessions.length,
         sessions,
-        focusedSessionId: visibleState.focusedSessionId,
-        planEntries: [],
-        planExpanded: false,
-        agentEntries: [],
-        agentsExpanded: false
-      }),
-      visibleState
+        activeInputSession,
+        sessionCollectionKind: "generic",
+        terminalSummaries: [],
+        isMainHub: true,
+        sessionProgressTextLimit: options?.sessionProgressTextLimit ?? RUNTIME_HUB_SESSION_PROGRESS_TEXT_LIMIT,
+        genericSessionLayout: options?.compactSessions ? "compact" : "detailed",
+        ...(options?.visibleSessionLimit !== undefined ? { genericVisibleSessionLimit: options.visibleSessionLimit } : {}),
+        ...(reminderText !== undefined ? { reminderText } : {})
+      });
+
+      return {
+        text,
+        replyMarkup: buildRuntimeHubReplyMarkup({
+          token: hubState.token,
+          callbackVersion: visibleState.callbackVersion,
+          language: this.deps.getUiLanguage(),
+          sessions: allSessions,
+          focusedSessionId: visibleState.focusedSessionId,
+          planEntries: [],
+          planExpanded: false,
+          agentEntries: [],
+          agentsExpanded: false
+        }),
+        visibleState
+      };
     };
+
+    let rendered = render();
+    if (rendered.text.length <= RUNTIME_HUB_TEXT_SOFT_LIMIT) {
+      return rendered;
+    }
+
+    rendered = render({
+      sessionProgressTextLimit: 0
+    });
+    if (rendered.text.length <= RUNTIME_HUB_TEXT_SOFT_LIMIT) {
+      return rendered;
+    }
+
+    rendered = render({
+      sessionProgressTextLimit: 0,
+      compactSessions: true
+    });
+    if (rendered.text.length <= RUNTIME_HUB_TEXT_SOFT_LIMIT) {
+      return rendered;
+    }
+
+    rendered = render({
+      sessionProgressTextLimit: 0,
+      compactSessions: true,
+      sessionNameLimit: RECOVERY_HUB_COMPACT_SESSION_NAME_LIMIT,
+      projectNameLimit: RECOVERY_HUB_COMPACT_SESSION_NAME_LIMIT
+    });
+    if (rendered.text.length <= RUNTIME_HUB_TEXT_SOFT_LIMIT) {
+      return rendered;
+    }
+
+    rendered = render({
+      sessionProgressTextLimit: 0,
+      compactSessions: true,
+      sessionNameLimit: RECOVERY_HUB_TIGHT_SESSION_NAME_LIMIT,
+      projectNameLimit: RECOVERY_HUB_TIGHT_SESSION_NAME_LIMIT
+    });
+    if (rendered.text.length <= RUNTIME_HUB_TEXT_SOFT_LIMIT) {
+      return rendered;
+    }
+
+    for (let visibleSessionLimit = Math.max(1, allSessions.length - 1); visibleSessionLimit >= 1; visibleSessionLimit -= 1) {
+      rendered = render({
+        sessionProgressTextLimit: 0,
+        compactSessions: true,
+        sessionNameLimit: RECOVERY_HUB_TIGHT_SESSION_NAME_LIMIT,
+        projectNameLimit: RECOVERY_HUB_TIGHT_SESSION_NAME_LIMIT,
+        visibleSessionLimit
+      });
+      if (rendered.text.length <= RUNTIME_HUB_TEXT_SOFT_LIMIT) {
+        return rendered;
+      }
+    }
+
+    return rendered;
   }
 
   private buildSeparateHubActiveInputSession(
     chatId: string,
-    renderedSessionIds: ReadonlySet<string>
+    renderedSessionIds: ReadonlySet<string>,
+    options?: {
+      sessionNameLimit?: number;
+      projectNameLimit?: number;
+    }
   ): RuntimeHubSessionView | null {
     const store = this.deps.getStore();
     const activeSession = store?.getActiveSession(chatId) ?? null;
@@ -1423,13 +1507,29 @@ export class RuntimeSurfaceController {
     const context = this.deps.getRuntimeCardContext(activeSession.sessionId);
     return {
       sessionId: activeSession.sessionId,
-      sessionName: context.sessionName ?? activeSession.displayName,
-      projectName: context.projectName ?? (activeSession.projectAlias?.trim() || activeSession.projectName),
+      sessionName: this.truncateRecoveryHubField(
+        context.sessionName ?? activeSession.displayName,
+        options?.sessionNameLimit
+      ) ?? activeSession.displayName,
+      projectName: this.truncateRecoveryHubField(
+        context.projectName ?? (activeSession.projectAlias?.trim() || activeSession.projectName),
+        options?.projectNameLimit
+      ),
       state: this.formatStandaloneHubSessionState(activeSession),
       progressText: null,
       isFocused: false,
       isActiveInputTarget: true
     };
+  }
+
+  private truncateRecoveryHubField(value: string | null | undefined, limit?: number): string | null {
+    if (!value) {
+      return null;
+    }
+    if (!limit || limit <= 0 || value.length <= limit) {
+      return value;
+    }
+    return truncateText(value, limit);
   }
 
   private formatStandaloneHubSessionState(session: SessionRow): string {
