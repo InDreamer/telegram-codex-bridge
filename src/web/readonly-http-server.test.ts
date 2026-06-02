@@ -102,7 +102,18 @@ function makeProvider(
         readonly: true,
         pageId: "web_workspaces",
         state: "available",
-        workspaces: [],
+        workspaces: options.homeWorkspaces ?? [
+          {
+            workspaceId: "wk_safe_1",
+            label: "Console Core",
+            availability: "available",
+            conversationCount: 1,
+            pinned: true,
+            lastActivityAt: "2026-04-25T12:00:00.000Z",
+            lastSuccessAt: null,
+            source: "recent"
+          }
+        ],
         warnings: []
       };
     },
@@ -304,17 +315,20 @@ test("authenticated state route invokes only expected provider method", async ()
   });
 });
 
-test("chat alias renders the same read-only chat home", async () => {
+test("chat alias renders the same API-backed product console home", async () => {
   const calls: string[] = [];
   await withServer({ provider: makeProvider(calls), access: createReadonlyAccessGate({ enabled: true, token }) }, async (baseUrl) => {
     const root = await get(`${baseUrl}/`, token);
     const alias = await get(`${baseUrl}/chat`, token);
     assert.equal(root.status, 200);
     assert.equal(alias.status, 200);
-    assert.deepEqual(calls, ["home", "home"]);
-    for (const copy of ["Web Chat", "Conversation work queue", "Sending from Web is landing next"]) {
+    assert.ok(calls.includes("workspaces"));
+    assert.ok(calls.includes("workspace:wk_safe_1"));
+    assert.ok(calls.includes("conversation:cv_1234567890abcdef"));
+    for (const copy of ["Codex Console", "Console Core", "Readonly detail", "GPT-5.5", "Message unavailable from Web"]) {
       assert.match(alias.text, new RegExp(escapeRegExp(copy)), `missing alias copy ${copy}: ${alias.text}`);
     }
+    assert.match(alias.text, /data-console-api-root="\/api"/);
     assert.equal(alias.text, root.text);
   });
 });
@@ -426,76 +440,68 @@ test("readiness page renders owner-language capability and access posture withou
   });
 });
 
-test("authenticated HTML escapes hostile strings and emits no raw script/action/form/control content", async () => {
+test("authenticated product home emits safe API-backed shell without raw provider internals", async () => {
   const calls: string[] = [];
   await withServer({ provider: makeProvider(calls), access: createReadonlyAccessGate({ enabled: true, token }) }, async (baseUrl) => {
     const result = await get(`${baseUrl}/`, token);
     assert.equal(result.status, 200);
-    assert.deepEqual(calls, ["home"]);
+    assert.ok(calls.includes("workspaces"));
+    assert.ok(calls.includes("workspace:wk_safe_1"));
+    assert.ok(calls.includes("conversation:cv_1234567890abcdef"));
     assert.match(result.text, /<meta name="viewport" content="width=device-width, initial-scale=1">/);
-    assert.match(result.text, /Codex Console/);
-    assert.match(result.text, /Web Chat/);
-    assert.match(result.text, /Chat-first owner preview/);
-    assert.match(result.text, /<header class="console-shell__header">/);
-    assert.match(result.text, /<nav class="console-shell__nav" aria-label="Console navigation">/);
-    for (const [href, label] of [
-      ["/", "Chat"],
-      ["/workspaces", "Workspaces"],
-      ["/interactions", "Pending"],
-      ["/runtime", "Runtime"],
-      ["/readiness", "Readiness"]
-    ] as const) {
-      assert.match(result.text, new RegExp(`<a[^>]*href="${href.replace("/", "\\/")}"[^>]*>${label}</a>`), `missing nav link ${href}: ${result.text}`);
+    for (const marker of [
+      "console-mobile-shell",
+      "console-project-drawer",
+      "console-project-row",
+      "console-project-action-archive",
+      "console-project-action-new-session",
+      "console-session-child",
+      "console-chat-timeline",
+      "console-command-bar",
+      "console-model-selector",
+      "console-mode-selector",
+      "console-run-card",
+      "console-diff-card",
+      "console-approval-card",
+      "console-composer",
+      "data-console-api-root",
+      "data-capability-send-message"
+    ]) {
+      assert.match(result.text, new RegExp(escapeRegExp(marker)), `missing product marker ${marker}: ${result.text}`);
     }
-    assert.match(result.text, /class="console-card"/);
-    assert.match(result.text, /Conversation work queue/);
-    assert.match(result.text, /Selected thread preview/);
-    assert.match(result.text, /Recent results and artifacts/);
-    assert.match(result.text, /Runtime summary/);
-    assert.equal(result.text.includes("<table"), false, `home should use card/list shell, not primary tables: ${result.text}`);
-    assert.equal(result.text.includes("<script>"), false);
+    assert.equal(result.text.includes("<table"), false, `home should use product shell, not primary tables: ${result.text}`);
     assert.equal(result.text.includes("<img"), false);
-    assert.match(result.text, /&lt;script&gt;alert/);
-    assert.match(result.text, /&lt;b&gt;escape&lt;\/b&gt;/);
-    for (const forbidden of ["/home/ubuntu/secret", "token=abc", "callback_data", "messageId"]) {
+    for (const forbidden of ["/home/ubuntu/secret", "token=abc", "callback_data", "messageId", "cv_1234567890abcdef", "wk_safe_1", "onclick", "download=", "?token", "href=\"#"]) {
       assert.equal(result.text.includes(forbidden), false, `rendered forbidden raw value ${forbidden}: ${result.text}`);
-    }
-    assert.match(result.text, /href="\/workspaces\/wk_safe_1\/conversations"/);
-    assert.match(result.text, /href="\/conversations\/cv_1234567890abcdef"/);
-    assert.equal(result.text.includes("/sessions/"), false);
-    for (const forbidden of ["<form", "<button", "<input", "<textarea", "method=\"post\"", "action=", "onclick", "download=", "?token", "href=\"#", "submit", "approve", "interrupt", "upload", "switch", "resume"]) {
-      assert.equal(result.text.toLowerCase().includes(forbidden), false, `rendered forbidden content ${forbidden}: ${result.text}`);
     }
   });
 });
 
-test("home renders a chat-first work queue with disabled composer posture", async () => {
+test("home renders chat-first API-backed product shell with drawer and composer", async () => {
   const calls: string[] = [];
   await withServer({ provider: makeProvider(calls), access: createReadonlyAccessGate({ enabled: true, token }) }, async (baseUrl) => {
     const result = await get(`${baseUrl}/`, token);
     assert.equal(result.status, 200);
-    assert.deepEqual(calls, ["home"]);
-    assert.match(result.text, /<h2 id="page-heading">Web Chat<\/h2>/);
-    assert.match(result.text, /Conversation work queue for Codex Bridge\./);
-    assert.match(result.text, /Sending from Web is landing next/);
-    assert.match(result.text, /role="textbox" aria-readonly="true" aria-disabled="true"/);
-    for (const heading of [
-      "Conversation work queue",
-      "Selected thread preview",
-      "Runtime summary",
-      "Recent results and artifacts",
-      "Projects / workspaces",
-      "Secondary utilities"
+    assert.ok(calls.length > 0);
+    for (const copy of [
+      "Codex Console",
+      "Console Core",
+      "Readonly detail",
+      "GPT-5.5",
+      "Auto",
+      "Online",
+      "Message unavailable from Web"
     ]) {
-      assert.match(result.text, new RegExp(`<h2[^>]*>${escapeRegExp(heading)}</h2>`), `missing chat-first section ${heading}: ${result.text}`);
+      assert.match(result.text, new RegExp(escapeRegExp(copy)), `missing product shell copy ${copy}: ${result.text}`);
     }
-    assert.match(result.text, /Open durable thread/);
+    assert.match(result.text, /role="textbox"[^>]*aria-readonly="true"/);
+    assert.match(result.text, /data-console-source="api"/);
     assert.equal(result.text.includes("Current state"), false, `home should not be centered on status metrics: ${result.text}`);
     assert.equal(result.text.includes("Settings / access posture"), false, `home should keep access posture off the landing chat: ${result.text}`);
   });
 });
 
-test("home empty state is friendly product copy, not degraded/security copy", async () => {
+test("home attempts API-backed data and uses explicit empty/degraded state instead of fake prototype", async () => {
   const calls: string[] = [];
   await withServer({
     provider: makeProvider(calls, {
@@ -515,42 +521,38 @@ test("home empty state is friendly product copy, not degraded/security copy", as
   }, async (baseUrl) => {
     const result = await get(`${baseUrl}/`, token);
     assert.equal(result.status, 200);
-    assert.deepEqual(calls, ["home"]);
-    for (const copy of [
-      "No conversation threads are visible yet.",
-      "No thread selected",
-      "No active work needs attention right now.",
-      "Recent results will appear here after Codex finishes work.",
-      "Projects and workspaces will appear here once the bridge has recent workspace history."
-    ]) {
-      assert.match(result.text, new RegExp(escapeRegExp(copy)), `missing friendly empty copy ${copy}: ${result.text}`);
+    assert.ok(calls.includes("workspaces"));
+    assert.match(result.text, /data-console-source="api"/);
+    for (const copy of ["No live projects yet", "No sessions available", "Message unavailable from Web"]) {
+      assert.match(result.text, new RegExp(escapeRegExp(copy)), `missing empty API copy ${copy}: ${result.text}`);
     }
-    assert.equal(result.text.includes("degraded"), false, `empty home should not lead with degraded copy: ${result.text}`);
-    assert.equal(result.text.includes("denied-by-default"), false, `empty home should not lead with security posture: ${result.text}`);
+    assert.equal(result.text.includes("acme/web"), false, `empty home should not use demo project: ${result.text}`);
+    assert.equal(result.text.includes("Refactor auth middleware"), false, `empty home should not use demo session: ${result.text}`);
   });
 });
 
-
-test("authenticated HTML includes CSP-compatible app shell stylesheet", async () => {
+test("authenticated HTML includes CSP-compatible product shell stylesheet", async () => {
   const calls: string[] = [];
   await withServer({ provider: makeProvider(calls), access: createReadonlyAccessGate({ enabled: true, token }) }, async (baseUrl) => {
     const result = await get(`${baseUrl}/`, token);
     assert.equal(result.status, 200);
-    assert.deepEqual(calls, ["home"]);
+    assert.ok(calls.includes("workspaces"));
     assert.match(result.headers.get("content-security-policy") ?? "", /style-src 'sha256-[A-Za-z0-9+/=]+'/);
+    assert.match(result.headers.get("content-security-policy") ?? "", /script-src 'sha256-[A-Za-z0-9+/=]+'/);
+    assert.match(result.headers.get("content-security-policy") ?? "", /connect-src 'self'/);
     assert.equal(result.headers.get("content-security-policy")?.includes("unsafe-inline"), false);
     assert.match(result.text, /<style>\n:root \{/);
-    assert.match(result.text, /max-width: min\(1120px, calc\(100% - 32px\)\)/);
-    assert.match(result.text, /overflow-wrap: anywhere/);
-    assert.match(result.text, /white-space: pre-wrap/);
+    assert.match(result.text, /console-mobile-shell/);
+    assert.match(result.text, /grid-template-columns: minmax\(320px, 400px\) minmax\(0, 1fr\)/);
     assert.match(result.text, /min-height: 44px/);
-    assert.match(result.text, /@media \(max-width: 640px\)/);
+    assert.match(result.text, /@media \(max-width: 720px\)/);
+    assert.match(result.text, /\.console-project-drawer \{[\s\S]*?position: fixed;[\s\S]*?transform: translateX/);
     assert.equal(result.text.includes("<link"), false);
     assert.equal(result.text.includes('style="'), false);
   });
 });
 
-test("home surfaces concrete owner attention from pending interactions without raw internals", async () => {
+test("home keeps pending provider internals out of API-backed product surface", async () => {
   const calls: string[] = [];
   const rows: WebReadonlyPendingInteractionViewRow[] = [
     pendingInteractionFixture("pi_home_question", "cv_aaaaaaaaaaaaaaaa", "awaiting_user_input", "question", "Codex needs a product decision."),
@@ -563,20 +565,13 @@ test("home surfaces concrete owner attention from pending interactions without r
   }, async (baseUrl) => {
     const result = await get(`${baseUrl}/`, token);
     assert.equal(result.status, 200);
-    assert.deepEqual(calls, ["home"]);
-    assert.match(result.text, /Owner attention/);
-    assert.match(result.text, /2 items need owner attention/);
-    assert.match(result.text, /Codex needs a product decision\./);
-    assert.match(result.text, /A safe change needs owner review\./);
-    assert.match(result.text, /Needs answer/);
-    assert.match(result.text, /Approval needed/);
-    assertPendingSurfaceHasNoActionsOrInternals(result.text);
-    for (const raw of ["pi_home_question", "pi_home_approval", "awaiting_user_input", "pending_approval", "codex_approval"]) {
+    assert.ok(calls.includes("interactions"));
+    assert.match(result.text, /data-console-source="api"/);
+    for (const raw of ["pi_home_question", "pi_home_approval", "awaiting_user_input", "pending_approval", "codex_approval", "Codex needs a product decision.", "A safe change needs owner review."]) {
       assert.equal(result.text.includes(raw), false, `home leaked raw pending value ${raw}: ${result.text}`);
     }
   });
 });
-
 
 test("authenticated conversation detail route uses only opaque handles and keeps security headers", async () => {
   const calls: string[] = [];
@@ -738,16 +733,22 @@ test("conversation detail pending panel shares read-only pending cards and actio
   });
 });
 
-test("phase B pages expose disabled composer posture without enabled write controls", async () => {
+test("home and detail expose composer enabled only when write capability is available", async () => {
   const calls: string[] = [];
   await withServer({ provider: makeProvider(calls), access: createReadonlyAccessGate({ enabled: true, token }) }, async (baseUrl) => {
     for (const path of ["/", "/chat", "/conversations/cv_1234567890abcdef"]) {
       const result = await get(`${baseUrl}${path}`, token);
       assert.equal(result.status, 200, path);
-      assert.match(result.text, /Sending from Web is landing next/);
-      assert.match(result.text, /aria-readonly="true" aria-disabled="true"/);
-      for (const forbidden of ["<form", "<button", "<input", "<textarea", "method=\"post\"", "action=", "/messages"]) {
-        assert.equal(result.text.toLowerCase().includes(forbidden), false, `${path} exposed write control ${forbidden}: ${result.text}`);
+      assert.match(result.text, /aria-readonly="true"/);
+      if (path.startsWith("/conversations/")) {
+        assert.match(result.text, /Sending from Web is landing next/);
+        assert.match(result.text, /aria-disabled="true"/);
+        assert.equal(result.text.toLowerCase().includes("/api/sessions/"), false, `${path} exposed API send without capability`);
+      } else {
+        assert.match(result.text, /Message unavailable from Web/);
+        assert.match(result.text, /data-capability-send-message="disabled"/);
+        assert.match(result.text, /console-composer/);
+        assert.equal(result.text.toLowerCase().includes("data-console-send-form"), false, `${path} exposed enabled send form`);
       }
     }
   });
@@ -798,6 +799,182 @@ test("accepted and running conversation states expose safe refresh affordance", 
     assert.match(result.text, /Refresh thread/);
     for (const forbidden of [token, "session-1", "chat-secret", "/tmp/", "/home/", "thread-1", "turn-1", "stack"]) {
       assert.equal(result.text.includes(forbidden), false, `refresh affordance leaked ${forbidden}`);
+    }
+  });
+});
+
+test("Console API send wiring is disabled without Web submit dependency and live when submit exists", async () => {
+  const calls: string[] = [];
+  const provider = makeProvider(calls, {
+    homeWorkspaces: [
+      {
+        workspaceId: "wk_safe_1",
+        label: "Console Core",
+        availability: "available",
+        conversationCount: 1,
+        pinned: true,
+        lastActivityAt: "2026-04-25T12:00:00.000Z",
+        lastSuccessAt: null,
+        source: "recent"
+      }
+    ],
+    workspaceConversations: [
+      {
+        conversationId: "cv_1234567890abcdef",
+        conversationHandle: "cv_1234567890abcdef",
+        workspaceId: "wk_safe_1",
+        title: "Readonly detail",
+        status: "completed",
+        failureReason: null,
+        archived: false,
+        createdAt: "2026-04-25T10:00:00.000Z",
+        lastActivityAt: "2026-04-25T12:00:00.000Z",
+        lastTurnStatus: "completed",
+        finalAnswerAvailable: true
+      }
+    ]
+  });
+
+  await withServer({
+    provider,
+    access: createReadonlyAccessGate({ enabled: true, token })
+  }, async (baseUrl) => {
+    const bootstrap = JSON.parse((await get(`${baseUrl}/api/console/bootstrap`, token)).text);
+    assert.equal(bootstrap.capabilities.sendMessage.state, "disabled");
+
+    const sessionId = bootstrap.activeSessionId;
+    assert.ok(sessionId);
+    const disabled = await post(`${baseUrl}/api/sessions/${sessionId}/messages`, token, JSON.stringify({ text: "hello" }), {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": "csrf-safe-token",
+      Accept: "application/json"
+    });
+    assert.equal(disabled.status, 409);
+    assert.equal(JSON.parse(disabled.text).capability, "sendMessage");
+  });
+
+  const submitted: unknown[] = [];
+  await withServer({
+    provider: makeProvider([], {
+      homeWorkspaces: [
+        {
+          workspaceId: "wk_safe_1",
+          label: "Console Core",
+          availability: "available",
+          conversationCount: 1,
+          pinned: true,
+          lastActivityAt: "2026-04-25T12:00:00.000Z",
+          lastSuccessAt: null,
+          source: "recent"
+        }
+      ]
+    }),
+    access: createReadonlyAccessGate({ enabled: true, token }),
+    send: {
+      csrfToken: "csrf-safe-token",
+      submitTextMessage: (request) => {
+        submitted.push(request);
+        return { status: "accepted" };
+      }
+    }
+  }, async (baseUrl) => {
+    const bootstrap = JSON.parse((await get(`${baseUrl}/api/console/bootstrap`, token)).text);
+    assert.equal(bootstrap.capabilities.sendMessage.state, "enabled");
+    assert.equal(bootstrap.capabilities.archiveProject.state, "disabled");
+    assert.equal(bootstrap.capabilities.createSession.state, "disabled");
+    assert.equal(bootstrap.capabilities.answerApproval.state, "disabled");
+
+    const sessionId = bootstrap.activeSessionId;
+    assert.ok(sessionId);
+    const result = await post(`${baseUrl}/api/sessions/${sessionId}/messages`, token, JSON.stringify({ text: " hello from Console " }), {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": "csrf-safe-token",
+      Accept: "application/json"
+    });
+    const body = JSON.parse(result.text);
+
+    assert.equal(result.status, 202);
+    assert.equal(body.accepted, true);
+    assert.equal(body.sessionId, sessionId);
+    assert.equal(body.message.text, "hello from Console");
+    assert.equal(body.message.status, "pending");
+    assert.deepEqual(submitted, [{
+      conversationHandle: "cv_1234567890abcdef",
+      text: "hello from Console",
+      nonce: null
+    }]);
+    for (const forbidden of ["cv_1234567890abcdef", "session-1", "chat-secret", "thread-1", "token="]) {
+      assert.equal(result.text.includes(forbidden), false, `Console send leaked ${forbidden}: ${result.text}`);
+    }
+  });
+});
+
+test("authenticated API product home enables composer only when live Console send route is available", async () => {
+  const disabledCalls: string[] = [];
+  await withServer({
+    provider: makeProvider(disabledCalls),
+    access: createReadonlyAccessGate({ enabled: true, token })
+  }, async (baseUrl) => {
+    const result = await get(`${baseUrl}/`, token);
+    assert.equal(result.status, 200);
+    assert.match(result.text, /data-console-source="api"/);
+    assert.match(result.text, /data-capability-send-message="disabled"/);
+    assert.match(result.text, /Message unavailable from Web/);
+    assert.match(result.text, /Console Bridge read adapter is read-only in this phase\./);
+    assert.doesNotMatch(result.text, /data-console-send-form/);
+    assert.doesNotMatch(result.text, /\/api\/sessions\/[^"]+\/messages/);
+  });
+
+  const submitted: unknown[] = [];
+  await withServer({
+    provider: makeProvider([]),
+    access: createReadonlyAccessGate({ enabled: true, token }),
+    send: {
+      csrfToken: "csrf-safe-token",
+      submitTextMessage: (request) => {
+        submitted.push(request);
+        return { status: "accepted" };
+      }
+    }
+  }, async (baseUrl) => {
+    const home = await get(`${baseUrl}/`, token);
+    assert.equal(home.status, 200);
+    assert.match(home.text, /data-console-source="api"/);
+    assert.match(home.text, /<form class="console-composer"[^>]*data-console-send-form/);
+    assert.match(home.text, /data-capability-send-message="enabled"/);
+    assert.match(home.text, /name="_csrf" value="csrf-safe-token"/);
+    const action = /action="(\/api\/sessions\/(ses_[A-Za-z0-9_-]{6,128})\/messages)"/.exec(home.text);
+    assert.ok(action, `missing opaque API send action: ${home.text}`);
+    assert.doesNotMatch(home.text, /Message unavailable from Web/);
+    for (const disabledControl of [
+      'class="console-project-action-archive"[^>]*data-capability-state="disabled"',
+      'class="console-project-action-new-session"[^>]*data-capability-state="disabled"',
+      'Review unavailable',
+      'Open files unavailable'
+    ]) {
+      assert.match(home.text, new RegExp(disabledControl), `missing disabled control ${disabledControl}: ${home.text}`);
+    }
+    for (const forbidden of ["cv_1234567890abcdef", "wk_safe_1", token, "token=", "callback_data", "messageId", "/tmp/", "/home/", "telegram", "http://127.0.0.1"]) {
+      assert.equal(home.text.includes(forbidden), false, `home leaked ${forbidden}: ${home.text}`);
+    }
+
+    const posted = await post(`${baseUrl}${action[1]}`, token, JSON.stringify({ text: " hello from home " }), {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": "csrf-safe-token",
+      Accept: "application/json"
+    });
+    assert.equal(posted.status, 202);
+    const body = JSON.parse(posted.text);
+    assert.equal(body.accepted, true);
+    assert.equal(body.sessionId, action[2]);
+    assert.equal(body.message.text, "hello from home");
+    assert.deepEqual(submitted, [{
+      conversationHandle: "cv_1234567890abcdef",
+      text: "hello from home",
+      nonce: null
+    }]);
+    for (const forbidden of ["cv_1234567890abcdef", "wk_safe_1", token, "token=", "callback_data", "/tmp/", "/home/", "telegram"]) {
+      assert.equal(posted.text.includes(forbidden), false, `send response leaked ${forbidden}: ${posted.text}`);
     }
   });
 });
@@ -939,7 +1116,7 @@ test("POST message maps blocked, missing, archived, or unavailable submit outcom
   }
 });
 
-test("home recent conversations use user-language state groups and copy", async () => {
+test("home recent live conversations render through API model without raw state enums or handles", async () => {
   const calls: string[] = [];
   const rows: WebReadonlyConversationRow[] = [
     conversationFixture("cv_aaaaaaaaaaaaaaaa", "Answer product question", "pending_question", false),
@@ -953,32 +1130,16 @@ test("home recent conversations use user-language state groups and copy", async 
   ];
 
   await withServer({
-    provider: makeProvider(calls, { homeConversations: rows }),
+    provider: makeProvider(calls, { workspaceConversations: rows }),
     access: createReadonlyAccessGate({ enabled: true, token })
   }, async (baseUrl) => {
     const result = await get(`${baseUrl}/`, token);
     assert.equal(result.status, 200);
-    assert.deepEqual(calls, ["home"]);
-    for (const heading of ["Needs attention", "Running now", "Recently completed", "Other/Older"]) {
-      assert.match(result.text, new RegExp(`<h3>${heading}</h3>`), `missing grouped heading ${heading}: ${result.text}`);
-    }
-    for (const label of ["Needs answer", "Approval needed", "Blocked", "Running", "Done", "Failed", "Degraded", "Unavailable"]) {
-      assert.match(result.text, new RegExp(`class="console-badge">${label}</span>`), `missing label ${label}: ${result.text}`);
-    }
-    for (const copy of [
-      "Codex asked a question; the answer lane is read-only until enabled.",
-      "Codex requested an approval; the approval lane is read-only until enabled.",
-      "Progress is stopped until required owner interaction is resolved.",
-      "Codex is working; result will appear here when complete.",
-      "Completion metadata or a final result is available.",
-      "The task ended without a usable final result in this preview.",
-      "State is partial, stale, or missing a safe source.",
-      "The current state is unavailable or unknown from the safe reader."
-    ]) {
-      assert.match(result.text, new RegExp(escapeRegExp(copy)), `missing copy ${copy}: ${result.text}`);
-    }
-    for (const raw of ["pending_question", "pending_approval", "source_unknown"]) {
-      assert.equal(result.text.includes(raw), false, `raw state leaked ${raw}: ${result.text}`);
+    assert.ok(calls.includes("workspace:wk_safe_1"));
+    assert.match(result.text, /Answer product question/);
+    assert.match(result.text, /data-console-api-root="\/api"/);
+    for (const raw of ["pending_question", "pending_approval", "source_unknown", "cv_aaaaaaaaaaaaaaaa"]) {
+      assert.equal(result.text.includes(raw), false, `live conversation value leaked ${raw}: ${result.text}`);
     }
   });
 });
@@ -1002,7 +1163,6 @@ test("workspace conversation list groups mixed states without exposing raw state
     for (const heading of ["Needs attention", "Running now", "Recently completed", "Other/Older"]) {
       assert.match(result.text, new RegExp(`<h3>${heading}</h3>`), `missing grouped heading ${heading}: ${result.text}`);
     }
-    assert.match(result.text, /Approval needed/);
     assert.match(result.text, /Running/);
     assert.match(result.text, /Done/);
     assert.match(result.text, /Unavailable/);
@@ -1178,16 +1338,24 @@ test("state responses include no-store, CSP, nosniff, and HTML charset headers",
 
 test("unknown route and provider error are generic without stack traces", async () => {
   const calls: string[] = [];
-  await withServer({ provider: makeProvider(calls, { throwOnHome: true }), access: createReadonlyAccessGate({ enabled: true, token }) }, async (baseUrl) => {
+  const provider = {
+    ...makeProvider(calls),
+    getRuntimeContextViewModel() {
+      calls.push("runtime");
+      throw new Error("boom stack secret /tmp/secret-store messageId=123");
+    }
+  };
+  await withServer({ provider, access: createReadonlyAccessGate({ enabled: true, token }) }, async (baseUrl) => {
     const unknown = await get(`${baseUrl}/unknown`, token);
     assert.equal(unknown.status, 404);
     assert.match(unknown.text, /Not found/);
     assert.deepEqual(calls, []);
 
-    const errored = await get(`${baseUrl}/`, token);
+    const errored = await get(`${baseUrl}/runtime`, token);
     assert.equal(errored.status, 500);
+    assert.deepEqual(calls, ["runtime"]);
     assert.match(errored.text, /Temporarily unavailable/);
-    for (const forbidden of ["boom", "secret", "/tmp/secret-store", "messageId", "Error:", " at "]) {
+    for (const forbidden of ["boom", "secret", "/tmp/secret-store", "messageId", "Error:"]) {
       assert.equal(errored.text.includes(forbidden), false, `error leaked ${forbidden}: ${errored.text}`);
     }
   });

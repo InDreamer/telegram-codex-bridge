@@ -13,6 +13,11 @@ import type {
   WebReadonlyWorkspaceListViewModel,
   WebReadonlyWorkspaceRow
 } from "../service/web-readonly-view-model.js";
+import { createConsoleProductApiModel } from "./console-product-api-model.js";
+import { renderConsoleProductHomePage, CONSOLE_PRODUCT_CSS } from "./console-product-renderer.js";
+
+import type { ConsoleBridgeReadAdapter } from "./console-bridge-read-adapter.js";
+import type { ConsoleCapabilities, ConsoleProjectId, ConsoleSessionSummary } from "./console-api-contract.js";
 
 interface SafeHtmlCell {
   __safeHtml: string;
@@ -31,43 +36,61 @@ export interface WebReadonlyRenderOptions {
   } | null;
 }
 
+export interface WebProductHomeRenderOptions {
+  adapter?: ConsoleBridgeReadAdapter;
+  csrfToken?: string | null;
+  capabilities?: Partial<Pick<ConsoleCapabilities, "sendMessage">>;
+}
+
 type WebSendFlashStatus = "accepted" | "blocked" | "rejected" | "unavailable" | "invalid" | "denied";
 
-export function renderHomePage(vm: WebReadonlyHomeViewModel, options: WebReadonlyRenderOptions = {}): string {
-  const resultRows = vm.recentConversations.filter((row) => row.finalAnswerAvailable || conversationGroup(row.status) === "completed");
-  const sendReady = Boolean(options.send?.csrfToken);
-  return page("Web Chat", "home", [
-    hero(
-      "Web Chat",
-      sendReady
-        ? "Conversation work queue for Codex Bridge. Send text from the browser and refresh the thread to watch runtime and result state."
-        : "Conversation work queue for Codex Bridge. Sending from Web is landing next; this slice is a safe read-only thread view."
-    ),
-    chatHomeSection(vm, options),
-    homeOwnerAttentionSection(vm.pendingInteractions.state, vm.pendingInteractions.pendingInteractions),
-    cardListSection(
-      "home-active-attention",
-      "Runtime summary",
-      vm.runtime.activeTurns,
-      (row) => runtimeTurnCard(row),
-      "No active work needs attention right now."
-    ),
-    conversationListSection(
-      "home-recent-results",
-      "Recent results and artifacts",
-      resultRows,
-      "Recent results will appear here after Codex finishes work."
-    ),
-    cardListSection(
-      "home-workspaces",
-      "Projects / workspaces",
-      vm.workspaces,
-      (row) => workspaceCard(row),
-      "Projects and workspaces will appear here once the bridge has recent workspace history."
-    ),
-    utilityLinksPanel(),
-    vm.warnings.length > 0 ? warnings(vm.warnings) : ""
-  ]);
+export function renderHomePage(_vm?: WebReadonlyHomeViewModel, options: WebProductHomeRenderOptions = {}): string {
+  if (!options.adapter) {
+    return renderConsoleProductHomePage(undefined, APP_CSS);
+  }
+
+  try {
+    const bootstrap = options.adapter.getBootstrap();
+    const projects = options.adapter.listProjects();
+    const projectSessions = new Map<ConsoleProjectId, ConsoleSessionSummary[]>();
+    for (const project of projects) {
+      const sessions = options.adapter.listProjectSessions(project.projectId);
+      projectSessions.set(project.projectId, Array.isArray(sessions) ? sessions : []);
+    }
+    const activeProjectId = projects.some((project) => project.projectId === bootstrap.activeProjectId)
+      ? bootstrap.activeProjectId
+      : projects[0]?.projectId;
+    const activeSessionId = bootstrap.activeSessionId
+      ?? projects.find((project) => project.projectId === activeProjectId)?.activeSessionId
+      ?? Array.from(projectSessions.values()).flat().find((session) => !session.archived)?.sessionId;
+    const detail = activeSessionId ? options.adapter.getSessionDetail(activeSessionId) : null;
+    const activeSessionDetail = detail && !isConsoleApiErrorLike(detail) ? detail : null;
+    const modelInput = {
+      bootstrap: {
+        ...bootstrap,
+        projects,
+        ...(activeProjectId ? { activeProjectId } : {}),
+        ...(activeSessionId ? { activeSessionId } : {})
+      },
+      projectSessions,
+      activeSessionDetail,
+      csrfToken: options.csrfToken ?? null,
+      ...(options.capabilities ? { capabilityOverrides: options.capabilities } : {})
+    };
+    return renderConsoleProductHomePage(createConsoleProductApiModel(modelInput), APP_CSS);
+  } catch {
+    return renderConsoleProductHomePage(undefined, APP_CSS);
+  }
+}
+
+function isConsoleApiErrorLike(value: unknown): value is { code: string; message: string; retryable: boolean } {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    typeof (value as { code?: unknown }).code === "string" &&
+    typeof (value as { message?: unknown }).message === "string" &&
+    typeof (value as { retryable?: unknown }).retryable === "boolean"
+  );
 }
 
 export function renderWorkspaceListPage(vm: WebReadonlyWorkspaceListViewModel): string {
@@ -254,7 +277,8 @@ function page(title: string, active: NavKey, sections: string[]): string {
   ].join("\n");
 }
 
-export const APP_CSS = `
+export const APP_CSS = `${CONSOLE_PRODUCT_CSS}
+
 :root {
   color-scheme: light;
   --console-bg: #f4f7fb;

@@ -172,3 +172,77 @@ test("live web chat server renders enabled composer and POST invokes BridgeServi
     }]);
   });
 });
+
+test("live web chat server wires Console API text send through BridgeService submit seam", async () => {
+  const session = sessionFixture();
+  const service = Object.create(BridgeService.prototype) as BridgeService;
+  const rawService = service as any;
+  const submitted: unknown[] = [];
+  rawService.config = { activePack: "feishu" };
+  rawService.snapshot = null;
+  rawService.store = {
+    listChatBindings: () => [{ chatId: "chat-1" }],
+    listRecentProjects: () => [],
+    listSessionProjectStats: () => [{ projectPath: session.projectPath, sessionCount: 1, lastUsedAt: session.lastUsedAt }],
+    listSessions: (chatId: string, options?: { archived?: boolean }) =>
+      [session].filter((row) => row.chatId === chatId && Boolean(row.archived) === Boolean(options?.archived)),
+    getSessionById: (sessionId: string) => sessionId === session.sessionId ? session : null,
+    listFinalAnswerViews: () => [],
+    getReadinessSnapshot: () => null,
+    listPendingInteractionsByChat: () => []
+  };
+  rawService.listActiveTurns = () => [];
+  rawService.submitWebTextMessage = async (request: unknown) => {
+    submitted.push(request);
+    return { status: "accepted" };
+  };
+
+  const csrfToken = "csrf-safe-token";
+  const server = service.createWebChatHttpServer({ token: "owner-token", csrfToken });
+  await withListeningServer(server, async (baseUrl) => {
+    const bootstrapResponse = await fetch(`${baseUrl}/api/console/bootstrap`, {
+      headers: { Authorization: "Bearer owner-token" }
+    });
+    const bootstrap = await bootstrapResponse.json() as {
+      activeSessionId?: string;
+      capabilities: {
+        sendMessage: { state: string };
+        archiveProject: { state: string };
+        createSession: { state: string };
+        answerApproval: { state: string };
+      };
+    };
+    assert.equal(bootstrapResponse.status, 200);
+    assert.equal(bootstrap.capabilities.sendMessage.state, "enabled");
+    assert.equal(bootstrap.capabilities.archiveProject.state, "disabled");
+    assert.equal(bootstrap.capabilities.createSession.state, "disabled");
+    assert.equal(bootstrap.capabilities.answerApproval.state, "disabled");
+    assert.ok(bootstrap.activeSessionId);
+
+    const response = await fetch(`${baseUrl}/api/sessions/${bootstrap.activeSessionId}/messages`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer owner-token",
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
+        Host: "127.0.0.1"
+      },
+      body: JSON.stringify({ text: " live Console hello " }),
+      redirect: "manual"
+    });
+    const body = await response.json() as { accepted: true; sessionId: string; message: { text: string } };
+
+    assert.equal(response.status, 202);
+    assert.equal(body.accepted, true);
+    assert.equal(body.sessionId, bootstrap.activeSessionId);
+    assert.equal(body.message.text, "live Console hello");
+    assert.deepEqual(submitted, [{
+      conversationHandle: conversationHandleForSessionId(session.sessionId),
+      text: "live Console hello",
+      nonce: null
+    }]);
+    for (const forbidden of [session.sessionId, session.chatId, session.threadId, session.projectPath, conversationHandleForSessionId(session.sessionId)]) {
+      assert.equal(JSON.stringify(body).includes(String(forbidden)), false, `Console API leaked ${forbidden}`);
+    }
+  });
+});
