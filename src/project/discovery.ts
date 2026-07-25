@@ -199,8 +199,8 @@ async function buildCandidates(homeDir: string, store: BridgeStateStore): Promis
 
 function buildProjectGroups(candidates: ProjectCandidate[]): ProjectPickerGroup[] {
   const definitions: Array<{ key: ProjectPickerGroup["key"]; title: string; limit: number }> = [
-    { key: "pinned", title: "已收藏", limit: MAX_VISIBLE_PROJECT_CANDIDATES },
-    { key: "recent", title: "最近使用", limit: MAX_VISIBLE_RECENT_CANDIDATES }
+    { key: "pinned", title: "Pinned", limit: MAX_VISIBLE_PROJECT_CANDIDATES },
+    { key: "recent", title: "Recent", limit: MAX_VISIBLE_RECENT_CANDIDATES }
   ];
 
   let remainingBudget = MAX_VISIBLE_PROJECT_CANDIDATES;
@@ -269,8 +269,8 @@ export async function buildProjectPicker(
   const projectMap = new Map<string, ProjectCandidate>(ranked.map((candidate) => [candidate.projectKey, candidate]));
 
   return {
-    title: "选择要新建会话的项目",
-    emptyText: ranked.length === 0 ? "还没有最近项目，请浏览目录或手动输入路径。" : null,
+    title: "Select a project to start a session",
+    emptyText: ranked.length === 0 ? "No recent projects. Browse directory or enter a path manually." : null,
     noticeLines: [],
     groups,
     partial: false,
