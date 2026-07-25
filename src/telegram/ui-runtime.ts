@@ -121,7 +121,7 @@ export function buildRuntimeStatusCard(options: RuntimeStatusCardView): string {
   const lines: string[] = [formatHtmlHeading(language === "en" ? "Runtime Status" : "运行状态")];
   pushHtmlRuntimeCardContext(lines, options, language);
 
-  lines.push(formatRuntimeCardRow(language === "en" ? "State" : "状态", options.state));
+  lines.push(formatRuntimeCardRow(language === "en" ? "State" : "Status", options.state));
 
   for (const line of options.optionalFieldLines ?? []) {
     lines.push(formatRuntimeStatusOptionalField(line, language));
@@ -130,10 +130,10 @@ export function buildRuntimeStatusCard(options: RuntimeStatusCardView): string {
   if (options.progressText) {
     const progressText = renderInlineMarkdown(truncateText(options.progressText, progressTextLimit));
     if (stripHtml(progressText).length > 72) {
-      lines.push(formatHtmlHeading(language === "en" ? "Progress" : "进度"));
+      lines.push(formatHtmlHeading(language === "en" ? "Progress" : "Progress"));
       lines.push(progressText);
     } else {
-      lines.push(formatRuntimeCardRow(language === "en" ? "Progress" : "进度", progressText, { valueIsHtml: true }));
+      lines.push(formatRuntimeCardRow(language === "en" ? "Progress" : "Progress", progressText, { valueIsHtml: true }));
     }
   }
 
@@ -191,7 +191,7 @@ export function buildRuntimeStatusReplyMarkup(options: RuntimeStatusControlsView
       callback_data: encodeStatusInspectCallback(options.sessionId)
     },
     {
-      text: language === "en" ? "Commands" : "命令",
+      text: language === "en" ? "Commands" : "Commands",
       callback_data: encodeCommandPanelOpenCallback()
     },
     {
@@ -222,7 +222,7 @@ export function buildRuntimeHubMessage(options: RuntimeHubView): string {
   const lines: string[] = [buildRuntimeHubHeading(
     language === "en"
       ? `Hub: ${options.windowIndex + 1}/${Math.max(1, options.totalWindows)}${options.completed ? " · Completed" : ""}`
-      : `目录：${options.windowIndex + 1}/${Math.max(1, options.totalWindows)}${options.completed ? " · 已完成" : ""}`
+      : `Dir: ${options.windowIndex + 1}/${Math.max(1, options.totalWindows)}${options.completed ? " · 已完成" : ""}`
   )];
 
   if (usesSlotSections) {
@@ -304,7 +304,7 @@ export function buildRuntimeHubMessage(options: RuntimeHubView): string {
   lines[0] = buildRuntimeHubHeading(
     language === "en"
       ? `Hub: ${options.windowIndex + 1}/${Math.max(1, options.totalWindows)} · ${(options.totalSessions ?? sessions.length)} session${(options.totalSessions ?? sessions.length) === 1 ? "" : "s"}`
-      : `目录：${options.windowIndex + 1}/${Math.max(1, options.totalWindows)} · ${options.totalSessions ?? sessions.length} 个会话`
+      : `Dir: ${options.windowIndex + 1}/${Math.max(1, options.totalWindows)} · ${options.totalSessions ?? sessions.length} 个会话`
   );
 
   if (activeInputSession) {
@@ -534,7 +534,7 @@ function pushRuntimeHubSession(
 ): void {
   const markers = options.showMarkers
     ? [
-      session.isFocused ? (options.language === "en" ? "Viewing" : "查看中") : null,
+      session.isFocused ? (options.language === "en" ? "Viewing" : "Viewing") : null,
       session.isActiveInputTarget ? (options.language === "en" ? "Current input" : "当前输入") : null
     ].filter((value): value is string => Boolean(value))
     : [];
@@ -542,7 +542,7 @@ function pushRuntimeHubSession(
     ? ` · ${markers.map((marker) => escapeHtml(marker)).join(" · ")}`
     : "";
   const displayIndex = session.slot ?? index;
-  const statePrefix = options.language === "en" ? "State" : "状态";
+  const statePrefix = options.language === "en" ? "State" : "Status";
   const folderLine = buildRuntimeHubFolderLine(session.sessionName, session.projectName);
 
   lines.push(HUB_SECTION_DIVIDER);
@@ -575,7 +575,7 @@ function pushCompactRuntimeHubSession(
 ): void {
   const markers = options.showMarkers
     ? [
-      session.isFocused ? (options.language === "en" ? "Viewing" : "查看中") : null,
+      session.isFocused ? (options.language === "en" ? "Viewing" : "Viewing") : null,
       session.isActiveInputTarget ? (options.language === "en" ? "Current input" : "当前输入") : null
     ].filter((value): value is string => Boolean(value))
     : [];
@@ -586,7 +586,7 @@ function pushCompactRuntimeHubSession(
   if (folderMeta) {
     metaParts.push(folderMeta);
   }
-  metaParts.push(`${options.language === "en" ? "State" : "状态"}: ${escapeHtml(session.state)}`);
+  metaParts.push(`${options.language === "en" ? "State" : "Status"}: ${escapeHtml(session.state)}`);
   for (const marker of markers) {
     metaParts.push(escapeHtml(marker));
   }
@@ -648,7 +648,7 @@ function pushRuntimeHubTerminalSummary(
   language: UiLanguage
 ): void {
   const folderLine = buildRuntimeHubFolderLine(summary.sessionName, summary.projectName);
-  const stateLabel = language === "en" ? "State" : "状态";
+  const stateLabel = language === "en" ? "State" : "Status";
 
   lines.push(HUB_SECTION_DIVIDER);
   lines.push(`${buildRuntimeHubStateBadge(summary.state)} <b>${index}. ${escapeHtml(summary.sessionName)}</b>`);
@@ -699,9 +699,9 @@ export function buildRuntimeHubReplyMarkup(options: {
           : "default";
         return {
           text: session.isFocused
-            ? `${language === "en" ? "Viewing" : "查看中"} · ${truncateText(session.sessionName, 18)}`
+            ? `${language === "en" ? "Viewing" : "Viewing"} · ${truncateText(session.sessionName, 18)}`
             : session.isActiveInputTarget
-              ? `${language === "en" ? "Current" : "当前"} · ${truncateText(session.sessionName, 18)}`
+              ? `${language === "en" ? "Current" : "Current"} · ${truncateText(session.sessionName, 18)}`
               : truncateText(session.sessionName, 18),
           callback_data: encodeHubSelectCallback(options.token, options.callbackVersion, index),
           style
@@ -769,7 +769,7 @@ function appendHubSecondaryButtons(
   }
 
   rows.push([{
-    text: language === "en" ? "Commands" : "命令",
+    text: language === "en" ? "Commands" : "Commands",
     callback_data: encodeCommandPanelOpenCallback()
   }]);
 }
@@ -777,7 +777,7 @@ function appendHubSecondaryButtons(
 export function buildRuntimeStatusFieldLabel(field: RuntimeStatusField): string {
   switch (field) {
     case "model-name":
-      return "模型名";
+      return "Model";
     case "model-with-reasoning":
       return "模型 + 推理强度";
     case "current-dir":
@@ -793,7 +793,7 @@ export function buildRuntimeStatusFieldLabel(field: RuntimeStatusField): string 
     case "five-hour-limit":
       return "5 小时额度";
     case "weekly-limit":
-      return "周额度";
+      return "Weekly quota";
     case "codex-version":
       return "Codex 版本";
     case "context-window-size":
@@ -807,17 +807,17 @@ export function buildRuntimeStatusFieldLabel(field: RuntimeStatusField): string 
     case "session-id":
       return "会话 ID";
     case "session_name":
-      return "会话名";
+      return "Session";
     case "project_name":
-      return "项目名";
+      return "Project";
     case "project_path":
-      return "项目路径（旧）";
+      return "项目路径（旧)";
     case "plan_mode":
       return "Plan mode";
     case "model_reasoning":
-      return "模型 + 强度（旧）";
+      return "模型 + 强度（旧)";
     case "thread_id":
-      return "线程 ID（旧）";
+      return "线程 ID（旧)";
     case "turn_id":
       return "Turn ID";
     case "blocked_reason":
@@ -837,8 +837,8 @@ export function buildRuntimeStatusFieldLabel(field: RuntimeStatusField): string 
 
 export function buildRuntimePreferencesAppliedMessage(fields: RuntimeStatusField[]): string {
   const summary = fields.length > 0
-    ? fields.map((field) => buildRuntimeStatusFieldLabel(field)).join("、")
-    : "无";
+    ? fields.map((field) => buildRuntimeStatusFieldLabel(field)).join(", ")
+    : "None";
 
   return [
     "<b>已应用 Runtime 卡片字段</b>",
@@ -848,8 +848,8 @@ export function buildRuntimePreferencesAppliedMessage(fields: RuntimeStatusField
 
 export function buildRuntimePreferencesClosedMessage(fields: RuntimeStatusField[]): string {
   const summary = fields.length > 0
-    ? fields.map((field) => buildRuntimeStatusFieldLabel(field)).join("、")
-    : "无";
+    ? fields.map((field) => buildRuntimeStatusFieldLabel(field)).join(", ")
+    : "None";
 
   return [
     formatHtmlHeading("已关闭 Runtime 卡片字段选择"),
@@ -884,10 +884,10 @@ export function buildRuntimePreferencesMessage(options: RuntimePreferencesView):
 
   const navigation: Array<{ text: string; callback_data: string }> = [];
   if (safePage > 0) {
-    navigation.push({ text: "上一页", callback_data: encodeRuntimePageCallback(options.token, safePage - 1) });
+    navigation.push({ text: "Prev", callback_data: encodeRuntimePageCallback(options.token, safePage - 1) });
   }
   if (safePage + 1 < totalPages) {
-    navigation.push({ text: "下一页", callback_data: encodeRuntimePageCallback(options.token, safePage + 1) });
+    navigation.push({ text: "Next", callback_data: encodeRuntimePageCallback(options.token, safePage + 1) });
   }
   if (navigation.length > 0) {
     rows.push(navigation);
@@ -895,7 +895,7 @@ export function buildRuntimePreferencesMessage(options: RuntimePreferencesView):
 
   rows.push([{ text: "保存并应用", callback_data: encodeRuntimeSaveCallback(options.token) }]);
   rows.push([{ text: "恢复默认", callback_data: encodeRuntimeResetCallback(options.token) }]);
-  rows.push([{ text: "关闭", callback_data: encodeRuntimeCloseCallback(options.token) }]);
+  rows.push([{ text: "Close", callback_data: encodeRuntimeCloseCallback(options.token) }]);
 
   return {
     text: [
@@ -934,11 +934,11 @@ export function buildInspectViewMessage(options: RuntimeInspectView & RuntimeIns
             callback_data: encodeInspectExpandCallback(options.sessionId, safePage)
           },
           {
-            text: "命令",
+            text: "Commands",
             callback_data: encodeCommandPanelOpenCallback()
           },
           {
-            text: "关闭",
+            text: "Close",
             callback_data: encodeInspectCloseCallback(options.sessionId)
           }
         ]]
@@ -949,10 +949,10 @@ export function buildInspectViewMessage(options: RuntimeInspectView & RuntimeIns
 
   const buttons: Array<{ text: string; callback_data: string }> = [];
   if (safePage > 0) {
-    buttons.push({ text: "上一页", callback_data: encodeInspectPageCallback(options.sessionId, safePage - 1) });
+    buttons.push({ text: "Prev", callback_data: encodeInspectPageCallback(options.sessionId, safePage - 1) });
   }
   if (safePage + 1 < pages.length) {
-    buttons.push({ text: "下一页", callback_data: encodeInspectPageCallback(options.sessionId, safePage + 1) });
+    buttons.push({ text: "Next", callback_data: encodeInspectPageCallback(options.sessionId, safePage + 1) });
   }
 
   const rows: TelegramInlineKeyboardMarkup["inline_keyboard"] = [];
@@ -961,8 +961,8 @@ export function buildInspectViewMessage(options: RuntimeInspectView & RuntimeIns
   }
   rows.push([
     { text: "收起详情", callback_data: encodeInspectCollapseCallback(options.sessionId) },
-    { text: "命令", callback_data: encodeCommandPanelOpenCallback() },
-    { text: "关闭", callback_data: encodeInspectCloseCallback(options.sessionId) }
+    { text: "Commands", callback_data: encodeCommandPanelOpenCallback() },
+    { text: "Close", callback_data: encodeInspectCloseCallback(options.sessionId) }
   ]);
 
   return {
@@ -989,20 +989,20 @@ export function buildRollbackPickerMessage(options: RollbackPickerView): {
 
   const navigation: Array<{ text: string; callback_data: string }> = [];
   if (safePage > 0) {
-    navigation.push({ text: "上一页", callback_data: encodeRollbackPageCallback(options.sessionId, safePage - 1) });
+    navigation.push({ text: "Prev", callback_data: encodeRollbackPageCallback(options.sessionId, safePage - 1) });
   }
   if (safePage + 1 < totalPages) {
-    navigation.push({ text: "下一页", callback_data: encodeRollbackPageCallback(options.sessionId, safePage + 1) });
+    navigation.push({ text: "Next", callback_data: encodeRollbackPageCallback(options.sessionId, safePage + 1) });
   }
   if (navigation.length > 0) {
     rows.push(navigation);
   }
-  rows.push([{ text: "关闭", callback_data: encodeRollbackCloseCallback(options.sessionId) }]);
+  rows.push([{ text: "Close", callback_data: encodeRollbackCloseCallback(options.sessionId) }]);
 
   const lines = [
     formatHtmlHeading("选择回滚目标"),
     "只展示用户输入，不展示 agent 输出。",
-    formatHtmlField("页码：", `${safePage + 1}/${totalPages}`)
+    formatHtmlField("Page: ", `${safePage + 1}/${totalPages}`)
   ];
 
   pageTargets.forEach((target) => {
@@ -1025,7 +1025,7 @@ export function buildRollbackConfirmMessage(options: RollbackConfirmView): {
   return {
     text: [
       formatHtmlHeading("确认回滚"),
-      formatHtmlField("目标：", `${options.target.sequenceNumber}. ${options.target.label}`),
+      formatHtmlField("Target: ", `${options.target.sequenceNumber}. ${options.target.label}`),
       formatHtmlField("将删除的 turn 数：", `${options.target.rollbackCount}`),
       "本地文件改动不会自动撤销。"
     ].join("\n"),
@@ -1033,7 +1033,7 @@ export function buildRollbackConfirmMessage(options: RollbackConfirmView): {
       inline_keyboard: [
         [{ text: "确认回滚", callback_data: encodeRollbackConfirmCallback(options.sessionId, options.target.index) }],
         [{ text: "返回列表", callback_data: encodeRollbackBackCallback(options.sessionId, options.page) }],
-        [{ text: "关闭", callback_data: encodeRollbackCloseCallback(options.sessionId) }]
+        [{ text: "Close", callback_data: encodeRollbackCloseCallback(options.sessionId) }]
       ]
     }
   };
@@ -1101,12 +1101,12 @@ export function buildInteractionApprovalCard(options: InteractionApprovalCardRen
   replyMarkup: TelegramInlineKeyboardMarkup;
 } {
   const language: UiLanguage = "zh";
-  const lines = [formatHtmlHeading(options.title), formatHtmlField("类型：", options.subtitle)];
+  const lines = [formatHtmlHeading(options.title), formatHtmlField("Type: ", options.subtitle)];
   if (options.body) {
-    lines.push(formatHtmlField("内容：", options.body));
+    lines.push(formatHtmlField("Content: ", options.body));
   }
   if (options.detail) {
-    lines.push(formatHtmlField("说明：", options.detail));
+    lines.push(formatHtmlField("Desc: ", options.detail));
   }
   appendInteractionHubHint(lines, options.hubHint);
 
@@ -1121,7 +1121,7 @@ export function buildInteractionApprovalCard(options: InteractionApprovalCardRen
       inline_keyboard: (() => {
         const rows: TelegramInlineKeyboardMarkup["inline_keyboard"] = [
         actionRow,
-        [{ text: "取消本次交互", callback_data: encodeInteractionCancelCallback(options.interactionId) }]
+        [{ text: "Cancel", callback_data: encodeInteractionCancelCallback(options.interactionId) }]
         ];
         appendBridgeActionRows(rows, options.bridgeActions, language, { chunkSize: 2 });
         return rows;
@@ -1137,8 +1137,8 @@ export function buildInteractionQuestionCard(options: InteractionQuestionCardRen
   const language: UiLanguage = "zh";
   const lines = [
     formatHtmlHeading(options.title),
-    formatHtmlField("问题：", `${options.questionIndex}/${options.totalQuestions}`),
-    formatHtmlField("标题：", options.header),
+    formatHtmlField("Issues: ", `${options.questionIndex}/${options.totalQuestions}`),
+    formatHtmlField("Title: ", options.header),
     escapeHtml(options.question)
   ];
 
@@ -1154,7 +1154,7 @@ export function buildInteractionQuestionCard(options: InteractionQuestionCardRen
       replyMarkup: {
         inline_keyboard: (() => {
           const rows: TelegramInlineKeyboardMarkup["inline_keyboard"] = [
-            [{ text: "取消本次交互", callback_data: encodeInteractionCancelCallback(options.interactionId) }]
+            [{ text: "Cancel", callback_data: encodeInteractionCancelCallback(options.interactionId) }]
           ];
           appendBridgeActionRows(rows, options.bridgeActions, language, { chunkSize: 2 });
           return rows;
@@ -1172,7 +1172,7 @@ export function buildInteractionQuestionCard(options: InteractionQuestionCardRen
         inline_keyboard: (() => {
           const rows: TelegramInlineKeyboardMarkup["inline_keyboard"] = [
           [{ text: "发送文字回答", callback_data: encodeInteractionTextCallback(options.interactionId, options.questionIndex - 1) }],
-          [{ text: "取消本次交互", callback_data: encodeInteractionCancelCallback(options.interactionId) }]
+          [{ text: "Cancel", callback_data: encodeInteractionCancelCallback(options.interactionId) }]
           ];
           appendBridgeActionRows(rows, options.bridgeActions, language, { chunkSize: 2 });
           return rows;
@@ -1194,13 +1194,13 @@ export function buildInteractionQuestionCard(options: InteractionQuestionCardRen
   if (options.isOther) {
     rows.push([
       {
-        text: "其他",
+        text: "Other",
         callback_data: encodeInteractionTextCallback(options.interactionId, options.questionIndex - 1)
       }
     ]);
   }
 
-  rows.push([{ text: "取消本次交互", callback_data: encodeInteractionCancelCallback(options.interactionId) }]);
+  rows.push([{ text: "Cancel", callback_data: encodeInteractionCancelCallback(options.interactionId) }]);
   appendBridgeActionRows(rows, options.bridgeActions, language, { chunkSize: 2 });
   appendInteractionHubHint(lines, options.hubHint);
 
@@ -1216,19 +1216,19 @@ export function buildInteractionResolvedCard(options: InteractionResolvedCardRen
 } {
   const language: UiLanguage = "zh";
   const stateText = options.state === "answered"
-    ? "已处理"
+    ? "Handled"
     : options.state === "canceled"
-      ? "已取消"
+      ? "Cancelled"
       : "处理失败";
   const lines = [
     formatHtmlHeading(options.title),
-    formatHtmlField("状态：", stateText)
+    formatHtmlField("Status: ", stateText)
   ];
   if (options.summary) {
-    lines.push(formatHtmlField("结果：", options.summary));
+    lines.push(formatHtmlField("Result: ", options.summary));
   }
   if (options.expanded && options.details && options.details.length > 0) {
-    lines.push("", formatHtmlHeading("已提交回答"));
+    lines.push("", formatHtmlHeading("Answer submitted"));
     for (const detail of options.details) {
       lines.push(escapeHtml(detail));
     }
@@ -1246,7 +1246,7 @@ export function buildInteractionResolvedCard(options: InteractionResolvedCardRen
   }
 
   const rows: TelegramInlineKeyboardMarkup["inline_keyboard"] = [[{
-    text: options.expanded ? "收起已提交回答" : "查看已提交回答",
+    text: options.expanded ? "收起Answer submitted" : "查看Answer submitted",
     callback_data: options.expanded
       ? encodeInteractionAnswerCollapseCallback(options.interactionId)
       : encodeInteractionAnswerExpandCallback(options.interactionId)
@@ -1266,10 +1266,10 @@ export function buildInteractionExpiredCard(options: InteractionExpiredCardRende
 } {
   const lines = [
     formatHtmlHeading(options.title),
-    formatHtmlField("状态：", "已过期")
+    formatHtmlField("Status: ", "Expired")
   ];
   if (options.reason) {
-    lines.push(formatHtmlField("说明：", options.reason));
+    lines.push(formatHtmlField("Desc: ", options.reason));
   }
   return { text: lines.join("\n") };
 }
@@ -1333,14 +1333,14 @@ export function buildInspectText(
   const lines = [formatHtmlHeading("当前任务详情")];
 
   if (options?.sessionName) {
-    lines.push(formatHtmlField("会话：", options.sessionName));
+    lines.push(formatHtmlField("Session: ", options.sessionName));
   }
 
   if (options?.projectName && options.projectName !== options.sessionName) {
-    lines.push(formatHtmlField("项目：", options.projectName));
+    lines.push(formatHtmlField("Project: ", options.projectName));
   }
 
-  lines.push(formatHtmlField("状态：", formatInspectTurnStatus(snapshot.turnStatus)));
+  lines.push(formatHtmlField("Status: ", formatInspectTurnStatus(snapshot.turnStatus)));
 
   const blockedOn = formatInspectBlockedReason(snapshot.threadBlockedReason);
   if (blockedOn) {
@@ -1359,11 +1359,11 @@ export function buildInspectText(
   }
 
   if (snapshot.finalMessageAvailable) {
-    lines.push(formatHtmlField("最终答复：", "已就绪"));
+    lines.push(formatHtmlField("最终答复：", "Ready"));
   }
 
   if (options?.note) {
-    lines.push(formatHtmlField("说明：", options.note));
+    lines.push(formatHtmlField("Desc: ", options.note));
   }
 
   const timelineLines = formatInspectTimelineSection(snapshot.recentTransitions);
@@ -1457,15 +1457,15 @@ export function buildInspectText(
 export function summarizePendingInteractionState(state: PendingInteractionState): string {
   switch (state) {
     case "pending":
-      return "待处理";
+      return "Pending";
     case "awaiting_text":
       return "等待文字回答";
     case "answered":
-      return "已处理";
+      return "Handled";
     case "canceled":
-      return "已取消";
+      return "Cancelled";
     case "expired":
-      return "已过期";
+      return "Expired";
     case "failed":
       return "处理失败";
     default:
@@ -1474,7 +1474,7 @@ export function summarizePendingInteractionState(state: PendingInteractionState)
 }
 
 function buildRuntimeStatusFieldGroupSummary(fields: readonly RuntimeStatusField[]): string {
-  return fields.map((field) => buildRuntimeStatusFieldLabel(field)).join("、");
+  return fields.map((field) => buildRuntimeStatusFieldLabel(field)).join(", ");
 }
 
 const SELECTABLE_CODEX_CLI_RUNTIME_STATUS_FIELDS: readonly RuntimeStatusField[] = [
@@ -1516,7 +1516,7 @@ function buildRuntimePreferencePages(): Array<{
 function buildCollapsedInspectText(html: string): string {
   const blocks = html.split("\n\n");
   const summary = blocks[0] ?? html;
-  return `${summary}\n${formatHtmlField("说明：", "详情已折叠，点击按钮展开。")}`;
+  return `${summary}\n${formatHtmlField("Desc: ", "详情已折叠，点击按钮展开。")}`;
 }
 
 function paginateInspectHtml(html: string): string[] {
@@ -1659,7 +1659,7 @@ function isStandaloneInspectHeading(line: string): boolean {
 
 function pushHtmlRuntimeCardContext(lines: string[], context: RuntimeCardContext, language: UiLanguage = "zh"): void {
   if (context.sessionName) {
-    lines.push(formatRuntimeCardRow(language === "en" ? "Session" : "会话", context.sessionName));
+    lines.push(formatRuntimeCardRow(language === "en" ? "Session" : "Session", context.sessionName));
   }
 }
 
@@ -1700,11 +1700,11 @@ function formatRuntimeStatusOptionalLabel(label: string): string {
 function formatRuntimeStatusOptionalLabelZh(label: string): string {
   switch (label) {
     case "model-with-reasoning":
-      return "模型";
+      return "Model";
     case "plan_mode":
       return "Plan Mode";
     case "current-dir":
-      return "目录";
+      return "Dir";
     default:
       return formatRuntimeStatusOptionalLabel(label);
   }
@@ -1767,16 +1767,16 @@ function formatHubPlanStatus(
 ): string {
   switch (status) {
     case "inProgress":
-      return language === "en" ? "In Progress" : "进行中";
+      return language === "en" ? "In Progress" : "In progress";
     case "completed":
-      return language === "en" ? "Completed" : "已完成";
+      return language === "en" ? "Completed" : "Done";
     case "pending":
     case "todo":
-      return language === "en" ? "Pending" : "待处理";
+      return language === "en" ? "Pending" : "Pending";
     case "failed":
-      return language === "en" ? "Failed" : "失败";
+      return language === "en" ? "Failed" : "Failed";
     case "blocked":
-      return language === "en" ? "Blocked" : "阻塞中";
+      return language === "en" ? "Blocked" : "Blocked";
   }
 }
 
@@ -1812,15 +1812,15 @@ function formatHubAgentStatus(status: CollabAgentStateSnapshot["status"], langua
     case "pendingInit":
       return language === "en" ? "Pending init" : "等待初始化";
     case "running":
-      return language === "en" ? "Running" : "运行中";
+      return language === "en" ? "Running" : "Running";
     case "completed":
-      return language === "en" ? "Completed" : "已完成";
+      return language === "en" ? "Completed" : "Done";
     case "errored":
-      return language === "en" ? "Errored" : "异常";
+      return language === "en" ? "Errored" : "Unavailable";
     case "shutdown":
-      return language === "en" ? "Stopped" : "已停止";
+      return language === "en" ? "Stopped" : "Stopped";
     case "notFound":
-      return language === "en" ? "Not found" : "未找到";
+      return language === "en" ? "Not found" : "Not found";
     default:
       return status;
   }
@@ -1851,15 +1851,15 @@ function buildDetailedRuntimeCommandLines(
 ): string[] {
   const prefix = index === null ? "" : `${index}. `;
   const detailPrefix = index === null ? "" : "- ";
-  const lines = [`${prefix}${formatHtmlField("命令：", formatRuntimeCommandText(command.commandText))}`];
-  lines.push(`${detailPrefix}${formatHtmlField("状态：", formatInspectCommandState(command.state))}`);
+  const lines = [`${prefix}${formatHtmlField("Command: ", formatRuntimeCommandText(command.commandText))}`];
+  lines.push(`${detailPrefix}${formatHtmlField("Status: ", formatInspectCommandState(command.state))}`);
 
   if (command.latestSummary) {
-    lines.push(`${detailPrefix}${formatHtmlField("结果：", truncateText(command.latestSummary, 220))}`);
+    lines.push(`${detailPrefix}${formatHtmlField("Result: ", truncateText(command.latestSummary, 220))}`);
   }
 
   if (command.cwd) {
-    lines.push(`${detailPrefix}${formatHtmlField("目录：", truncateText(command.cwd, 220))}`);
+    lines.push(`${detailPrefix}${formatHtmlField("Dir: ", truncateText(command.cwd, 220))}`);
   }
 
   if (typeof command.exitCode === "number") {
@@ -1867,7 +1867,7 @@ function buildDetailedRuntimeCommandLines(
   }
 
   if (typeof command.durationMs === "number") {
-    lines.push(`${detailPrefix}${formatHtmlField("耗时：", formatCommandDuration(command.durationMs))}`);
+    lines.push(`${detailPrefix}${formatHtmlField("Time: ", formatCommandDuration(command.durationMs))}`);
   }
 
   return lines;
@@ -1894,8 +1894,8 @@ function formatTokenUsageSection(tokenUsage: InspectSnapshot["tokenUsage"]): str
   }
 
   const lines = [
-    formatHtmlListItem(`本次：${tokenUsage.lastTotalTokens}（输入 ${tokenUsage.lastInputTokens}，输出 ${tokenUsage.lastOutputTokens}，缓存 ${tokenUsage.lastCachedInputTokens}，推理 ${tokenUsage.lastReasoningOutputTokens}）`),
-    formatHtmlListItem(`累计：${tokenUsage.totalTokens}（输入 ${tokenUsage.totalInputTokens}，输出 ${tokenUsage.totalOutputTokens}，缓存 ${tokenUsage.totalCachedInputTokens}，推理 ${tokenUsage.totalReasoningOutputTokens}）`)
+    formatHtmlListItem(`本次：${tokenUsage.lastTotalTokens}（输入 ${tokenUsage.lastInputTokens}，输出 ${tokenUsage.lastOutputTokens}，缓存 ${tokenUsage.lastCachedInputTokens}，推理 ${tokenUsage.lastReasoningOutputTokens})`),
+    formatHtmlListItem(`累计：${tokenUsage.totalTokens}（输入 ${tokenUsage.totalInputTokens}，输出 ${tokenUsage.totalOutputTokens}，缓存 ${tokenUsage.totalCachedInputTokens}，推理 ${tokenUsage.totalReasoningOutputTokens})`)
   ];
   if (tokenUsage.modelContextWindow !== null) {
     lines.push(formatHtmlListItem(`上下文窗口：${tokenUsage.modelContextWindow}`));
@@ -1948,36 +1948,36 @@ function formatHtmlListItem(value: string): string {
 function formatInspectTurnStatus(status: ActivityStatus["turnStatus"]): string {
   switch (status) {
     case "idle":
-      return "空闲";
+      return "Idle";
     case "starting":
-      return "准备中";
+      return "Preparing";
     case "running":
-      return "执行中";
+      return "Running";
     case "blocked":
-      return "等待中";
+      return "Waiting";
     case "interrupted":
-      return "已中断";
+      return "Interrupted";
     case "completed":
-      return "已完成";
+      return "Done";
     case "failed":
-      return "失败";
+      return "Failed";
     default:
-      return "未知";
+      return "Unknown";
   }
 }
 
 function formatInspectCommandState(state: string): string {
   switch (state.toLowerCase()) {
     case "running":
-      return "进行中";
+      return "In progress";
     case "completed":
-      return "已完成";
+      return "Done";
     case "failed":
-      return "失败";
+      return "Failed";
     case "interrupted":
-      return "已中断";
+      return "Interrupted";
     default:
-      return "未知";
+      return "Unknown";
   }
 }
 
@@ -2003,13 +2003,13 @@ function describeInspectCurrentStep(status: ActivityStatus): string {
 
   switch (status.activeItemType) {
     case "planning":
-      return "正在更新计划";
+      return "Updating计划";
     case "commandExecution":
       return appendSpecificLabel("正在运行命令", status.activeItemLabel, ["command"], "：");
     case "fileChange":
       return appendSpecificLabel("正在修改文件", status.activeItemLabel, ["file changes"], "：");
     case "mcpToolCall":
-      return appendSpecificLabel("正在调用 MCP 工具", status.activeItemLabel, ["MCP tool call"], "：");
+      return appendSpecificLabel("正在调用 MCP Tools", status.activeItemLabel, ["MCP tool call"], "：");
     case "webSearch":
       return appendSpecificLabel("正在进行网页搜索", status.activeItemLabel, ["web search"], "：");
     case "agentMessage":
@@ -2017,7 +2017,7 @@ function describeInspectCurrentStep(status: ActivityStatus): string {
     case "reasoning":
       return "正在思考";
     case "other":
-      return appendSpecificLabel("正在处理任务", status.activeItemLabel, ["work item", "other"], "：");
+      return appendSpecificLabel("Processing任务", status.activeItemLabel, ["work item", "other"], "：");
     default:
       return defaultInspectStepForStatus(status.turnStatus);
   }
@@ -2043,12 +2043,12 @@ function translateInspectSummary(summary: string): string {
 
   const completedMatch = summary.match(/^turn completed \((.+)\)$/u);
   if (completedMatch) {
-    return `执行结束（${formatInspectTurnStatus(mapCompletionWord(completedMatch[1] ?? "unknown"))}）`;
+    return `执行结束（${formatInspectTurnStatus(mapCompletionWord(completedMatch[1] ?? "unknown"))})`;
   }
 
   const blockedMatch = summary.match(/^thread blocked \((.+)\)$/u);
   if (blockedMatch) {
-    return `线程阻塞（${translateBlockedToken(blockedMatch[1] ?? "")}）`;
+    return `线程阻塞（${translateBlockedToken(blockedMatch[1] ?? "")})`;
   }
 
   const statusMatch = summary.match(/^thread status (.+)$/u);
@@ -2166,7 +2166,7 @@ function defaultInspectStepForStatus(status: ActivityStatus["turnStatus"]): stri
     case "starting":
       return "等待第一条活动";
     case "running":
-      return "正在处理中";
+      return "Processing中";
     case "blocked":
       return "等待继续";
     case "completed":
@@ -2324,11 +2324,11 @@ function translateBlockedToken(token: string): string {
 function translateThreadStatusToken(token: string): string {
   switch (token) {
     case "notLoaded":
-      return "未加载";
+      return "Not loaded";
     case "idle":
-      return "空闲";
+      return "Idle";
     case "active":
-      return "活跃";
+      return "Active";
     case "systemError":
       return "系统错误";
     default:

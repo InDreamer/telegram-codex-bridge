@@ -133,7 +133,7 @@ function normalizeCommandApproval(
   const command = getString(record, "command");
   const reason = getString(record, "reason");
   const cwd = getString(record, "cwd");
-  const detail = [reason, cwd ? `目录：${cwd}` : null].filter((value): value is string => Boolean(value)).join("\n");
+  const detail = [reason, cwd ? `Dir: ${cwd}` : null].filter((value): value is string => Boolean(value)).join("\n");
   return {
     kind: "approval",
     method,
@@ -142,8 +142,8 @@ function normalizeCommandApproval(
     itemId,
     approvalId: getString(record, "approvalId"),
     decisionOptions: extractApprovalDecisionOptions(getArray(record, "availableDecisions")),
-    title: "Codex 需要命令批准",
-    subtitle: "命令审批",
+    title: "Codex needs command approval",
+    subtitle: "Approve command",
     body: command,
     detail: detail || null,
     rawParams: params
@@ -175,8 +175,8 @@ function normalizeFileChangeApproval(
       "decline",
       "cancel"
     ]),
-    title: "Codex 需要文件变更批准",
-    subtitle: "文件变更审批",
+    title: "Codex needs file change approval",
+    subtitle: "Approve changes",
     body: getString(record, "grantRoot"),
     detail: getString(record, "reason"),
     rawParams: params
@@ -209,10 +209,10 @@ function normalizeLegacyPatchApproval(
     itemId,
     approvalId: getString(record, "approvalId"),
     decisionOptions: buildLegacyApprovalDecisionOptions(),
-    title: "Codex 需要补丁批准",
-    subtitle: "兼容补丁审批",
+    title: "Codex needs patch approval",
+    subtitle: "Approve patch",
     body: summarizeLegacyFileChanges(record),
-    detail: [reason, grantRoot ? `授权根目录：${grantRoot}` : null]
+    detail: [reason, grantRoot ? `授权根Dir: ${grantRoot}` : null]
       .filter((value): value is string => Boolean(value))
       .join("\n") || null,
     rawParams: params
@@ -246,10 +246,10 @@ function normalizeLegacyExecApproval(
     itemId,
     approvalId: getString(record, "approvalId"),
     decisionOptions: buildLegacyApprovalDecisionOptions(),
-    title: "Codex 需要命令批准",
-    subtitle: "兼容命令审批",
+    title: "Codex needs command approval",
+    subtitle: "Approve command",
     body: command.length > 0 ? command.join(" ") : getString(record, "summary"),
-    detail: [reason, cwd ? `目录：${cwd}` : null]
+    detail: [reason, cwd ? `Dir: ${cwd}` : null]
       .filter((value): value is string => Boolean(value))
       .join("\n") || null,
     rawParams: params
@@ -275,8 +275,8 @@ function normalizePermissionsApproval(
     turnId,
     itemId,
     requestedPermissions: record?.permissions ?? null,
-    title: "Codex 需要权限批准",
-    subtitle: "权限审批",
+    title: "Codex needs permission approval",
+    subtitle: "Approve permission",
     detail: getString(record, "reason"),
     rawParams: params
   };
@@ -308,7 +308,7 @@ function normalizeQuestionnaire(
     threadId,
     turnId,
     itemId,
-    title: "Codex 需要更多信息",
+    title: "Codex needs more info",
     questions,
     submission: "tool_request_user_input",
     serverName: null,
@@ -376,8 +376,8 @@ function normalizeElicitation(
     threadId,
     turnId: getString(record, "turnId") ?? "",
     serverName,
-    title: "MCP 需要用户确认",
-    message: getString(record, "message") ?? "MCP 发起了一个需要你确认的请求。",
+    title: "MCP needs confirmation",
+    message: getString(record, "message") ?? "MCP sent a request that needs confirmation.",
     mode: getString(record, "mode") === "url" ? "url" : "unknown",
     detail: getString(record, "url"),
     rawParams: params
@@ -412,7 +412,7 @@ function normalizeElicitationForm(
     threadId,
     turnId: getString(record, "turnId") ?? "",
     itemId: getString(record, "elicitationId") ?? `mcp-${serverName}-form`,
-    title: "MCP 需要更多信息",
+    title: "MCP needs more info",
     questions,
     submission: "mcp_elicitation_form",
     serverName,
@@ -435,7 +435,7 @@ function normalizeMcpFormQuestion(fieldName: string, schema: unknown, required: 
     return {
       id: fieldName,
       header,
-      question: buildMcpQuestionPrompt(header, description, "从下方选一个选项。", required),
+      question: buildMcpQuestionPrompt(header, description, "Select an option below.", required),
       options,
       isOther: false,
       isSecret: false,
@@ -454,8 +454,8 @@ function normalizeMcpFormQuestion(fieldName: string, schema: unknown, required: 
         header,
         description,
         allowedValues.length > 0
-          ? `可选值：${allowedValues.join("、")}。多个值请用逗号分隔。`
-          : "多个值请用逗号分隔。",
+          ? `Options: ${allowedValues.join(", ")}。Separate multiple values with commas.`
+          : "Separate multiple values with commas.",
         required
       ),
       options: required ? null : [buildSkipQuestionOption()],
@@ -472,10 +472,10 @@ function normalizeMcpFormQuestion(fieldName: string, schema: unknown, required: 
     return {
       id: fieldName,
       header,
-      question: buildMcpQuestionPrompt(header, description, "请选择是或否。", required),
+      question: buildMcpQuestionPrompt(header, description, "Yes or No?", required),
       options: appendSkipOption([
-        { value: "true", label: "是", description: "返回 true" },
-        { value: "false", label: "否", description: "返回 false" }
+        { value: "true", label: "Yes", description: "Return true" },
+        { value: "false", label: "No", description: "Return false" }
       ], required),
       isOther: false,
       isSecret: false,
@@ -492,7 +492,7 @@ function normalizeMcpFormQuestion(fieldName: string, schema: unknown, required: 
       question: buildMcpQuestionPrompt(
         header,
         description,
-        type === "integer" ? "请直接发送整数。" : "请直接发送数字。",
+        type === "integer" ? "Send an integer." : "Send a number.",
         required
       ),
       options: required ? null : [buildSkipQuestionOption()],
@@ -508,7 +508,7 @@ function normalizeMcpFormQuestion(fieldName: string, schema: unknown, required: 
     return {
       id: fieldName,
       header,
-      question: buildMcpQuestionPrompt(header, description, "请直接发送文字回答。", required),
+      question: buildMcpQuestionPrompt(header, description, "Send text.", required),
       options: required ? null : [buildSkipQuestionOption()],
       isOther: true,
       isSecret: false,
@@ -528,9 +528,9 @@ function buildMcpQuestionPrompt(
   required: boolean
 ): string {
   const parts = [
-    description ?? `请提供 ${header}。`,
+    description ?? `Provide: ${header}。`,
     answerHint,
-    required ? "这是必填项。" : "这是可选项。"
+    required ? "Required." : "Optional."
   ];
   return parts.join("\n");
 }
@@ -540,25 +540,25 @@ function buildLegacyApprovalDecisionOptions(): NormalizedApprovalDecisionOption[
     {
       key: "accept",
       kind: "accept",
-      label: "批准",
+      label: "Approve",
       payload: { decision: "approved" }
     },
     {
       key: "acceptForSession",
       kind: "acceptForSession",
-      label: "本会话内总是批准",
+      label: "Always allow this session",
       payload: { decision: "approved_for_session" }
     },
     {
       key: "decline",
       kind: "decline",
-      label: "拒绝",
+      label: "Decline",
       payload: { decision: "denied" }
     },
     {
       key: "cancel",
       kind: "cancel",
-      label: "取消本次交互",
+      label: "Cancel",
       payload: { decision: "abort" }
     }
   ];
@@ -614,7 +614,7 @@ function normalizeApprovalDecisionOption(value: unknown): NormalizedApprovalDeci
     return {
       key: "acceptWithExecpolicyAmendment",
       kind: "acceptWithExecpolicyAmendment",
-      label: "批准并记住命令规则",
+      label: "Allow & remember rule",
       payload: {
         decision: {
           acceptWithExecpolicyAmendment: execpolicy
@@ -630,7 +630,7 @@ function normalizeApprovalDecisionOption(value: unknown): NormalizedApprovalDeci
     return {
       key: "applyNetworkPolicyAmendment",
       kind: "applyNetworkPolicyAmendment",
-      label: host ? `批准并保存网络规则（${host}）` : "批准并保存网络规则",
+      label: host ? `Allow & save rule (${host})` : "Allow & save rule",
       payload: {
         decision: {
           applyNetworkPolicyAmendment: network
@@ -645,13 +645,13 @@ function normalizeApprovalDecisionOption(value: unknown): NormalizedApprovalDeci
 function approvalDecisionLabel(kind: Extract<ApprovalDecisionKind, "accept" | "acceptForSession" | "decline" | "cancel">): string {
   switch (kind) {
     case "accept":
-      return "批准";
+      return "Approve";
     case "acceptForSession":
-      return "本会话内总是批准";
+      return "Always allow this session";
     case "decline":
-      return "拒绝";
+      return "Decline";
     case "cancel":
-      return "取消本次交互";
+      return "Cancel";
   }
 }
 
@@ -662,8 +662,8 @@ function appendSkipOption(options: NormalizedQuestionOption[], required: boolean
 function buildSkipQuestionOption(): NormalizedQuestionOption {
   return {
     value: SKIP_QUESTION_OPTION_VALUE,
-    label: "跳过",
-    description: "保留为空"
+    label: "Skip",
+    description: "Leave empty"
   };
 }
 
@@ -744,5 +744,5 @@ function summarizeLegacyFileChanges(record: Record<string, unknown> | null): str
     return preview;
   }
 
-  return `${preview}\n以及另外 ${paths.length - 3} 个文件`;
+  return `${preview}\nand ${paths.length - 3} more files`;
 }

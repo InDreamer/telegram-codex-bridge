@@ -191,14 +191,14 @@ export class InteractionBroker {
     const row = store.getPendingInteraction(interactionId, chatId);
     if (!row) {
       this.clearPendingInteractionTextMode(interactionId);
-      await this.deps.safeSendMessage(chatId, "这个交互已过期。");
+      await this.deps.safeSendMessage(chatId, "This 交互已过期。");
       return;
     }
 
     const interaction = parseStoredInteraction(row.promptJson);
     if (!interaction) {
       this.clearPendingInteractionTextMode(interactionId);
-      await this.deps.safeSendMessage(chatId, "这个交互已过期。");
+      await this.deps.safeSendMessage(chatId, "This 交互已过期。");
       return;
     }
 
@@ -218,27 +218,27 @@ export class InteractionBroker {
     const row = store.getPendingInteraction(mode.interactionId, chatId);
     if (!row) {
       this.clearPendingInteractionTextMode(mode.interactionId);
-      await this.deps.safeSendMessage(chatId, "这个交互已过期。");
+      await this.deps.safeSendMessage(chatId, "This 交互已过期。");
       return;
     }
 
     if (row.sessionId !== mode.sessionId) {
       this.clearPendingInteractionTextMode(mode.interactionId);
-      await this.deps.safeSendMessage(chatId, "这个交互已过期。");
+      await this.deps.safeSendMessage(chatId, "This 交互已过期。");
       return;
     }
 
     const interaction = parseStoredInteraction(row.promptJson);
     if (!interaction || interaction.kind !== "questionnaire") {
       this.clearPendingInteractionTextMode(mode.interactionId);
-      await this.deps.safeSendMessage(chatId, "这个交互已过期。");
+      await this.deps.safeSendMessage(chatId, "This 交互已过期。");
       return;
     }
 
     if (!isPendingInteractionActionable(row)) {
       this.clearPendingInteractionTextMode(mode.interactionId);
       await this.renderStoredPendingInteraction(chatId, row, interaction);
-      await this.deps.safeSendMessage(chatId, isPendingInteractionHandled(row) ? "这个操作已处理。" : "这个交互已过期。");
+      await this.deps.safeSendMessage(chatId, isPendingInteractionHandled(row) ? "Already handled." : "This 交互已过期。");
       return;
     }
 
@@ -246,7 +246,7 @@ export class InteractionBroker {
     const currentQuestion = getCurrentQuestion(interaction, draft);
     if (!currentQuestion || currentQuestion.id !== mode.questionId) {
       this.clearPendingInteractionTextMode(mode.interactionId);
-      await this.deps.safeSendMessage(chatId, "这个交互已过期。");
+      await this.deps.safeSendMessage(chatId, "This 交互已过期。");
       return;
     }
 
@@ -274,7 +274,7 @@ export class InteractionBroker {
     const payload = buildQuestionnaireSubmissionPayload(interaction, draft);
     const success = await this.submitPendingInteractionResponse(chatId, row, interaction, payload);
     if (!success) {
-      await this.deps.safeSendMessage(chatId, "暂时无法处理这个交互，请稍后再试。");
+      await this.deps.safeSendMessage(chatId, "暂时无法处理This 交互，请稍后再试。");
     }
   }
 
@@ -296,19 +296,19 @@ export class InteractionBroker {
 
     const decisionKey = resolveInteractionDecisionKey(interaction, parsed);
     if (!decisionKey) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
     const resolved = buildInteractionDecisionResolution(interaction, decisionKey);
     if (!resolved) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个操作当前不支持。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "This 操作当前不支持。");
       return;
     }
 
     const success = await this.submitPendingInteractionResponse(chatId, row, interaction, resolved.payload);
     if (!success) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "暂时无法处理这个交互，请稍后再试。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "暂时无法处理This 交互，请稍后再试。");
       return;
     }
 
@@ -333,13 +333,13 @@ export class InteractionBroker {
     }
 
     if (interaction.kind !== "questionnaire") {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
     const questionId = resolveInteractionQuestionId(interaction, parsed);
     if (!questionId) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
@@ -347,7 +347,7 @@ export class InteractionBroker {
     const currentQuestion = getCurrentQuestion(interaction, draft);
     const selectedOption = currentQuestion?.options?.[parsed.optionIndex];
     if (!currentQuestion || currentQuestion.id !== questionId || !selectedOption) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
@@ -375,7 +375,7 @@ export class InteractionBroker {
     const payload = buildQuestionnaireSubmissionPayload(interaction, draft);
     const success = await this.submitPendingInteractionResponse(chatId, row, interaction, payload);
     if (!success) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "暂时无法处理这个交互，请稍后再试。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "暂时无法处理This 交互，请稍后再试。");
       return;
     }
 
@@ -400,31 +400,31 @@ export class InteractionBroker {
     }
 
     if (interaction.kind !== "questionnaire") {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
     const questionId = resolveInteractionQuestionId(interaction, parsed);
     if (!questionId) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
     const draft = parseQuestionnaireDraft(row.responseJson);
     const currentQuestion = getCurrentQuestion(interaction, draft);
     if (!currentQuestion || currentQuestion.id !== questionId) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
     if (!questionAllowsTextAnswer(currentQuestion)) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个问题只能用按钮回答。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "This 问题只能用按钮回答。");
       return;
     }
 
     const activeSession = store.getActiveSession(chatId);
     if (!activeSession || activeSession.sessionId !== row.sessionId) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "请先切换到这个会话，再发送文字回答。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "请先切换到This 会话，再发送文字回答。");
       return;
     }
 
@@ -460,7 +460,7 @@ export class InteractionBroker {
     }
 
     const success = await this.cancelInteraction(chatId, row, interaction, "user_canceled_interaction");
-    await this.deps.safeAnswerCallbackQuery(callbackQueryId, success ? undefined : "暂时无法处理这个交互，请稍后再试。");
+    await this.deps.safeAnswerCallbackQuery(callbackQueryId, success ? undefined : "暂时无法处理This 交互，请稍后再试。");
   }
 
   async handleInteractionAnswerToggleCallback(
@@ -480,7 +480,7 @@ export class InteractionBroker {
       await this.renderStoredPendingInteraction(chatId, row, interaction);
       await this.deps.safeAnswerCallbackQuery(
         callbackQueryId,
-        isPendingInteractionHandled(row) ? "这个操作已处理。" : "这个按钮已过期，请重新操作。"
+        isPendingInteractionHandled(row) ? "Already handled." : "Button expired, try again."
       );
       return;
     }
@@ -496,11 +496,11 @@ export class InteractionBroker {
     }
 
     if (result.outcome === "rate_limited") {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "当前平台正在限流，请稍后再试。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Rate limited, try again.");
       return;
     }
 
-    await this.deps.safeAnswerCallbackQuery(callbackQueryId, "暂时无法更新这条消息，请稍后再试。");
+    await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Can't update now, try again.");
   }
 
   async handleNormalizedServerRequest(
@@ -696,24 +696,24 @@ export class InteractionBroker {
   ): Promise<{ row: PendingInteractionRow; interaction: NormalizedInteraction } | null> {
     const store = this.deps.getStore();
     if (!store) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return null;
     }
 
     const row = store.getPendingInteraction(interactionId, chatId);
     if (!row) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return null;
     }
 
     if (row.messageId !== null && row.messageId !== messageId) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return null;
     }
 
     const interaction = parseStoredInteraction(row.promptJson);
     if (!interaction) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return null;
     }
 
@@ -732,7 +732,7 @@ export class InteractionBroker {
     await this.renderStoredPendingInteraction(chatId, row, interaction);
     await this.deps.safeAnswerCallbackQuery(
       callbackQueryId,
-      isPendingInteractionHandled(row) ? "这个操作已处理。" : "这个按钮已过期，请重新操作。"
+      isPendingInteractionHandled(row) ? "Already handled." : "Button expired, try again."
     );
     return true;
   }
@@ -1043,7 +1043,7 @@ function parseQuestionAnswerInput(
 ): ParsedQuestionAnswer {
   if (rawInput === SKIP_QUESTION_OPTION_VALUE) {
     if (question.required) {
-      return { ok: false, message: "这个问题不能跳过。" };
+      return { ok: false, message: "This 问题不能跳过。" };
     }
     return { ok: true, value: null };
   }
@@ -1070,10 +1070,10 @@ function parseQuestionAnswerInput(
         return { ok: true, value: parsed };
       }
       const normalized = rawInput.trim().toLowerCase();
-      if (normalized === "y" || normalized === "是") {
+      if (normalized === "y" || normalized === "Yes") {
         return { ok: true, value: true };
       }
-      if (normalized === "n" || normalized === "否") {
+      if (normalized === "n" || normalized === "No") {
         return { ok: true, value: false };
       }
       return { ok: false, message: "请输入 true/false 或 是/否。" };
@@ -1108,7 +1108,7 @@ function parseQuestionAnswerInput(
 }
 
 function buildAllowedValuesMessage(values: string[] | null): string {
-  return values && values.length > 0 ? `可用值：${values.join("、")}。` : "输入值不合法。";
+  return values && values.length > 0 ? `可用值：${values.join(", ")}。` : "输入值不合法。";
 }
 
 function toToolQuestionnaireAnswerArray(value: unknown): string[] | null {

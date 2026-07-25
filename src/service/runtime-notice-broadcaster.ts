@@ -68,7 +68,7 @@ export function formatGlobalRuntimeNotice(notification: GlobalRuntimeNotice): st
       return "Codex 技能列表已刷新。";
     case "thread_compacted":
     case "thread_compaction_completed":
-      return "Codex 线程上下文已压缩。";
+      return "Thread context compressed.";
     default:
       return null;
   }

@@ -255,7 +255,7 @@ function buildFeishuCardCallbackResponse(
     return {
       toast: {
         type: "error",
-        content: "这个按钮已过期，请重新打开界面。"
+        content: "Button expired, reopen."
       }
     };
   }
@@ -265,7 +265,7 @@ function buildFeishuCardCallbackResponse(
     return {
       toast: {
         type: "error",
-        content: "这个按钮已过期，请重新打开界面。"
+        content: "Button expired, reopen."
       }
     };
   }
@@ -275,7 +275,7 @@ function buildFeishuCardCallbackResponse(
       return {
         toast: {
           type: "warning",
-          content: "正在请求中断…"
+          content: "Requesting interrupt…"
         }
       };
     case "commands_run":
@@ -287,14 +287,14 @@ function buildFeishuCardCallbackResponse(
       return {
         toast: {
           type: "info",
-          content: "正在处理…"
+          content: "Processing…"
         }
       };
     default:
       return {
         toast: {
           type: "info",
-          content: "正在更新…"
+          content: "Updating…"
         }
       };
   }

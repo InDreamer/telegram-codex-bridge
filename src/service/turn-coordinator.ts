@@ -353,7 +353,7 @@ export class TurnCoordinator {
     if (!activeTurn || activeTurn.chatId !== chatId) {
       return {
         ok: false,
-        message: "这个按钮已过期，请重新操作。"
+        message: "Button expired, try again."
       };
     }
 
@@ -362,12 +362,12 @@ export class TurnCoordinator {
       await this.deps.getAppServer()?.interruptTurn(activeTurn.threadId, activeTurn.turnId);
       return {
         ok: true,
-        message: "已请求停止这个会话的当前操作。"
+        message: "已请求停止This 会话的当前操作。"
       };
     } catch {
       return {
         ok: false,
-        message: "当前无法中断这个会话的操作。"
+        message: "当前无法中断This 会话的操作。"
       };
     }
   }
@@ -408,7 +408,7 @@ export class TurnCoordinator {
     if (!capacity.allowed) {
       await this.deps.safeSendMessage(
         chatId,
-        `当前最多只能并行运行 ${capacity.limit} 个会话，请先等待完成或停止部分任务。`
+        `Max parallel: ${capacity.limit} sessions. Wait or stop some.`
       );
       return;
     }
@@ -447,7 +447,7 @@ export class TurnCoordinator {
         lastTurnId: session.lastTurnId,
         lastTurnStatus: "failed"
       });
-      await this.deps.safeSendMessage(chatId, "Codex 服务暂时不可用，请稍后重试。");
+      await this.deps.safeSendMessage(chatId, "Codex unavailable, try again.");
     }
   }
 
@@ -1006,7 +1006,7 @@ export class TurnCoordinator {
         lastTurnId: runningTurn.turnId,
         lastTurnStatus: "failed"
       });
-      await this.deps.safeSendMessage(runningTurn.chatId, "Codex 服务暂时不可用，请稍后重试。");
+      await this.deps.safeSendMessage(runningTurn.chatId, "Codex unavailable, try again.");
     }
   }
 

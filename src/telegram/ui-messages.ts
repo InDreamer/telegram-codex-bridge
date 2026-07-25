@@ -295,7 +295,7 @@ export function buildStatusText(
   runtimeStatusText?: string | null,
   modelState?: SessionModelDisplayState | null
 ): string {
-  const issueText = snapshot.details.issues.length === 0 ? "None" : snapshot.details.issues.join("；");
+  const issueText = snapshot.details.issues.length === 0 ? "None" : snapshot.details.issues.join("; ");
   const resolvedModelState = activeSession ? resolveModelDisplayState(activeSession, modelState ?? undefined) : null;
   const activeSessionText = activeSession
     ? [
@@ -440,10 +440,10 @@ export function buildResumeThreadListText(threads: Array<{
   const pageSize = Math.max(1, Math.trunc(options.pageSize ?? 10));
   const includeAll = options.includeAll ?? false;
   if (threads.length === 0) {
-    return escapeHtml(`可恢复的 Codex 会话（第 ${page} 页）\n暂无会话。${page > 1 ? `\n上一页：/resume ${includeAll ? "all " : ""}page ${page - 1}` : ""}`);
+    return escapeHtml(`可恢复的 Codex 会话（第 ${page} 页)\n暂无会话。${page > 1 ? `\n上一页：/resume ${includeAll ? "all " : ""}page ${page - 1}` : ""}`);
   }
 
-  const lines = [`可恢复的 Codex 会话（第 ${page} 页）`, `发送 /resume ${includeAll ? "all " : ""}<序号> 恢复。`];
+  const lines = [`可恢复的 Codex 会话（第 ${page} 页)`, `发送 /resume ${includeAll ? "all " : ""}<序号> 恢复。`];
   threads.forEach((thread, index) => {
     const ordinal = (page - 1) * pageSize + index + 1;
     const projectName = basename(thread.cwd);
@@ -663,8 +663,8 @@ function formatSessionState(session: SessionRow): string {
       return "Interrupted";
     case "failed":
       return session.failureReason
-        ? `失败（${formatSessionFailureReason(session.failureReason)}）`
-        : "失败";
+        ? `失败（${formatSessionFailureReason(session.failureReason)})`
+        : "Failed";
     case "idle":
     default:
       return "Idle";
@@ -743,7 +743,7 @@ function formatLastTurnSummary(session: SessionRow): string | null {
     case "interrupted":
       return "Last interrupted";
     case "failed":
-      return session.failureReason ? `上次失败（${formatSessionFailureReason(session.failureReason)}）` : "上次失败";
+      return session.failureReason ? `上次失败（${formatSessionFailureReason(session.failureReason)})` : "上次失败";
     default:
       return null;
   }
@@ -780,7 +780,7 @@ function buildDefaultEffortButtonLabel(
     markers.push("Active");
   }
   const markerText = markers.length > 0 ? ` [${markers.join("/")}]` : "";
-  return `默认（${formatReasoningEffortLabel(defaultReasoningEffort)}）${markerText}`;
+  return `默认（${formatReasoningEffortLabel(defaultReasoningEffort)})${markerText}`;
 }
 
 function buildReasoningEffortButtonLabel(

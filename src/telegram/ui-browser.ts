@@ -54,30 +54,30 @@ function browserCopy(language: UiLanguage) {
       }
     : {
         title: "文件浏览",
-        project: "当前项目：",
+        project: "Project: ",
         location: "当前位置：",
-        page: "页码：",
-        mode: "模式：",
+        page: "Page: ",
+        mode: "Mode: ",
         readonly: "只读浏览",
-        root: "项目根",
+        root: "Project Root",
         empty: "当前目录为空。",
-        previous: "上一页",
-        next: "下一页",
-        up: "上一级",
+        previous: "Prev",
+        next: "Next",
+        up: "Up",
         backToRoot: "回到项目根",
-        refresh: "刷新",
+        refresh: "Refresh",
         useCurrentDirectory: "在当前目录新建会话",
-        close: "关闭",
+        close: "Close",
         previewTitle: "文件预览",
-        file: "文件：",
-        path: "路径：",
-        size: "大小：",
+        file: "File: ",
+        path: "Path: ",
+        size: "Size: ",
         modified: "修改时间：",
         previewPage: "预览页：",
         previewTruncated: "仅预览前 48 KB。",
         returnToDirectory: "返回目录",
         infoTitle: "文件信息",
-        type: "类型：",
+        type: "Type: ",
         binary: "二进制或暂不支持预览",
         imagePreview: "图片预览"
       };
@@ -187,14 +187,14 @@ export function buildProjectBrowserUseCurrentDirectoryConfirmMessage(options: {
 } {
   return {
     text: [
-      formatHtmlHeading("确认新建会话"),
-      formatHtmlField("目录：", options.directoryPath),
+      formatHtmlHeading("Confirm"),
+      formatHtmlField("Dir: ", options.directoryPath),
       formatHtmlField("显示名：", options.projectName),
-      "要在这个目录新建会话吗？"
+      "要在This 目录新建会话吗？"
     ].join("\n"),
     replyMarkup: {
       inline_keyboard: [
-        [{ text: "确认新建会话", callback_data: encodeBrowseUseCurrentDirConfirmCallback(options.token) }],
+        [{ text: "Confirm", callback_data: encodeBrowseUseCurrentDirConfirmCallback(options.token) }],
         [{ text: "返回目录", callback_data: encodeBrowseUseCurrentDirCancelCallback(options.token) }]
       ]
     }

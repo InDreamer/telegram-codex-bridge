@@ -156,20 +156,20 @@ export function buildFinalAnswerReplyMarkup(
   const buttons: Array<{ text: string; callback_data: string }> = [];
   if (options.totalPages > 1 && options.currentPage && options.currentPage > 1) {
     buttons.push({
-      text: "上一页",
+      text: "Prev",
       callback_data: encodeFinalAnswerPageCallback(options.answerId, options.currentPage - 1)
     });
   }
 
   if (options.totalPages > 1 && options.currentPage && options.currentPage < options.totalPages) {
     buttons.push({
-      text: "下一页",
+      text: "Next",
       callback_data: encodeFinalAnswerPageCallback(options.answerId, options.currentPage + 1)
     });
   }
 
   buttons.push({
-    text: "收起",
+    text: "Collapse",
     callback_data: encodeFinalAnswerCloseCallback(options.answerId)
   });
 
@@ -183,7 +183,7 @@ export function buildFinalAnswerReplyMarkup(
 
 export function buildPlanResultActionRows(answerId: string): Array<Array<{ text: string; callback_data: string }>> {
   return [[
-    { text: "实施这个计划", callback_data: encodePlanImplementCallback(answerId) }
+    { text: "实施This 计划", callback_data: encodePlanImplementCallback(answerId) }
   ]];
 }
 
@@ -222,13 +222,13 @@ export function buildRecentOutputReplyMarkup(
   const buttons: Array<{ text: string; callback_data: string }> = [];
   if (options.totalPages > 1 && options.currentPage && options.currentPage > 1) {
     buttons.push({
-      text: "上一页",
+      text: "Prev",
       callback_data: encodeRecentOutputPageCallback(options.answerId, options.currentPage - 1)
     });
   }
   if (options.totalPages > 1 && options.currentPage && options.currentPage < options.totalPages) {
     buttons.push({
-      text: "下一页",
+      text: "Next",
       callback_data: encodeRecentOutputPageCallback(options.answerId, options.currentPage + 1)
     });
   }
@@ -262,13 +262,13 @@ export function buildPlanResultReplyMarkup(options: TerminalResultControlView): 
   const buttons: Array<{ text: string; callback_data: string }> = [];
   if (options.totalPages > 1 && options.currentPage && options.currentPage > 1) {
     buttons.push({
-      text: "上一页",
+      text: "Prev",
       callback_data: encodePlanResultPageCallback(options.answerId, options.currentPage - 1)
     });
   }
   if (options.totalPages > 1 && options.currentPage && options.currentPage < options.totalPages) {
     buttons.push({
-      text: "下一页",
+      text: "Next",
       callback_data: encodePlanResultPageCallback(options.answerId, options.currentPage + 1)
     });
   }

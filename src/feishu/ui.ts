@@ -74,31 +74,31 @@ function copy(language: UiLanguage) {
   }
 
   return {
-    welcomeTitle: "欢迎使用 Codex Bridge",
-    welcomeBodyIdle: "你可以直接在飞书里新建会话，或回到最近的工作上下文。",
-    welcomeBodyActive: "当前会话已就绪。你可以直接开始新任务、查看状态，或切回最近会话。",
-    setupTitle: "飞书接入尚未完成",
-    setupBody: "当前桥接还没有完全准备好飞书交互。请先查看下面的关键检查项，再继续使用命令入口。",
-    statusTitle: "飞书状态",
-    checksTitle: "关键检查",
-    issuesTitle: "当前问题",
-    checklistTitle: "下一步",
-    runtimeTitle: "运行中概览",
-    currentSession: "当前会话：",
-    noSession: "当前没有活动会话",
-    bridgeState: "桥接状态：",
-    packReady: "飞书接入：",
-    codexReady: "Codex：",
-    authorization: "授权绑定：",
-    ok: "正常",
-    pending: "待处理",
-    incomplete: "未完成",
-    unavailable: "不可用",
+    welcomeTitle: "Welcome to Codex Bridge",
+    welcomeBodyIdle: "Create sessions or return to recent work.",
+    welcomeBodyActive: "Session ready. Start a task, check status, or switch sessions.",
+    setupTitle: "Setup incomplete",
+    setupBody: "Bridge not fully ready. Check the items below.",
+    statusTitle: "Feishu Status",
+    checksTitle: "Checks",
+    issuesTitle: "Issues",
+    checklistTitle: "Next",
+    runtimeTitle: "Running Overview",
+    currentSession: "Session: ",
+    noSession: "No active sessions",
+    bridgeState: "Bridge: ",
+    packReady: "Feishu: ",
+    codexReady: "Codex: ",
+    authorization: "Auth: ",
+    ok: "OK",
+    pending: "Pending",
+    incomplete: "Incomplete",
+    unavailable: "Unavailable",
     checkLabels: {
-      credentials: "凭证",
-      tenantToken: "租户令牌",
-      authorization: "授权用户",
-      textIngress: "文本消息",
+      credentials: "Credentials",
+      tenantToken: "Tenant Token",
+      authorization: "Authorized User",
+      textIngress: "Text Message",
       interactiveSend: "卡片发送",
       cardCallback: "卡片回调",
       fileUpload: "文件上传",
@@ -107,10 +107,10 @@ function copy(language: UiLanguage) {
     },
     actions: {
       newSession: "新建会话",
-      sessions: "最近会话",
+      sessions: "Recent",
       status: "当前状态",
-      help: "帮助",
-      commands: "命令",
+      help: "Help",
+      commands: "Commands",
       inspect: "查看详情",
       interrupt: "中断操作"
     }
@@ -127,12 +127,12 @@ function summarizeActiveSession(session: SessionRow | null, language: UiLanguage
   }
 
   const state = session.status === "running"
-    ? (language === "en" ? "running" : "执行中")
+    ? (language === "en" ? "running" : "Running")
     : session.status === "failed"
-      ? (language === "en" ? "failed" : "失败")
+      ? (language === "en" ? "failed" : "Failed")
       : session.status === "interrupted"
-        ? (language === "en" ? "interrupted" : "已中断")
-        : (language === "en" ? "idle" : "空闲");
+        ? (language === "en" ? "interrupted" : "Interrupted")
+        : (language === "en" ? "idle" : "Idle");
 
   return `${escapeHtml(projectDisplayName(session))} / ${escapeHtml(session.displayName)} / ${escapeHtml(state)}`;
 }
@@ -269,8 +269,8 @@ export function buildFeishuStatusText(options: {
 }): string {
   const labels = copy(options.language);
   const issueText = options.snapshot.details.issues.length === 0
-    ? (options.language === "en" ? "None" : "无")
-    : options.snapshot.details.issues.join("；");
+    ? (options.language === "en" ? "None" : "None")
+    : options.snapshot.details.issues.join("; ");
   const lines = [
     formatHtmlHeading(options.snapshot.details.setupState === "incomplete" ? labels.setupTitle : labels.statusTitle),
     options.snapshot.details.setupState === "incomplete" ? labels.setupBody : "",
