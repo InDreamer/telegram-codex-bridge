@@ -1258,7 +1258,7 @@ export class SessionProjectCoordinator {
     const nextPlanMode = !activeSession.planMode;
     store.setSessionPlanMode(activeSession.sessionId, nextPlanMode);
 
-    const verb = nextPlanMode ? "开启" : "关闭";
+    const verb = this.deps.getUiLanguage() === "en" ? (nextPlanMode ? "enable" : "disable") : (nextPlanMode ? "开启" : "关闭");
     const suffix = activeSession.status === "running"
       ? "当前任务不受影响，下次任务开始时生效。"
       : "下次任务开始时生效。";
@@ -1332,7 +1332,7 @@ export class SessionProjectCoordinator {
   }
 
   private getRenamePromptText(kind: PendingRenameState["kind"]): string {
-    return kind === "project" ? "请输入新的项目别名。\n发送 /cancel 取消。" : "请输入新的会话名称。\n发送 /cancel 取消。";
+    return kind === "project" ? (this.deps.getUiLanguage() === "en" ? "Enter a new project alias.\nSend /cancel to cancel." : "请输入新的项目别名。\n发送 /cancel 取消。") : (this.deps.getUiLanguage() === "en" ? "Enter a new session name.\nSend /cancel to cancel." : "请输入新的会话名称。\n发送 /cancel 取消。");
   }
 
   private async editOrSendRenamePrompt(chatId: string, messageId: number, promptText: string): Promise<number> {

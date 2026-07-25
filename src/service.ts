@@ -166,7 +166,7 @@ const VOICE_PCM_BYTES_PER_SAMPLE = 2;
 const VOICE_REALTIME_CHUNK_BYTES = 32_000;
 const VOICE_REALTIME_WAIT_TIMEOUT_MS = 30_000;
 const VOICE_REALTIME_POLL_INTERVAL_MS = 1_000;
-const VOICE_REALTIME_TRANSCRIPTION_PROMPT = "请逐字转写收到的语音，只返回转写文本，不要解释。";
+const VOICE_REALTIME_TRANSCRIPTION_PROMPT = "Please transcribe the received voice message word by word. Return only the transcription text, no explanations.";
 const CODEX_CLI_STATUS_LINE_BASELINE_TOKENS = 12_000;
 const FEISHU_ENTRY_SURFACE_COOLDOWN_MS = 60_000;
 const WEB_CONVERSATION_HANDLE_ID_SALT = "web-readonly-view-model:v1";
@@ -2520,7 +2520,7 @@ export class BridgeService {
 
     const activeSession = this.store.getActiveSession(chatId);
     if (!activeSession) {
-      await this.safeSendMessage(chatId, "请先发送 /new 选择项目。");
+      await this.safeSendMessage(chatId, this.getUiLanguage() === "en" ? "Please send /new first to select a project." : "请先发送 /new 选择项目。");
       return;
     }
 
@@ -3771,7 +3771,7 @@ export class BridgeService {
   }
 
   private getUiLanguage(): UiLanguage {
-    return this.store?.getUiLanguage() ?? "zh";
+    return this.store?.getUiLanguage() ?? "en";
   }
 
   private buildLanguagePickerMessage(language: UiLanguage): {

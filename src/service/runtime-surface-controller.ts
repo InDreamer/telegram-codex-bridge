@@ -95,7 +95,7 @@ const RECOVERY_HUB_COMPACT_SESSION_NAME_LIMIT = 32;
 const RECOVERY_HUB_TIGHT_SESSION_NAME_LIMIT = 24;
 const HUB_AUTO_REFRESH_START_DELAY_MS = 1500;
 const HUB_AUTO_REFRESH_RECOVERY_DELAY_MS = 1000;
-const HUB_COMMAND_REMINDER_TEXT = "需要查看运行卡片时，可发送 /hub。";
+const HUB_COMMAND_REMINDER_TEXT = "Need to view the runtime card? Send /hub.";
 
 interface RuntimePreferencesDraftState {
   chatId: string;
