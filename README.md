@@ -227,6 +227,20 @@ For detailed docs, start here:
 
 For coding agents, see [`AGENTS.md`](AGENTS.md).
 
+
+## Security
+
+The bridge uses a two-step authorization process:
+
+1. **Bot token** — The Telegram bot token is stored locally on your machine (`~/.local/share/codex-telegram-bridge/`). Keep it private. If it leaks, revoke it via BotFather (`/revoke`).
+
+2. **User authorization** — After installing the bridge, you must explicitly bind your Telegram account using `ctb authorize pending --select`. Only bound accounts can control the bridge. Unauthorized users who message the bot are logged and rejected.
+
+**Best practices:**
+- Enable two-factor authentication on your Telegram account — this protects the access path to the bridge.
+- Enable the app server guard during install (`--app-server-guard-enabled true`) to monitor for unusual usage patterns.
+- If you no longer need the bridge, run `ctb uninstall --purge-state` to remove all credentials and data.
+
 ## Contributing
 
 Read [`CONTRIBUTING.md`](CONTRIBUTING.md), keep the scope tight, and update the matching docs when behavior changes.
