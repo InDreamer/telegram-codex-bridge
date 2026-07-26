@@ -166,7 +166,7 @@ const VOICE_PCM_BYTES_PER_SAMPLE = 2;
 const VOICE_REALTIME_CHUNK_BYTES = 32_000;
 const VOICE_REALTIME_WAIT_TIMEOUT_MS = 30_000;
 const VOICE_REALTIME_POLL_INTERVAL_MS = 1_000;
-const VOICE_REALTIME_TRANSCRIPTION_PROMPT = "请逐字转写收到的语音，只返回转写文本，不要解释。";
+const VOICE_REALTIME_TRANSCRIPTION_PROMPT = "Please transcribe the received voice message word by word. Return only the transcription text, no explanations.";
 const CODEX_CLI_STATUS_LINE_BASELINE_TOKENS = 12_000;
 const FEISHU_ENTRY_SURFACE_COOLDOWN_MS = 60_000;
 const WEB_CONVERSATION_HANDLE_ID_SALT = "web-readonly-view-model:v1";
@@ -626,7 +626,7 @@ export class BridgeService {
   }
 
   private get activePackLabel(): string {
-    return this.config.activePack === "feishu" ? "飞书" : "Telegram";
+    return this.config.activePack === "feishu" ? "Feishu" : "Telegram";
   }
 
   private buildBridgeCommandActionsReplyMarkup(actions: BridgeCommandActionView[]): TelegramInlineKeyboardMarkup | undefined {
@@ -1168,7 +1168,7 @@ export class BridgeService {
 
     const snapshot = this.store.getReadinessSnapshot() ?? this.snapshot;
     if (!snapshot) {
-      await this.safeSendMessage(chatId, "桥接状态未知，请在本机运行 ctb doctor。");
+      await this.safeSendMessage(chatId, "Bridge status unknown. Run 'ctb doctor' locally.");
       return;
     }
 
@@ -1318,7 +1318,7 @@ export class BridgeService {
     const parsed = callbackQuery.data ? parseCallbackData(callbackQuery.data) : null;
 
     if (!parsed) {
-      await this.safeAnswerCallbackQuery(callbackQuery.id, "这个按钮已过期，请重新操作。");
+      await this.safeAnswerCallbackQuery(callbackQuery.id, "Button expired, try again.");
       return;
     }
 
@@ -1738,7 +1738,7 @@ export class BridgeService {
 
     const activeTurn = this.getActiveTurnForSession(sessionId);
     if (!activeTurn || activeTurn.chatId !== chatId || activeTurn.statusCard.messageId !== messageId) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
@@ -1763,7 +1763,7 @@ export class BridgeService {
 
     const activeTurn = this.getActiveTurnForSession(sessionId);
     if (!activeTurn || activeTurn.chatId !== chatId || activeTurn.statusCard.messageId !== messageId) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
@@ -1836,13 +1836,13 @@ export class BridgeService {
     action: "implement"
   ): Promise<void> {
     if (!this.store) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
     const view = this.resolveTerminalResultActionView(chatId, messageId, answerId);
     if (!view) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
@@ -1866,12 +1866,12 @@ export class BridgeService {
         createPlatformChatRef(chatId)
       )
     ) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
     if (session.status === "running" || this.getActiveTurnForSession(sessionId)) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "当前项目仍在执行，请等待完成或发送 /interrupt。");
+      await this.safeAnswerCallbackQuery(callbackQueryId, "Project running. Wait or send /interrupt.");
       return;
     }
 
@@ -1879,7 +1879,7 @@ export class BridgeService {
     if (!capacity.allowed) {
       await this.safeAnswerCallbackQuery(
         callbackQueryId,
-        `当前最多只能并行运行 ${capacity.limit} 个会话，请先等待完成或停止部分任务。`
+        `Max parallel: ${capacity.limit} sessions. Wait or stop some.`
       );
       return;
     }
@@ -1888,14 +1888,14 @@ export class BridgeService {
     this.store.setActiveSession(chatId, sessionId);
     const updatedSession = this.store.getSessionById(sessionId);
     if (!updatedSession) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
     try {
       await this.startRealTurn(chatId, updatedSession, "Implement the plan.");
     } catch {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "当前无法开始实施，请稍后重试。");
+      await this.safeAnswerCallbackQuery(callbackQueryId, "Can't start now, try again.");
       return;
     }
 
@@ -1950,7 +1950,7 @@ export class BridgeService {
       });
       await this.safeSendMessage(
         chatId,
-        `这台服务器还没有绑定${this.activePackLabel}账号，请等待管理员在本机确认。`
+        `This server is not yet bound to a ${this.activePackLabel} account. Please wait for the admin to confirm.`
       );
       return { authorized: false, chatId, userId };
     }
@@ -1975,7 +1975,7 @@ export class BridgeService {
     const chatId = `${callbackQuery.message.chat.id}`;
 
     if (!authorized || authorized.userId !== userId) {
-      await this.safeAnswerCallbackQuery(callbackQuery.id, `这个${this.activePackLabel}账号无权访问此服务器上的 Codex。`);
+      await this.safeAnswerCallbackQuery(callbackQuery.id, `This ${this.activePackLabel} account does not have access to Codex on this server.`);
       await this.rejectUnauthorizedUser(userId, chatId);
       return { authorized: false, chatId, userId };
     }
@@ -1991,7 +1991,7 @@ export class BridgeService {
     const lastReplyAt = this.unauthorizedReplyAt.get(userId) ?? 0;
     if (Date.now() - lastReplyAt > 60_000) {
       this.unauthorizedReplyAt.set(userId, Date.now());
-      await this.safeSendMessage(chatId, `这个${this.activePackLabel}账号无权访问此服务器上的 Codex。`);
+      await this.safeSendMessage(chatId, `This ${this.activePackLabel} account does not have access to Codex on this server.`);
     }
 
     await this.logger.warn("unauthorized platform access rejected", {
@@ -2019,7 +2019,7 @@ export class BridgeService {
         await this.sessionProjectCoordinator.handleNew(chatId);
       },
       handleResume: async () => {
-        await this.runGuardedCommand(chatId, "当前无法恢复 Codex 会话，请稍后重试。", async () => {
+        await this.runGuardedCommand(chatId, "Can't restore session, try again.", async () => {
           await this.sessionProjectCoordinator.handleResume(chatId, args);
         });
       },
@@ -2066,87 +2066,87 @@ export class BridgeService {
         await this.handlePlan(chatId);
       },
       handleModel: async () => {
-        await this.runGuardedCommand(chatId, "模型操作暂时不可用，请稍后重试。", async () => {
+        await this.runGuardedCommand(chatId, "Model ops unavailable, try again.", async () => {
           await this.codexCommandCoordinator.handleModel(chatId, args);
         });
       },
       handleSkills: async () => {
-        await this.runGuardedCommand(chatId, "技能列表暂时不可用，请稍后重试。", async () => {
+        await this.runGuardedCommand(chatId, "Skills unavailable, try again.", async () => {
           await this.handleSkills(chatId);
         });
       },
       handleSkill: async () => {
-        await this.runGuardedCommand(chatId, "结构化 skill 输入暂时不可用，请稍后重试。", async () => {
+        await this.runGuardedCommand(chatId, "Skill input unavailable, try again.", async () => {
           await this.handleSkill(chatId, args);
         });
       },
       handlePlugins: async () => {
-        await this.runGuardedCommand(chatId, "插件列表暂时不可用，请稍后重试。", async () => {
+        await this.runGuardedCommand(chatId, "Plugins unavailable, try again.", async () => {
           await this.handlePlugins(chatId);
         });
       },
       handlePlugin: async () => {
-        await this.runGuardedCommand(chatId, "当前无法管理插件，请稍后重试。", async () => {
+        await this.runGuardedCommand(chatId, "Plugin management unavailable, try again.", async () => {
           await this.handlePlugin(chatId, args);
         });
       },
       handleApps: async () => {
-        await this.runGuardedCommand(chatId, "当前无法读取 Apps 列表，请稍后重试。", async () => {
+        await this.runGuardedCommand(chatId, "Apps unavailable, try again.", async () => {
           await this.handleApps(chatId);
         });
       },
       handleMcp: async () => {
-        await this.runGuardedCommand(chatId, "当前无法读取 MCP 状态，请稍后重试。", async () => {
+        await this.runGuardedCommand(chatId, "MCP status unavailable, try again.", async () => {
           await this.handleMcp(chatId, args);
         });
       },
       handleAccount: async () => {
-        await this.runGuardedCommand(chatId, "当前无法读取账号状态，请稍后重试。", async () => {
+        await this.runGuardedCommand(chatId, "Account status unavailable, try again.", async () => {
           await this.handleAccount(chatId);
         });
       },
       handleReview: async () => {
-        await this.runGuardedCommand(chatId, "当前无法启动审查，请稍后重试。", async () => {
+        await this.runGuardedCommand(chatId, "Can't start review, try again.", async () => {
           await this.handleReview(chatId, args);
         });
       },
       handleFork: async () => {
-        await this.runGuardedCommand(chatId, "当前无法分叉这个会话，请稍后重试。", async () => {
+        await this.runGuardedCommand(chatId, "Can't fork session, try again.", async () => {
           await this.handleFork(chatId, args);
         });
       },
       handleRollback: async () => {
-        await this.runGuardedCommand(chatId, "当前无法回滚这个会话，请稍后重试。", async () => {
+        await this.runGuardedCommand(chatId, "Can't roll back, try again.", async () => {
           await this.handleRollback(chatId, args);
         });
       },
       handleClear: async () => {
-        await this.runGuardedCommand(chatId, "当前无法清空这个会话的上下文，请稍后重试。", async () => {
+        await this.runGuardedCommand(chatId, "Can't clear context, try again.", async () => {
           await this.handleClear(chatId);
         });
       },
       handleCompact: async () => {
-        await this.runGuardedCommand(chatId, "当前无法压缩这个线程，请稍后重试。", async () => {
+        await this.runGuardedCommand(chatId, "Can't compress thread, try again.", async () => {
           await this.handleCompact(chatId);
         });
       },
       handleLocalImage: async () => {
-        await this.runGuardedCommand(chatId, "本地图片输入暂时不可用，请稍后重试。", async () => {
+        await this.runGuardedCommand(chatId, "Image input unavailable, try again.", async () => {
           await this.handleLocalImage(chatId, args);
         });
       },
       handleMention: async () => {
-        await this.runGuardedCommand(chatId, "结构化引用输入暂时不可用，请稍后重试。", async () => {
+        await this.runGuardedCommand(chatId, "Reference input unavailable, try again.", async () => {
           await this.handleMention(chatId, args);
         });
       },
       handleAttach: async () => {
-        await this.runGuardedCommand(chatId, "附件引用暂时不可用，请稍后重试。", async () => {
+        await this.runGuardedCommand(chatId, "Attachment input unavailable, try again.", async () => {
           await this.handleAttach(chatId, args);
         });
       },
       handleThread: async () => {
-        await this.runGuardedCommand(chatId, "当前无法更新线程设置，请稍后重试。", async () => {
+        await this.runGuardedCommand(chatId, "Can't update settings, try again.", async () => {
           await this.handleThreadCommand(chatId, args);
         });
       },
@@ -2165,7 +2165,7 @@ export class BridgeService {
       return;
     }
 
-    await this.safeSendMessage(chatId, "当前没有可取消的输入。");
+    await this.safeSendMessage(chatId, "Nothing to cancel.");
   }
 
   private shouldOpenCommandPanelFromText(text: string): boolean {
@@ -2174,7 +2174,7 @@ export class BridgeService {
     }
 
     const trimmed = text.trim().toLowerCase();
-    return trimmed === "help" || trimmed === "commands" || trimmed === "帮助" || trimmed === "命令";
+    return trimmed === "help" || trimmed === "commands" || trimmed === "Help" || trimmed === "Commands";
   }
 
   private async sendHelp(chatId: string): Promise<void> {
@@ -2209,7 +2209,7 @@ export class BridgeService {
   private async openCommandPanelEditor(chatId: string): Promise<boolean> {
     const store = this.store;
     if (!store) {
-      await this.safeSendMessage(chatId, this.getUiLanguage() === "en" ? "State storage unavailable." : "状态存储当前不可用。");
+      await this.safeSendMessage(chatId, this.getUiLanguage() === "en" ? "State storage unavailable." : "Storage unavailable.");
       return false;
     }
 
@@ -2266,7 +2266,7 @@ export class BridgeService {
 
   private async handleCommandPanelOpenCallback(callbackQueryId: string, chatId: string): Promise<void> {
     const sent = await this.openCommandPanel(chatId);
-    await this.safeAnswerCallbackQuery(callbackQueryId, sent ? undefined : "暂时无法打开命令面板，请稍后重试。");
+    await this.safeAnswerCallbackQuery(callbackQueryId, sent ? undefined : "Can't open command panel, try again.");
   }
 
   private async handleCommandPanelHelpCallback(callbackQueryId: string, chatId: string): Promise<void> {
@@ -2289,7 +2289,7 @@ export class BridgeService {
     messageId: number
   ): Promise<void> {
     if (!this.store) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "状态存储当前不可用。");
+      await this.safeAnswerCallbackQuery(callbackQueryId, "Storage unavailable.");
       return;
     }
 
@@ -2308,7 +2308,7 @@ export class BridgeService {
     });
     const nextMessageId = await this.replaceBridgeOwnedHtmlMessageResult(chatId, messageId, rendered.text, rendered.replyMarkup);
     if (!nextMessageId) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "暂时无法打开编辑器，请稍后重试。");
+      await this.safeAnswerCallbackQuery(callbackQueryId, "Can't open editor, try again.");
       return;
     }
 
@@ -2326,12 +2326,12 @@ export class BridgeService {
   ): Promise<void> {
     const draft = this.getCommandPanelDraft(token, chatId, messageId);
     if (!draft) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新打开编辑器。");
+      await this.safeAnswerCallbackQuery(callbackQueryId, "Button expired, reopen editor.");
       return;
     }
 
     draft.page = page;
-    await this.safeAnswerCallbackQuery(callbackQueryId, await this.renderCommandPanelDraft(token, draft) ? undefined : "暂时无法更新编辑器，请稍后重试。");
+    await this.safeAnswerCallbackQuery(callbackQueryId, await this.renderCommandPanelDraft(token, draft) ? undefined : "Can't update editor, try again.");
   }
 
   private async handleCommandPanelEditToggleCallback(
@@ -2343,12 +2343,12 @@ export class BridgeService {
   ): Promise<void> {
     const draft = this.getCommandPanelDraft(token, chatId, messageId);
     if (!draft) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新打开编辑器。");
+      await this.safeAnswerCallbackQuery(callbackQueryId, "Button expired, reopen editor.");
       return;
     }
 
     if (resolveCommandPanelEntries([command], this.getUiLanguage()).length === 0) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "这个指令当前不能加入快捷指令。");
+      await this.safeAnswerCallbackQuery(callbackQueryId, "Can't add this to shortcuts.");
       return;
     }
 
@@ -2356,13 +2356,13 @@ export class BridgeService {
     if (currentIndex >= 0) {
       draft.commands.splice(currentIndex, 1);
     } else if (draft.commands.length >= 8) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "最多只能保留 8 个快捷指令。");
+      await this.safeAnswerCallbackQuery(callbackQueryId, "Max 8 shortcuts.");
       return;
     } else {
       draft.commands.push(command);
     }
 
-    await this.safeAnswerCallbackQuery(callbackQueryId, await this.renderCommandPanelDraft(token, draft) ? undefined : "暂时无法更新编辑器，请稍后重试。");
+    await this.safeAnswerCallbackQuery(callbackQueryId, await this.renderCommandPanelDraft(token, draft) ? undefined : "Can't update editor, try again.");
   }
 
   private async handleCommandPanelEditSaveCallback(
@@ -2374,12 +2374,12 @@ export class BridgeService {
     const store = this.store;
     const draft = this.getCommandPanelDraft(token, chatId, messageId);
     if (!store || !draft) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新打开编辑器。");
+      await this.safeAnswerCallbackQuery(callbackQueryId, "Button expired, reopen editor.");
       return;
     }
 
     if (draft.commands.length === 0) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "至少保留 1 个快捷指令。");
+      await this.safeAnswerCallbackQuery(callbackQueryId, "Keep at least 1 shortcut.");
       return;
     }
 
@@ -2394,7 +2394,7 @@ export class BridgeService {
       html: true,
       replyMarkup: rendered.replyMarkup
     });
-    await this.safeAnswerCallbackQuery(callbackQueryId, delivered ? "已保存。" : "已保存，但暂时无法刷新命令面板。");
+    await this.safeAnswerCallbackQuery(callbackQueryId, delivered ? "Saved." : "Saved, but can't refresh panel.");
   }
 
   private async handleCommandPanelEditResetCallback(
@@ -2405,13 +2405,13 @@ export class BridgeService {
   ): Promise<void> {
     const draft = this.getCommandPanelDraft(token, chatId, messageId);
     if (!draft) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新打开编辑器。");
+      await this.safeAnswerCallbackQuery(callbackQueryId, "Button expired, reopen editor.");
       return;
     }
 
     draft.commands = getDefaultCommandPanelCommands();
     draft.page = 0;
-    await this.safeAnswerCallbackQuery(callbackQueryId, await this.renderCommandPanelDraft(token, draft) ? undefined : "暂时无法更新编辑器，请稍后重试。");
+    await this.safeAnswerCallbackQuery(callbackQueryId, await this.renderCommandPanelDraft(token, draft) ? undefined : "Can't update editor, try again.");
   }
 
   private async handleCommandPanelEditCloseCallback(
@@ -2422,7 +2422,7 @@ export class BridgeService {
   ): Promise<void> {
     const draft = this.getCommandPanelDraft(token, chatId, messageId);
     if (!draft) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新打开命令面板。");
+      await this.safeAnswerCallbackQuery(callbackQueryId, "Button expired, reopen command panel.");
       return;
     }
 
@@ -2435,7 +2435,7 @@ export class BridgeService {
       html: true,
       replyMarkup: rendered.replyMarkup
     });
-    await this.safeAnswerCallbackQuery(callbackQueryId, delivered ? undefined : "暂时无法关闭编辑器，请稍后重试。");
+    await this.safeAnswerCallbackQuery(callbackQueryId, delivered ? undefined : "Can't close editor, try again.");
   }
 
   private async handleResultSendActionCallback(
@@ -2448,8 +2448,8 @@ export class BridgeService {
     await this.safeAnswerCallbackQuery(
       callbackQueryId,
       kind === "image"
-        ? "这个入口已下线。请直接告诉 Codex 发送图片。"
-        : "这个入口已下线。请直接告诉 Codex 发送文件。"
+        ? "This entry is offline. Ask Codex to send an image."
+        : "This entry is offline. Ask Codex to send a file."
     );
   }
 
@@ -2520,7 +2520,16 @@ export class BridgeService {
 
     const activeSession = this.store.getActiveSession(chatId);
     if (!activeSession) {
-      await this.safeSendMessage(chatId, "请先发送 /new 选择项目。");
+      // Auto-create a session in home directory so user can just ask questions directly
+      const homeDir = this.paths?.homeDir ?? process.env.HOME ?? "/root";
+      const homeName = homeDir.split("/").filter(Boolean).pop() ?? "home";
+      const newSession = this.store.createSession({
+        chatId,
+        projectName: homeName,
+        projectPath: homeDir
+      });
+      await this.safeSendMessage(chatId, this.getUiLanguage() === "en" ? "Session started. Ask away!" : "Session started. Ask away!");
+      const submitted = await this.submitNormalTextToSession(chatId, newSession, text ?? "");
       return;
     }
 
@@ -2551,7 +2560,7 @@ export class BridgeService {
             turnId: steerAvailability.activeTurn.turnId,
             error: `${error}`
           });
-          await this.safeSendMessage(chatId, "Codex 服务暂时不可用，请稍后重试。");
+          await this.safeSendMessage(chatId, "Codex unavailable, try again.");
           return { status: "unavailable" };
         }
         return { status: "accepted" };
@@ -2569,8 +2578,8 @@ export class BridgeService {
       await this.safeSendMessage(
         chatId,
         reminder
-          ? `当前项目仍在执行，请等待完成或发送 /interrupt。${reminder}`
-          : "当前项目仍在执行，请等待完成或发送 /interrupt。",
+          ? `The current project is still running. Please wait or send /interrupt.${reminder}`
+          : "Project running. Wait or send /interrupt.",
         this.buildBusyTurnReplyMarkup(Boolean(reminder))
       );
       return { status: "blocked" };
@@ -3010,12 +3019,12 @@ export class BridgeService {
   private async handleHub(chatId: string): Promise<void> {
     const result = await this.runtimeSurfaceController.handleHub(chatId);
     if (result.kind === "no_running") {
-      await this.safeSendMessage(chatId, "当前没有运行中的会话。");
+      await this.safeSendMessage(chatId, "No active sessions.");
       return;
     }
 
     if (result.kind === "interaction_pending") {
-      await this.safeSendMessage(chatId, "当前有待处理的交互，请先完成当前操作。");
+      await this.safeSendMessage(chatId, "Pending interaction, complete it first.");
     }
   }
 
@@ -3503,7 +3512,7 @@ export class BridgeService {
   ): string | null {
     switch (field) {
       case "model-name":
-        return `model-name: ${this.getRuntimeEffectiveModelConfig(session).model ?? "默认模型"}`;
+        return `model-name: ${this.getRuntimeEffectiveModelConfig(session).model ?? "Default"}`;
       case "model-with-reasoning":
         return `model-with-reasoning: ${this.formatRuntimeEffectiveModelReasoning(session)}`;
       case "current-dir":
@@ -3599,8 +3608,8 @@ export class BridgeService {
 
   private formatRuntimeEffectiveModelReasoning(session: SessionRow): string {
     const effective = this.getRuntimeEffectiveModelConfig(session);
-    const modelLabel = effective.model ?? "默认模型";
-    const effortLabel = effective.reasoningEffort ? formatReasoningEffortLabel(effective.reasoningEffort) : "默认";
+    const modelLabel = effective.model ?? "Default";
+    const effortLabel = effective.reasoningEffort ? formatReasoningEffortLabel(effective.reasoningEffort) : "Default";
     return `${modelLabel} + ${effortLabel}`;
   }
 
@@ -3771,7 +3780,7 @@ export class BridgeService {
   }
 
   private getUiLanguage(): UiLanguage {
-    return this.store?.getUiLanguage() ?? "zh";
+    return this.store?.getUiLanguage() ?? "en";
   }
 
   private buildLanguagePickerMessage(language: UiLanguage): {
@@ -3789,7 +3798,7 @@ export class BridgeService {
         inline_keyboard: [
           [{ text: `中文${chineseCurrent}`, callback_data: encodeLanguageSetCallback("zh") }],
           [{ text: `English${englishCurrent}`, callback_data: encodeLanguageSetCallback("en") }],
-          [{ text: language === "en" ? "Close" : "关闭", callback_data: encodeLanguageCloseCallback() }]
+          [{ text: language === "en" ? "Close" : "Close", callback_data: encodeLanguageCloseCallback() }]
         ]
       }
     };
@@ -3813,12 +3822,12 @@ export class BridgeService {
     language: UiLanguage
   ): Promise<void> {
     if (!this.store) {
-      await this.safeAnswerCallbackQuery(callbackQueryId, this.getUiLanguage() === "en" ? "State storage unavailable." : "状态存储当前不可用。");
+      await this.safeAnswerCallbackQuery(callbackQueryId, this.getUiLanguage() === "en" ? "State storage unavailable." : "Storage unavailable.");
       return;
     }
 
     const nextLanguage = this.store.setUiLanguage(language);
-    await this.safeAnswerCallbackQuery(callbackQueryId, nextLanguage === "en" ? "Saved." : "已保存。");
+    await this.safeAnswerCallbackQuery(callbackQueryId, nextLanguage === "en" ? "Saved." : "Saved.");
     await this.syncTelegramCommands();
     await this.replaceBridgeOwnedMessage(chatId, messageId, this.buildLanguageClosedMessage(nextLanguage), {
       html: true
@@ -3841,7 +3850,7 @@ export class BridgeService {
 
     await this.safeAnswerCallbackQuery(callbackQueryId, this.getUiLanguage() === "en"
       ? "Unable to close this message right now."
-      : "暂时无法关闭这条消息，请稍后再试。");
+      : "Can't close this now, try again.");
   }
 
   private async reanchorRuntimeAfterBridgeReply(
@@ -4077,8 +4086,8 @@ function buildInspectPayloadFromThreadHistory(
         const errorSummary = getString(asRecord(itemRecord?.error), "message");
         const summary = resultSummary ?? errorSummary;
         const line = summary
-          ? `${label || "MCP 工具"} -> ${summary}`
-          : label || "MCP 工具";
+          ? `${label || "MCP Tools"} -> ${summary}`
+          : label || "MCP Tools";
         pushHistorySummary(recentMcpSummaries, line);
         latestConclusion = truncateHistoryText(summary ?? label) ?? latestConclusion;
         break;
@@ -4177,7 +4186,7 @@ function buildInspectPayloadFromThreadHistory(
   return {
     snapshot,
     commands,
-    note: "以下内容来自最近一次执行的历史记录。"
+    note: "Below is the history from the last execution."
   };
 }
 
@@ -4289,7 +4298,7 @@ function getKnownUnsupportedServerRequest(request: JsonRpcServerRequest): {
     const tool = getString(request.params, "tool") ?? "unknown";
     return {
       errorMessage: "Dynamic tool calls are not supported by the active bridge pack",
-      userMessage: `Codex 发起了动态工具调用（${tool}），但当前 bridge pack 没有稳定的客户端工具映射，已拒绝这次调用。`,
+      userMessage: `Codex initiated a dynamic tool call (${tool}), but the bridge pack has no stable tool mapping. Rejected.。`,
       logDetail: `tool=${tool}`
     };
   }
@@ -4298,7 +4307,7 @@ function getKnownUnsupportedServerRequest(request: JsonRpcServerRequest): {
     const reason = getString(request.params, "reason") ?? "unknown";
     return {
       errorMessage: "ChatGPT auth token refresh is not supported by the active bridge pack",
-      userMessage: `Codex 请求 ChatGPT 登录令牌刷新（原因：${reason}），但 bridge 不持有可刷新的 ChatGPT access token / account id，已拒绝这次请求。`,
+      userMessage: `Codex requested ChatGPT token refresh (reason: ${reason})，但 bridge 不持有可刷新的 ChatGPT access token / account id，已拒绝这次请求。`,
       logDetail: `reason=${reason}`
     };
   }

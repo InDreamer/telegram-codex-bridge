@@ -32,13 +32,13 @@ const CARD_SUMMARY_LIMIT = 72;
 const BUTTON_LABEL_LIMIT = 28;
 
 const COMMAND_LABELS: Record<string, string> = {
-  help: "帮助",
+  help: "Help",
   new: "新建会话",
   status: "当前状态",
-  sessions: "最近会话",
+  sessions: "Recent",
   interrupt: "中断操作",
   inspect: "查看详情",
-  hub: "运行卡"
+  hub: "Hub"
 };
 
 export function decodeHtmlEntities(text: string): string {
@@ -146,39 +146,39 @@ function mapCallbackToLabel(
 
   switch (parsed?.kind) {
     case "new_browse_open":
-      return "浏览目录";
+      return "Browse";
     case "path_manual":
-      return "手动输入路径";
+      return "Manual Path";
     case "path_back":
     case "new_browse_back":
     case "browse_back":
-      return "返回";
+      return "Back";
     case "browse_use_current_dir":
       return "在当前目录新建";
     case "browse_use_current_dir_confirm":
-      return "确认新建会话";
+      return "Confirm";
     case "browse_use_current_dir_cancel":
       return "返回目录";
     case "browse_refresh":
-      return "刷新";
+      return "Refresh";
     case "browse_root":
-      return "项目根";
+      return "Project Root";
     case "browse_up":
-      return "上一级";
+      return "Up";
     case "browse_close":
-      return "关闭";
+      return "Close";
     case "status_inspect":
       return "查看详情";
     case "status_interrupt":
       return "中断操作";
     case "commands_open":
-      return "命令";
+      return "Commands";
     case "commands_help":
-      return "帮助";
+      return "Help";
     case "commands_run":
       return COMMAND_LABELS[parsed.command] ?? button.text;
     case "hub_select":
-      return button.text === "·" ? "空槽位" : `会话 ${button.text}`;
+      return button.text === "·" ? "Empty" : `会话 ${button.text}`;
     default:
       return truncatePlainText(button.text, BUTTON_LABEL_LIMIT);
   }

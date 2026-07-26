@@ -68,7 +68,7 @@ export function interpretSharedServerRequest(request: JsonRpcServerRequest): Ser
       kind: "unsupported",
       errorCode: -32601,
       errorMessage: "ChatGPT auth token refresh is not supported by the active bridge pack",
-      userMessage: `Codex 请求 ChatGPT 登录令牌刷新（原因：${reason}），但当前 bridge pack 不持有可刷新的 ChatGPT access token / account id，已拒绝这次请求。`,
+      userMessage: `Codex requested ChatGPT token refresh (reason: ${reason})，但当前 bridge pack 不持有可刷新的 ChatGPT access token / account id，已拒绝这次请求。`,
       logDetail: `reason=${reason}`
     };
   }
@@ -110,8 +110,8 @@ export function interpretDynamicToolRequest(
       errorCode: -32601,
       errorMessage: `Dynamic tool call is not supported by the active bridge pack: ${toolName}`,
       userMessage: supportedTools.length > 0
-        ? `Codex 发起了动态工具调用（${toolName}），但当前 bridge pack 仅声明了这些 dynamic tools：${supportedTools.join(", ")}。`
-        : `Codex 发起了动态工具调用（${toolName}），但当前 bridge pack 未声明任何可用的 dynamic tools。`,
+        ? `Codex initiated a dynamic tool call (${toolName})，但当前 bridge pack 仅声明了这些 dynamic tools：${supportedTools.join(", ")}。`
+        : `Codex initiated a dynamic tool call (${toolName})，但当前 bridge pack 未声明任何可用的 dynamic tools。`,
       logDetail: `tool=${toolName}`
     };
   }

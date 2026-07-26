@@ -28,6 +28,15 @@ source_of_truth:
   <a href="https://github.com/InDreamer/telegram-codex-bridge/releases"><img src="https://img.shields.io/github/v/release/InDreamer/telegram-codex-bridge?include_prereleases&label=version" alt="Version"></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A524-brightgreen" alt="Node >= 24">
   <img src="https://img.shields.io/badge/platform-linux%20%7C%20macos-blue" alt="Platform">
+
+<h3 align="center">🌐 Default UI now in English (PR #18)</h3>
+
+<p align="center">
+  The bridge previously defaulted to Chinese (zh). All hardcoded Chinese strings
+  have been converted to English. Send <code>/language</code> to your bot to toggle back if needed.
+</p>
+
+
 </p>
 
 ---
@@ -217,6 +226,20 @@ For detailed docs, start here:
 - [`docs/architecture/current-code-organization.md`](docs/architecture/current-code-organization.md) — code organization
 
 For coding agents, see [`AGENTS.md`](AGENTS.md).
+
+
+## Security
+
+The bridge uses a two-step authorization process:
+
+1. **Bot token** — The Telegram bot token is stored locally on your machine (`~/.local/share/codex-telegram-bridge/`). Keep it private. If it leaks, revoke it via BotFather (`/revoke`).
+
+2. **User authorization** — After installing the bridge, you must explicitly bind your Telegram account using `ctb authorize pending --select`. Only bound accounts can control the bridge. Unauthorized users who message the bot are logged and rejected.
+
+**Best practices:**
+- Enable two-factor authentication on your Telegram account — this protects the access path to the bridge.
+- Enable the app server guard during install (`--app-server-guard-enabled true`) to monitor for unusual usage patterns.
+- If you no longer need the bridge, run `ctb uninstall --purge-state` to remove all credentials and data.
 
 ## Contributing
 

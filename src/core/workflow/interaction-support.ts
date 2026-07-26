@@ -40,8 +40,8 @@ export function buildAnsweredInteractionDetails(responseJson: string | null, int
     }
 
     details.push(`${index + 1}. ${question.header}`);
-    details.push(`问题：${question.question}`);
-    details.push(`回答：${question.isSecret ? "已提交敏感回答，不显示内容" : answerList.join("，")}`);
+    details.push(`Q: ${question.question}`);
+    details.push(`回答：${question.isSecret ? "Sensitive answer hidden" : answerList.join(", ")}`);
   }
 
   return details;
@@ -69,7 +69,7 @@ export function summarizeAnsweredInteractionForSurface(
         return null;
       }
 
-      const answerText = question.isSecret ? "已提交敏感回答，不显示内容" : answerList.join("，");
+      const answerText = question.isSecret ? "Sensitive answer hidden" : answerList.join(", ");
       return `${question.header}: ${answerText}`;
     })
     .filter((value): value is string => Boolean(value));
@@ -83,26 +83,26 @@ export function summarizeAnsweredInteractionForSurface(
 
 export function summarizePermissions(value: unknown): string | null {
   const parts = collectPermissionSummaryParts(value);
-  return parts.length > 0 ? parts.join("；") : "无额外权限";
+  return parts.length > 0 ? parts.join("; ") : "No extra permissions";
 }
 
 export function formatPendingInteractionTerminalReason(reason: string | null | undefined): string | null {
   switch (reason) {
     case "app_server_lost":
-      return "Codex 服务已断开，这个交互无法继续。";
+      return "Codex disconnected, interaction stopped.";
     case "bridge_restart":
-      return "桥接服务已重启，这个交互无法继续。";
+      return "Bridge restarted, interaction stopped.";
     case "response_dispatch_failed":
-      return "Codex 服务没有收到这次交互结果。";
+      return "Codex didn't receive the result.";
     case "turn_completed":
     case "turn_failed":
     case "turn_interrupted":
-      return "当前操作已结束，交互已失效。";
+      return "Operation ended, interaction expired.";
     case "interaction_delivery_failed":
     case "telegram_delivery_failed":
-      return "当前控制面未能送达这条交互。";
+      return "Could not deliver this interaction.";
     default:
-      return reason ? "这个交互无法继续。" : null;
+      return reason ? "Cannot continue this interaction." : null;
   }
 }
 
@@ -147,63 +147,63 @@ function summarizeAnsweredInteraction(responseJson: string | null, interaction: 
     case "approval": {
       const decisionRecord = asRecord(payload?.decision);
       if (decisionRecord?.acceptWithExecpolicyAmendment) {
-        return "已批准，并更新命令规则";
+        return "Approved, rule updated";
       }
       if (decisionRecord?.applyNetworkPolicyAmendment) {
         const networkDecision = asRecord(decisionRecord.applyNetworkPolicyAmendment);
         const amendment = asRecord(networkDecision?.network_policy_amendment);
         const host = typeof amendment?.host === "string" ? amendment.host : null;
-        return host ? `已批准，并保存网络规则（${host}）` : "已批准，并保存网络规则";
+        return host ? `Approved, rule saved (${host})` : "Approved, rule saved";
       }
 
       const decision = typeof payload?.decision === "string" ? payload.decision : null;
       if (decision === "accept" || decision === "approved") {
-        return "已批准";
+        return "Approved";
       }
       if (decision === "acceptForSession" || decision === "approved_for_session") {
-        return "已批准，并写入本会话缓存";
+        return "Approved, cached for session";
       }
       if (decision === "decline" || decision === "denied") {
-        return "已拒绝";
+        return "Declined";
       }
       if (decision === "cancel" || decision === "abort") {
-        return "已取消";
+        return "Cancelled";
       }
-      return "已处理";
+      return "Handled";
     }
     case "permissions": {
       const scope = typeof payload?.scope === "string" ? payload.scope : "turn";
       const granted = summarizeGrantedPermissions(payload?.permissions ?? null);
-      return granted ? `已授权（${scope}）: ${granted}` : `已拒绝（${scope}）`;
+      return granted ? `Authorized (${scope}): ${granted}` : `Declined (${scope})`;
     }
     case "elicitation": {
       const action = typeof payload?.action === "string" ? payload.action : null;
-      return action === "accept" ? "已接受" : action === "decline" ? "已拒绝" : action === "cancel" ? "已取消" : "已处理";
+      return action === "accept" ? "Accepted" : action === "decline" ? "Declined" : action === "cancel" ? "Cancelled" : "Handled";
     }
     case "questionnaire": {
       const action = typeof payload?.action === "string" ? payload.action : null;
       if (action === "cancel") {
-        return "已取消";
+        return "Cancelled";
       }
       if (action === "decline") {
-        return "已拒绝";
+        return "Declined";
       }
       if (action === "accept") {
         const content = parseJsonRecord(payload?.content);
         const count = content ? Object.keys(content).length : 0;
-        return count > 0 ? `已提交 ${count} 个字段` : "已提交表单";
+        return count > 0 ? `Submitted ${count} field(s)` : "Form submitted";
       }
 
       const answers = parseJsonRecord(payload?.answers);
       const count = answers ? Object.keys(answers).length : 0;
-      return count > 0 ? `已提交 ${count} 个回答` : "已提交回答";
+      return count > 0 ? `Submitted ${count} answer(s)` : "Answer submitted";
     }
   }
 }
 
 function summarizeGrantedPermissions(value: unknown): string | null {
   const parts = collectPermissionSummaryParts(value);
-  return parts.length > 0 ? parts.join("；") : null;
+  return parts.length > 0 ? parts.join("; ") : null;
 }
 
 function collectPermissionSummaryParts(value: unknown): string[] {
@@ -218,18 +218,18 @@ function collectPermissionSummaryParts(value: unknown): string[] {
     const read = Array.isArray(fileSystem.read) ? fileSystem.read.length : 0;
     const write = Array.isArray(fileSystem.write) ? fileSystem.write.length : 0;
     if (read > 0 || write > 0) {
-      parts.push(`文件系统 读${read}/写${write}`);
+      parts.push(`Filesystem R${read}/W${write}`);
     }
   }
 
   const network = parseJsonRecord(record.network);
   if (network?.enabled === true) {
-    parts.push("网络");
+    parts.push("Network");
   }
 
   const macos = parseJsonRecord(record.macos);
   if (macos) {
-    parts.push("macOS 权限");
+    parts.push("macOS Permissions");
   }
 
   return parts;

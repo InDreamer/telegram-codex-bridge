@@ -1256,7 +1256,7 @@ function summarizeUnifiedDiff(diff: string | null): string | null {
     }
   }
   const summaryParts = [
-    fileCount > 0 ? `${fileCount} 个文件` : null,
+    fileCount > 0 ? `${fileCount} more files` : null,
     additions > 0 ? `+${additions}` : null,
     deletions > 0 ? `-${deletions}` : null
   ].filter((value): value is string => Boolean(value));
@@ -1322,7 +1322,7 @@ function summarizeModelReroute(
     return null;
   }
 
-  const suffix = reason ? `（${reason}）` : "";
+  const suffix = reason ? `（${reason})` : "";
   return `模型已改道：${fromModel} -> ${toModel}${suffix}`;
 }
 

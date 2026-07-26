@@ -214,7 +214,7 @@ export class RichInputAdapter {
 
     const activeSession = store.getActiveSession(chatId);
     if (!activeSession) {
-      await this.deps.safeSendMessage(chatId, "当前没有活动会话。");
+      await this.deps.safeSendMessage(chatId, "No active sessions.");
       return;
     }
 
@@ -226,7 +226,7 @@ export class RichInputAdapter {
 
     const imagePath = resolve(activeSession.projectPath, parsed.value);
     if (!await isReadableImagePath(imagePath)) {
-      await this.deps.safeSendMessage(chatId, "这个本地图片路径不可用，请确认文件存在且是常见图片格式。");
+      await this.deps.safeSendMessage(chatId, "This 本地图片路径不可用，请确认文件存在且是常见图片格式。");
       return;
     }
 
@@ -244,7 +244,7 @@ export class RichInputAdapter {
 
     const activeSession = store.getActiveSession(chatId);
     if (!activeSession) {
-      await this.deps.safeSendMessage(chatId, "当前没有活动会话。");
+      await this.deps.safeSendMessage(chatId, "No active sessions.");
       return;
     }
 
@@ -270,7 +270,7 @@ export class RichInputAdapter {
 
     const activeSession = store.getActiveSession(chatId);
     if (!activeSession) {
-      await this.deps.safeSendMessage(chatId, "当前没有活动会话。");
+      await this.deps.safeSendMessage(chatId, "No active sessions.");
       return;
     }
 
@@ -351,7 +351,7 @@ export class RichInputAdapter {
 
     const activeSession = store.getActiveSession(chatId);
     if (!activeSession) {
-      await this.deps.safeSendMessage(chatId, "请先发送 /new 选择项目。");
+      await this.deps.safeSendMessage(chatId, "Please send /new first to select a project.");
       return;
     }
 
@@ -383,7 +383,7 @@ export class RichInputAdapter {
 
     const activeSession = store.getActiveSession(chatId);
     if (!activeSession) {
-      await this.deps.safeSendMessage(chatId, "请先发送 /new 选择项目。");
+      await this.deps.safeSendMessage(chatId, "Please send /new first to select a project.");
       return;
     }
 
@@ -425,7 +425,7 @@ export class RichInputAdapter {
 
     const activeSession = store.getActiveSession(chatId);
     if (!activeSession) {
-      await this.deps.safeSendMessage(chatId, "请先发送 /new 选择项目。");
+      await this.deps.safeSendMessage(chatId, "Please send /new first to select a project.");
       return;
     }
 
@@ -504,7 +504,7 @@ export class RichInputAdapter {
         return;
       }
 
-      await this.deps.safeSendMessage(chatId, "当前项目仍在执行，请等待完成或发送 /interrupt。", this.buildBusyTurnReplyMarkup());
+      await this.deps.safeSendMessage(chatId, "Project running. Wait or send /interrupt.", this.buildBusyTurnReplyMarkup());
       return;
     }
 
@@ -629,7 +629,7 @@ export class RichInputAdapter {
             turnId: steerAvailability.turnId,
             error: `${error}`
           });
-          await this.deps.safeSendMessage(chatId, "Codex 服务暂时不可用，请稍后重试。");
+          await this.deps.safeSendMessage(chatId, "Codex unavailable, try again.");
         }
         return;
       }
@@ -639,7 +639,7 @@ export class RichInputAdapter {
         return;
       }
 
-      await this.deps.safeSendMessage(chatId, "当前项目仍在执行，请等待完成或发送 /interrupt。", this.buildBusyTurnReplyMarkup());
+      await this.deps.safeSendMessage(chatId, "Project running. Wait or send /interrupt.", this.buildBusyTurnReplyMarkup());
       return;
     }
 
@@ -669,7 +669,7 @@ export class RichInputAdapter {
             turnId: steerAvailability.turnId,
             error: `${error}`
           });
-          await this.deps.safeSendMessage(chatId, "Codex 服务暂时不可用，请稍后重试。");
+          await this.deps.safeSendMessage(chatId, "Codex unavailable, try again.");
           return false;
         }
         return true;
@@ -680,7 +680,7 @@ export class RichInputAdapter {
         return false;
       }
 
-      await this.deps.safeSendMessage(chatId, "当前项目仍在执行，请等待完成或发送 /interrupt。", this.buildBusyTurnReplyMarkup());
+      await this.deps.safeSendMessage(chatId, "Project running. Wait or send /interrupt.", this.buildBusyTurnReplyMarkup());
       return false;
     }
 
@@ -708,7 +708,7 @@ export class RichInputAdapter {
             turnId: steerAvailability.turnId,
             error: `${error}`
           });
-          await this.deps.safeSendMessage(chatId, "Codex 服务暂时不可用，请稍后重试。");
+          await this.deps.safeSendMessage(chatId, "Codex unavailable, try again.");
           return false;
         }
         return true;
@@ -719,7 +719,7 @@ export class RichInputAdapter {
         return false;
       }
 
-      await this.deps.safeSendMessage(chatId, "当前项目仍在执行，请等待完成或发送 /interrupt。", this.buildBusyTurnReplyMarkup());
+      await this.deps.safeSendMessage(chatId, "Project running. Wait or send /interrupt.", this.buildBusyTurnReplyMarkup());
       return false;
     }
 
@@ -1004,7 +1004,7 @@ export class RichInputAdapter {
       chatId,
       registered.length === 1
         ? `已接收文件附件：\n${summary}\n下一条消息会自动带上最近附件；也可用 /attach <附件ID> :: 任务说明；发送 /cancel 可取消。`
-        : `已接收 ${registered.length} 个文件附件：\n${summary}\n下一条消息会自动带上最近附件；也可用 /attach <附件ID> :: 任务说明；发送 /cancel 可取消。`,
+        : `已接收 ${registered.length} more files附件：\n${summary}\n下一条消息会自动带上最近附件；也可用 /attach <附件ID> :: 任务说明；发送 /cancel 可取消。`,
       this.buildCancelReplyMarkup()
     );
     return registered;
@@ -1093,7 +1093,7 @@ export class RichInputAdapter {
     const truncated = truncateText(normalized, ATTACHMENT_CONTENT_CHAR_LIMIT);
     return truncated === normalized
       ? `以下是附件《${attachment.filename}》的提取内容：\n\n${truncated}`
-      : `以下是附件《${attachment.filename}》的提取内容（已截断）：\n\n${truncated}`;
+      : `以下是附件《${attachment.filename}》的提取内容（已截断)：\n\n${truncated}`;
   }
 
   private async extractPdfText(filePath: string): Promise<string | null> {

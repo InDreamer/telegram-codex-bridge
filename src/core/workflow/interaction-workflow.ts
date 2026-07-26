@@ -48,7 +48,7 @@ export function createInteractionCardView(
       kind: "resolved",
       title: interaction.title,
       state: "canceled",
-      summary: "已取消",
+      summary: "Cancelled",
       details: [],
       expandable: false,
       expanded: false,
@@ -102,9 +102,9 @@ export function createInteractionCardView(
         hubHint,
         ...(bridgeActions.length > 0 ? { bridgeActions } : {}),
         actions: [
-          { text: "批准本次权限", decisionKey: "accept" },
-          { text: "本会话内总是批准", decisionKey: "acceptForSession" },
-          { text: "拒绝", decisionKey: "decline" }
+          { text: "Approve permission", decisionKey: "accept" },
+          { text: "Always allow this session", decisionKey: "acceptForSession" },
+          { text: "Decline", decisionKey: "decline" }
         ]
       };
     case "elicitation":
@@ -118,8 +118,8 @@ export function createInteractionCardView(
         hubHint,
         ...(bridgeActions.length > 0 ? { bridgeActions } : {}),
         actions: [
-          { text: "接受", decisionKey: "accept" },
-          { text: "拒绝", decisionKey: "decline" }
+          { text: "Accept", decisionKey: "accept" },
+          { text: "Decline", decisionKey: "decline" }
         ]
       };
     case "questionnaire": {

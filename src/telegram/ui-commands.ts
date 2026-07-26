@@ -37,7 +37,7 @@ export function resolveCommandPanelEntries(commands: string[], language: UiLangu
 export function buildHelpReplyMarkup(language: UiLanguage): TelegramInlineKeyboardMarkup {
   return {
     inline_keyboard: [[{
-      text: language === "en" ? "Open Commands" : "打开命令面板",
+      text: language === "en" ? "Open Commands" : "Open Commands",
       callback_data: encodeCommandPanelOpenCallback()
     }]]
   };
@@ -57,17 +57,17 @@ export function buildCommandPanelMessage(options: {
 
   rows.push([
     {
-      text: options.language === "en" ? "Full Help" : "完整帮助",
+      text: options.language === "en" ? "Full Help" : "Full Help",
       callback_data: encodeCommandPanelEditHelpCallback()
     },
     {
-      text: options.language === "en" ? "Edit Commands" : "编辑快捷指令",
+      text: options.language === "en" ? "Edit Commands" : "Edit Shortcuts",
       callback_data: encodeCommandPanelEditOpenCallback()
     }
   ]);
 
   const lines = [
-    formatHtmlHeading(options.language === "en" ? "Command Panel" : "快捷指令"),
+    formatHtmlHeading(options.language === "en" ? "Command Panel" : "Shortcuts"),
     options.language === "en"
       ? "Tap a button to run a bridge command."
       : "点击按钮即可执行桥接指令。",
@@ -104,7 +104,7 @@ export function buildCommandPanelEditMessage(options: {
   const totalPages = Math.max(1, pages.length);
   const safePage = Math.min(Math.max(options.page, 0), totalPages - 1);
   const currentPage = pages[safePage] ?? {
-    groupLabel: options.language === "en" ? "Commands" : "快捷指令",
+    groupLabel: options.language === "en" ? "Commands" : "Shortcuts",
     groupPage: 0,
     groupPageCount: 1,
     entries: []
@@ -123,13 +123,13 @@ export function buildCommandPanelEditMessage(options: {
   const navigation: Array<{ text: string; callback_data: string }> = [];
   if (safePage > 0) {
     navigation.push({
-      text: options.language === "en" ? "Previous" : "上一页",
+      text: options.language === "en" ? "Previous" : "Prev",
       callback_data: encodeCommandPanelEditPageCallback(options.token, safePage - 1)
     });
   }
   if (safePage + 1 < totalPages) {
     navigation.push({
-      text: options.language === "en" ? "Next" : "下一页",
+      text: options.language === "en" ? "Next" : "Next",
       callback_data: encodeCommandPanelEditPageCallback(options.token, safePage + 1)
     });
   }
@@ -137,13 +137,13 @@ export function buildCommandPanelEditMessage(options: {
     rows.push(navigation);
   }
 
-  rows.push([{ text: options.language === "en" ? "Save" : "保存", callback_data: encodeCommandPanelEditSaveCallback(options.token) }]);
+  rows.push([{ text: options.language === "en" ? "Save" : "Save", callback_data: encodeCommandPanelEditSaveCallback(options.token) }]);
   rows.push([{ text: options.language === "en" ? "Restore Default" : "恢复默认", callback_data: encodeCommandPanelEditResetCallback(options.token) }]);
-  rows.push([{ text: options.language === "en" ? "Close" : "关闭", callback_data: encodeCommandPanelEditCloseCallback(options.token) }]);
+  rows.push([{ text: options.language === "en" ? "Close" : "Close", callback_data: encodeCommandPanelEditCloseCallback(options.token) }]);
 
   return {
     text: [
-      formatHtmlHeading(options.language === "en" ? "Edit Quick Commands" : "编辑快捷指令"),
+      formatHtmlHeading(options.language === "en" ? "Edit Quick Commands" : "Edit Shortcuts"),
       options.language === "en"
         ? "Tap to select or remove commands. Selection order is display order."
         : "点击按钮进行选择或移除。选择顺序就是显示顺序。",

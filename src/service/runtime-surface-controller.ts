@@ -95,7 +95,7 @@ const RECOVERY_HUB_COMPACT_SESSION_NAME_LIMIT = 32;
 const RECOVERY_HUB_TIGHT_SESSION_NAME_LIMIT = 24;
 const HUB_AUTO_REFRESH_START_DELAY_MS = 1500;
 const HUB_AUTO_REFRESH_RECOVERY_DELAY_MS = 1000;
-const HUB_COMMAND_REMINDER_TEXT = "需要查看运行卡片时，可发送 /hub。";
+const HUB_COMMAND_REMINDER_TEXT = "Need to view the runtime card? Send /hub.";
 
 interface RuntimePreferencesDraftState {
   chatId: string;
@@ -912,7 +912,7 @@ export class RuntimeSurfaceController {
   ): Promise<void> {
     const draft = this.getRuntimePreferencesDraft(token, chatId, messageId);
     if (!draft) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新发送 /runtime。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, resend /runtime.");
       return;
     }
 
@@ -930,7 +930,7 @@ export class RuntimeSurfaceController {
   ): Promise<void> {
     const draft = this.getRuntimePreferencesDraft(token, chatId, messageId);
     if (!draft) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新发送 /runtime。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, resend /runtime.");
       return;
     }
 
@@ -949,13 +949,13 @@ export class RuntimeSurfaceController {
   ): Promise<void> {
     const store = this.deps.getStore();
     if (!store) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "状态存储当前不可用。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Storage unavailable.");
       return;
     }
 
     const draft = this.getRuntimePreferencesDraft(token, chatId, messageId);
     if (!draft) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新发送 /runtime。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, resend /runtime.");
       return;
     }
 
@@ -969,7 +969,7 @@ export class RuntimeSurfaceController {
     );
     await this.deps.safeAnswerCallbackQuery(
       callbackQueryId,
-      delivered ? "已保存。" : "设置已保存，但消息暂时无法更新。"
+      delivered ? "Saved." : "Saved, but message couldn't update."
     );
     await this.deps.refreshActiveRuntimeStatusCard(chatId, "runtime_preferences_saved");
   }
@@ -982,13 +982,13 @@ export class RuntimeSurfaceController {
   ): Promise<void> {
     const draft = this.getRuntimePreferencesDraft(token, chatId, messageId);
     if (!draft) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新发送 /runtime。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, resend /runtime.");
       return;
     }
 
     draft.fields = [...DEFAULT_RUNTIME_STATUS_FIELDS];
     draft.page = 0;
-    await this.deps.safeAnswerCallbackQuery(callbackQueryId, "已恢复默认，记得保存。");
+    await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Defaults restored, remember to save.");
     await this.renderRuntimePreferencesDraft(token, draft);
   }
 
@@ -1000,7 +1000,7 @@ export class RuntimeSurfaceController {
   ): Promise<void> {
     const draft = this.getRuntimePreferencesDraft(token, chatId, messageId);
     if (!draft) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新发送 /runtime。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, resend /runtime.");
       return;
     }
 
@@ -1016,7 +1016,7 @@ export class RuntimeSurfaceController {
       return;
     }
 
-    await this.deps.safeAnswerCallbackQuery(callbackQueryId, "暂时无法关闭这条消息，请稍后再试。");
+    await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Can't close this now, try again.");
   }
 
   buildStatusCardRenderPayload(
@@ -1328,11 +1328,11 @@ export class RuntimeSurfaceController {
     const language = this.deps.getUiLanguage();
     switch (state) {
       case "completed":
-        return language === "en" ? "Completed" : "已完成";
+        return language === "en" ? "Completed" : "Done";
       case "failed":
-        return language === "en" ? "Failed" : "失败";
+        return language === "en" ? "Failed" : "Failed";
       case "interrupted":
-        return language === "en" ? "Interrupted" : "已中断";
+        return language === "en" ? "Interrupted" : "Interrupted";
     }
   }
 
@@ -1590,7 +1590,7 @@ export class RuntimeSurfaceController {
         progressText: session.failureReason === "bridge_restart"
           ? (this.deps.getUiLanguage() === "en"
             ? "Last turn stopped because the bridge restarted"
-            : "上次运行因桥重启而停止")
+            : "Stopped by bridge restart")
           : null,
         isFocused: session.sessionId === visibleState.focusedSessionId,
         isActiveInputTarget: session.sessionId === (store?.getActiveSession(chatId)?.sessionId ?? null)
@@ -1759,13 +1759,13 @@ export class RuntimeSurfaceController {
     const language = this.deps.getUiLanguage();
     switch (session.status) {
       case "idle":
-        return language === "en" ? "Idle" : "空闲";
+        return language === "en" ? "Idle" : "Idle";
       case "running":
-        return language === "en" ? "Running" : "执行中";
+        return language === "en" ? "Running" : "Running";
       case "interrupted":
-        return language === "en" ? "Interrupted" : "已中断";
+        return language === "en" ? "Interrupted" : "Interrupted";
       case "failed":
-        return language === "en" ? "Failed" : "失败";
+        return language === "en" ? "Failed" : "Failed";
       default:
         return session.status;
     }
@@ -1944,7 +1944,7 @@ export class RuntimeSurfaceController {
   ): Promise<void> {
     const hubState = this.getLiveHubState(chatId, messageId);
     if (!hubState || hubState.token !== token || hubState.visibleState.callbackVersion !== version) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
@@ -1953,7 +1953,7 @@ export class RuntimeSurfaceController {
       : hubState.visibleState.sessionIds[slot] ?? null;
     const store = this.deps.getStore();
     if (!store) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
     if (hubState.kind === "live" && !sessionId) {
@@ -1970,7 +1970,7 @@ export class RuntimeSurfaceController {
         createPlatformChatRef(hubState.chatId)
       )
     ) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
@@ -1982,7 +1982,7 @@ export class RuntimeSurfaceController {
     hubState.planExpanded = false;
     hubState.agentsExpanded = false;
     hubState.callbackVersion += 1;
-    await this.deps.safeAnswerCallbackQuery(callbackQueryId, `已切换到会话：${truncateText(session.displayName, 40)}`);
+    await this.deps.safeAnswerCallbackQuery(callbackQueryId, `Switched to: ${truncateText(session.displayName, 40)}`);
 
     if (hubState.kind === "live") {
       await this.refreshLiveRuntimeHubsNow(hubState.chatId, "hub_session_selected", sessionId);
@@ -2417,20 +2417,20 @@ export class RuntimeSurfaceController {
   ): Promise<void> {
     const hubState = this.resolveFocusedRuntimeHubSession(chatId, messageId, sessionId, { requireLive: true });
     if (!hubState) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
     const activeTurn = this.deps.listActiveTurns().find((candidate) => candidate.sessionId === sessionId) ?? null;
     if (!activeTurn) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
     const inspect = activeTurn.tracker.getInspectSnapshot();
     const snapshotData = section === "plan" ? inspect.planSnapshot : inspect.agentSnapshot;
     if (snapshotData.length === 0) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
@@ -2439,7 +2439,7 @@ export class RuntimeSurfaceController {
       ? hubState.visibleState.planExpanded
       : hubState.visibleState.agentsExpanded;
     if (visibleExpanded === expanded) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个操作已处理。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Already handled.");
       return;
     }
 
@@ -3261,13 +3261,13 @@ export class RuntimeSurfaceController {
   ): Promise<void> {
     const store = this.deps.getStore();
     if (!store) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
     const view = store.getTerminalResultView(answerId, chatId);
     if (!view) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
@@ -3294,7 +3294,7 @@ export class RuntimeSurfaceController {
     const page = mode.page ?? 1;
     const pageHtml = view.pages[page - 1];
     if (!pageHtml) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
@@ -3328,13 +3328,13 @@ export class RuntimeSurfaceController {
   ): Promise<void> {
     const store = this.deps.getStore();
     if (!store) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
     const view = store.getTerminalResultView(answerId, chatId);
     if (!view) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
@@ -3357,7 +3357,7 @@ export class RuntimeSurfaceController {
     const page = mode.page ?? 1;
     const pageHtml = view.pages[page - 1];
     if (!pageHtml) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
@@ -3388,13 +3388,13 @@ export class RuntimeSurfaceController {
   ): Promise<void> {
     const store = this.deps.getStore();
     if (!store) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
     const view = store.getTerminalResultView(answerId, chatId);
     if (!view) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
@@ -3423,7 +3423,7 @@ export class RuntimeSurfaceController {
     const page = mode.page ?? 1;
     const pageHtml = view.pages[page - 1];
     if (!pageHtml) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新操作。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, try again.");
       return;
     }
 
@@ -3449,13 +3449,13 @@ export class RuntimeSurfaceController {
       ? this.getInspectableSession(chatId, sessionId)
       : store.getActiveSession(chatId);
     if (!activeSession) {
-      await this.deps.safeSendMessage(chatId, "当前没有活动会话。");
+      await this.deps.safeSendMessage(chatId, "No active sessions.");
       return;
     }
 
     const payload = await this.getInspectRenderPayload(activeSession);
     if (!payload) {
-      await this.deps.safeSendMessage(chatId, "当前没有可用的活动详情。");
+      await this.deps.safeSendMessage(chatId, "No details available.");
       return;
     }
 
@@ -3491,13 +3491,13 @@ export class RuntimeSurfaceController {
   ): Promise<void> {
     const session = this.getInspectableSession(chatId, sessionId);
     if (!session) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新发送 /inspect。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, resend /inspect.");
       return;
     }
 
     const payload = await this.getInspectRenderPayload(session);
     if (!payload) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "当前没有可用的活动详情。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "No details available.");
       return;
     }
 
@@ -3525,7 +3525,7 @@ export class RuntimeSurfaceController {
     const fallbackSent = await this.deps.safeSendMessage(chatId, buildInspectPlainTextFallback(rendered.text));
     await this.deps.safeAnswerCallbackQuery(
       callbackQueryId,
-      fallbackSent ? "详情过长，已改为纯文本发送。" : "暂时无法更新详情，请稍后重试。"
+      fallbackSent ? "Details too long, sent as plain text." : "Can't update details, try again."
     );
   }
 
@@ -3537,7 +3537,7 @@ export class RuntimeSurfaceController {
   ): Promise<void> {
     const session = this.getInspectableSession(chatId, sessionId);
     if (!session) {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "这个按钮已过期，请重新发送 /inspect。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Button expired, resend /inspect.");
       return;
     }
 
@@ -3547,7 +3547,7 @@ export class RuntimeSurfaceController {
       return;
     }
 
-    await this.deps.safeAnswerCallbackQuery(callbackQueryId, "暂时无法关闭这条消息，请稍后再试。");
+    await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Can't close this now, try again.");
   }
 
   private scheduleRuntimeCardRetry(
@@ -3680,11 +3680,11 @@ export class RuntimeSurfaceController {
     }
 
     if (result.outcome === "rate_limited") {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "当前平台正在限流，请稍后再试。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Rate limited, try again.");
       return;
     }
 
-    await this.deps.safeAnswerCallbackQuery(callbackQueryId, "暂时无法更新这条消息，请稍后再试。");
+    await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Can't update now, try again.");
   }
 
   private async finishPersistedFinalAnswerRender(
@@ -3709,11 +3709,11 @@ export class RuntimeSurfaceController {
     }
 
     if (result.outcome === "rate_limited") {
-      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "当前平台正在限流，请稍后再试。");
+      await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Rate limited, try again.");
       return;
     }
 
-    await this.deps.safeAnswerCallbackQuery(callbackQueryId, "暂时无法更新这条消息，请稍后再试。");
+    await this.deps.safeAnswerCallbackQuery(callbackQueryId, "Can't update now, try again.");
   }
 
   private async syncFinalAnswerActiveSessionOnSuccess(
