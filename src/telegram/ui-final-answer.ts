@@ -146,7 +146,7 @@ export function buildFinalAnswerReplyMarkup(
       inline_keyboard: [
         ...(options.extraRows ?? []),
         [{
-          text: "展开全文",
+          text: "Expand Full Text",
           callback_data: encodeFinalAnswerOpenCallback(options.answerId)
         }]
       ]
@@ -194,11 +194,11 @@ export function buildRecentOutputEntryHtml(options: RecentOutputEntryView): stri
   });
 
   return [
-    "<b>最近输出</b>",
+    "<b>Recent Output</b>",
     identity,
     options.hasResult
       ? "<i>点击“展开最近输出”查看该会话最近一次输出。</i>"
-      : "<i>该会话还没有最近输出。</i>"
+      : "<i>No recent output for this session.</i>"
   ].filter((part) => part.length > 0).join("\n\n");
 }
 
@@ -212,7 +212,7 @@ export function buildRecentOutputReplyMarkup(
       inline_keyboard: [
         ...(options.extraRows ?? []),
         [{
-          text: "展开最近输出",
+          text: "Expand Recent Output",
           callback_data: encodeRecentOutputOpenCallback(options.answerId)
         }]
       ]
@@ -233,7 +233,7 @@ export function buildRecentOutputReplyMarkup(
     });
   }
   buttons.push({
-    text: "收起最近输出",
+    text: "Collapse Recent Output",
     callback_data: encodeRecentOutputCloseCallback(options.answerId)
   });
 
@@ -252,7 +252,7 @@ export function buildPlanResultReplyMarkup(options: TerminalResultControlView): 
       inline_keyboard: [
         ...actionRows,
         [{
-          text: "展开方案",
+          text: "Expand Plan",
           callback_data: encodePlanResultOpenCallback(options.answerId)
         }]
       ]
