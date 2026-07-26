@@ -122,8 +122,8 @@ export function buildCollapsibleFinalAnswerView(
   }
 
   const note = rawPages.length > 1
-    ? `已折叠，共 ${rawPages.length} 页，点击“展开全文”查看。`
-    : "已折叠，点击“展开全文”查看剩余内容。";
+    ? `Collapsed, ${rawPages.length} pages. Tap "Expand Full Text" to view.`
+    : "Collapsed. Tap \"Expand Full Text\" to view the rest.";
 
   return {
     previewHtml: [
@@ -197,7 +197,7 @@ export function buildRecentOutputEntryHtml(options: RecentOutputEntryView): stri
     "<b>Recent Output</b>",
     identity,
     options.hasResult
-      ? "<i>点击“展开最近输出”查看该会话最近一次输出。</i>"
+      ? "<i>Tap \"Expand Recent Output\" to view the last output for this session.</i>"
       : "<i>No recent output for this session.</i>"
   ].filter((part) => part.length > 0).join("\n\n");
 }
