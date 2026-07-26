@@ -28,6 +28,15 @@ source_of_truth:
   <a href="https://github.com/InDreamer/telegram-codex-bridge/releases"><img src="https://img.shields.io/github/v/release/InDreamer/telegram-codex-bridge?include_prereleases&label=version" alt="Version"></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A524-brightgreen" alt="Node >= 24">
   <img src="https://img.shields.io/badge/platform-linux%20%7C%20macos-blue" alt="Platform">
+
+<h3 align="center">🌐 Default UI now in English (PR #18)</h3>
+
+<p align="center">
+  The bridge previously defaulted to Chinese (zh). All hardcoded Chinese strings
+  have been converted to English. Send <code>/language</code> to your bot to toggle back if needed.
+</p>
+
+
 </p>
 
 ---
