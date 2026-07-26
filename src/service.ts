@@ -2520,7 +2520,16 @@ export class BridgeService {
 
     const activeSession = this.store.getActiveSession(chatId);
     if (!activeSession) {
-      await this.safeSendMessage(chatId, this.getUiLanguage() === "en" ? "Please send /new first to select a project." : "Please send /new first to select a project.");
+      // Auto-create a session in home directory so user can just ask questions directly
+      const homeDir = this.paths?.homeDir ?? process.env.HOME ?? "/root";
+      const homeName = homeDir.split("/").filter(Boolean).pop() ?? "home";
+      const newSession = this.store.createSession({
+        chatId,
+        projectName: homeName,
+        projectPath: homeDir
+      });
+      await this.safeSendMessage(chatId, this.getUiLanguage() === "en" ? "Session started. Ask away!" : "Session started. Ask away!");
+      const submitted = await this.submitNormalTextToSession(chatId, newSession, text ?? "");
       return;
     }
 
