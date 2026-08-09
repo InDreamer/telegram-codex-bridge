@@ -2,12 +2,13 @@ import type {
   EgressDeleteResult,
   EgressEditResult,
   EgressMessageSendResult,
+  EgressRichMessage,
   EgressSendDocumentOptions,
   EgressSendMessageOptions,
   EgressSendPhotoOptions,
   PlatformEgressAdapter
 } from "../packs/contract.js";
-import type { TelegramApi } from "./api.js";
+import type { TelegramApi, TelegramInlineKeyboardMarkup } from "./api.js";
 
 export class TelegramEgressAdapter implements PlatformEgressAdapter {
   readonly kind = "bot_api" as const;
@@ -27,6 +28,26 @@ export class TelegramEgressAdapter implements PlatformEgressAdapter {
       opts.replyMarkup = options.replyMarkup;
     }
     const sent = await this.api.sendMessage(chatId, text, Object.keys(opts).length > 0 ? opts : undefined);
+    return { messageId: sent.message_id };
+  }
+
+  async sendRichMessage(
+    chatId: string,
+    richMessage: EgressRichMessage,
+    options?: Pick<EgressSendMessageOptions, "replyMarkup">
+  ): Promise<EgressMessageSendResult> {
+    const sent = await this.api.sendRichMessage(chatId, {
+      ...(richMessage.blocks !== undefined ? { blocks: richMessage.blocks } : {}),
+      ...(richMessage.html !== undefined ? { html: richMessage.html } : {}),
+      ...(richMessage.markdown !== undefined ? { markdown: richMessage.markdown } : {}),
+      ...(richMessage.media !== undefined ? { media: richMessage.media } : {}),
+      ...(richMessage.isRtl !== undefined ? { is_rtl: richMessage.isRtl } : {}),
+      ...(richMessage.skipEntityDetection !== undefined
+        ? { skip_entity_detection: richMessage.skipEntityDetection }
+        : {})
+    }, options?.replyMarkup !== undefined
+      ? { replyMarkup: options.replyMarkup as TelegramInlineKeyboardMarkup }
+      : undefined);
     return { messageId: sent.message_id };
   }
 

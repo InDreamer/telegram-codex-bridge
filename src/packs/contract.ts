@@ -45,6 +45,15 @@ export interface EgressSendMessageOptions {
   parseMode?: "HTML" | null;
 }
 
+export interface EgressRichMessage {
+  markdown?: string;
+  html?: string;
+  blocks?: unknown[];
+  media?: unknown[];
+  isRtl?: boolean;
+  skipEntityDetection?: boolean;
+}
+
 export interface EgressSendPhotoOptions {
   caption?: string;
   parseMode?: "HTML";
@@ -60,6 +69,11 @@ export interface PlatformEgressAdapter {
   readonly kind: "bot_api" | "open_api";
 
   sendMessage(chatId: string, text: string, options?: EgressSendMessageOptions): Promise<EgressMessageSendResult>;
+  sendRichMessage?(
+    chatId: string,
+    richMessage: EgressRichMessage,
+    options?: Pick<EgressSendMessageOptions, "replyMarkup">
+  ): Promise<EgressMessageSendResult>;
   sendPhoto(chatId: string, photoPath: string, options?: EgressSendPhotoOptions): Promise<EgressMessageSendResult>;
   sendDocument(chatId: string, filePath: string, options?: EgressSendDocumentOptions): Promise<EgressMessageSendResult>;
   editMessageText(chatId: string, messageId: number, text: string, options?: EgressSendMessageOptions): Promise<EgressEditResult>;

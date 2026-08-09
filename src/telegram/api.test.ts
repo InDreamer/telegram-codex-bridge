@@ -138,6 +138,59 @@ test("TelegramApi sends pin and unpin requests with the expected payload", async
   }
 });
 
+test("TelegramApi sends native rich Markdown with reply markup", async () => {
+  const requests: Array<{ method: string; body: Record<string, unknown> }> = [];
+  const server = createServer(async (req, res) => {
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of req) {
+      chunks.push(chunk);
+    }
+
+    requests.push({
+      method: req.url?.split("/").pop() ?? "",
+      body: JSON.parse(Buffer.concat(chunks).toString("utf8"))
+    });
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      ok: true,
+      result: { message_id: 42, date: 0, chat: { id: 1, type: "private" } }
+    }));
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  try {
+    const api = new TelegramApi("test-token", `http://127.0.0.1:${address.port}`);
+    const result = await api.sendRichMessage("chat-1", {
+      markdown: "| Name | State |\n| --- | --- |\n| Worker | Ready |"
+    }, {
+      replyMarkup: {
+        inline_keyboard: [[{ text: "Continue", callback_data: "continue" }]]
+      }
+    });
+
+    assert.equal(result.message_id, 42);
+    assert.deepEqual(requests, [{
+      method: "sendRichMessage",
+      body: {
+        chat_id: "chat-1",
+        rich_message: {
+          markdown: "| Name | State |\n| --- | --- |\n| Worker | Ready |"
+        },
+        reply_markup: {
+          inline_keyboard: [[{ text: "Continue", callback_data: "continue" }]]
+        }
+      }
+    }]);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  }
+});
+
 test("TelegramApi records successful fetch operations", async () => {
   const operations: unknown[] = [];
   const originalFetch = globalThis.fetch;

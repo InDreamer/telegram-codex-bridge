@@ -155,6 +155,51 @@ export class SafeMessenger {
     });
   }
 
+  async sendRichMarkdownMessageResult(
+    chatId: string,
+    markdown: string,
+    replyMarkup?: unknown
+  ): Promise<EgressMessageSendResult | null> {
+    if (typeof this.egress.sendRichMessage !== "function") {
+      return null;
+    }
+
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt <= TELEGRAM_SEND_RETRY_DELAYS_MS.length; attempt += 1) {
+      try {
+        const sent = await this.egress.sendRichMessage(
+          chatId,
+          { markdown },
+          replyMarkup !== undefined ? { replyMarkup } : undefined
+        );
+        await this.logger.info("rich markdown message sent", {
+          chatId,
+          messageId: sent.messageId,
+          replyMarkup: replyMarkup !== undefined ? "present" : null,
+          preview: summarizeTextPreview(markdown),
+          attempts: attempt + 1
+        });
+        return sent;
+      } catch (error) {
+        lastError = error;
+        const retryDelayMs = getTelegramSendRetryDelayMs(error, attempt);
+        if (retryDelayMs === null) {
+          break;
+        }
+        await this.logger.warn("rich markdown delivery retry scheduled", {
+          chatId,
+          attempt: attempt + 1,
+          retryDelayMs,
+          error: `${error}`
+        });
+        await this.sleep(retryDelayMs);
+      }
+    }
+
+    await this.logger.error("rich markdown delivery failed", { chatId, error: `${lastError}` });
+    return null;
+  }
+
   async editMessageText(
     chatId: string,
     messageId: number,
