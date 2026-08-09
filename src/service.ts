@@ -529,6 +529,8 @@ export class BridgeService {
       })),
       safeSendHtmlMessageResult: async (chatId, html, replyMarkup) =>
         this.safeSendHtmlMessageResult(chatId, html, replyMarkup),
+      safeSendRichMarkdownMessageResult: async (chatId, markdown, replyMarkup) =>
+        this.safeSendRichMarkdownMessageResult(chatId, markdown, replyMarkup),
       handleGlobalRuntimeNotice: async (notification) => this.runtimeNoticeBroadcaster.broadcast(notification),
       handleThreadArchiveNotification: async (classified) => this.threadArchiveReconciler.handleNotification(classified)
     });
@@ -3686,6 +3688,14 @@ export class BridgeService {
     replyMarkup?: TelegramInlineKeyboardMarkup
   ): Promise<EgressMessageSendResult | null> {
     return this.getSafeMessenger()?.sendHtmlMessageResult(chatId, html, replyMarkup) ?? null;
+  }
+
+  private async safeSendRichMarkdownMessageResult(
+    chatId: string,
+    markdown: string,
+    replyMarkup?: TelegramInlineKeyboardMarkup
+  ): Promise<EgressMessageSendResult | null> {
+    return this.getSafeMessenger()?.sendRichMarkdownMessageResult(chatId, markdown, replyMarkup) ?? null;
   }
 
   private async safeSendPhoto(

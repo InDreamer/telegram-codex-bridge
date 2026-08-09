@@ -74,6 +74,13 @@ async function createCoordinatorContext(options: {
       inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
     }
   ) => Promise<EgressMessageSendResult | null>;
+  safeSendRichMarkdownMessageResult?: (
+    chatId: string,
+    markdown: string,
+    replyMarkup?: {
+      inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+    }
+  ) => Promise<EgressMessageSendResult | null>;
   sendControlSurfaceFile?: (
     chatId: string,
     filePath: string,
@@ -131,6 +138,13 @@ async function createCoordinatorContext(options: {
   const sentHtmlMessages: Array<{
     chatId: string;
     html: string;
+    replyMarkup?: {
+      inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+    };
+  }> = [];
+  const sentRichMessages: Array<{
+    chatId: string;
+    markdown: string;
     replyMarkup?: {
       inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
     };
@@ -267,6 +281,17 @@ async function createCoordinatorContext(options: {
       sentHtmlMessages.push(replyMarkup ? { chatId, html, replyMarkup } : { chatId, html });
       return { messageId: nextMessageId++ };
     },
+    ...(options.safeSendRichMarkdownMessageResult
+      ? {
+          safeSendRichMarkdownMessageResult: async (chatId, markdown, replyMarkup) => {
+            const sent = await options.safeSendRichMarkdownMessageResult?.(chatId, markdown, replyMarkup) ?? null;
+            if (sent) {
+              sentRichMessages.push(replyMarkup ? { chatId, markdown, replyMarkup } : { chatId, markdown });
+            }
+            return sent;
+          }
+        }
+      : {}),
     handleGlobalRuntimeNotice: async () => {},
     handleThreadArchiveNotification: async () => {}
   });
@@ -280,6 +305,7 @@ async function createCoordinatorContext(options: {
     sentDocuments,
     sentImages,
     sentHtmlMessages,
+    sentRichMessages,
     interactionResolutions,
     acceptedTurnStartReanchors,
     currentSessionCardSyncs,
@@ -821,6 +847,89 @@ test("TurnCoordinator completes a normal turn and delivers the recovered final a
     assert.deepEqual(finalizedHandoffs, [{ chatId: "chat-1", sessionId: session.sessionId }]);
     assert.equal(store.getSessionById(session.sessionId)?.status, "idle");
     assert.equal(store.getSessionById(session.sessionId)?.lastTurnId, "turn-1");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator prefers native rich Markdown for final answers", async () => {
+  const markdown = "| Worker | State |\n| --- | --- |\n| Delivery | Ready |";
+  const { coordinator, store, sentHtmlMessages, sentRichMessages, cleanup } = await createCoordinatorContext({
+    appServer: {
+      resumeThread: async () => ({
+        thread: {
+          id: "thread-rich",
+          turns: [{
+            id: "turn-rich",
+            items: [{ type: "agentMessage", phase: "final_answer", text: markdown }]
+          }]
+        }
+      })
+    },
+    safeSendRichMarkdownMessageResult: async () => ({ messageId: 91 })
+  });
+
+  try {
+    const session = store.createSession({
+      chatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.beginActiveTurn("chat-1", session, "thread-rich", "turn-rich", "inProgress");
+    await coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-rich",
+      turnId: "turn-rich",
+      status: "completed"
+    });
+
+    assert.deepEqual(sentRichMessages, [{ chatId: "chat-1", markdown }]);
+    assert.equal(sentHtmlMessages.length, 0);
+    assert.equal(store.listFinalAnswerViews("chat-1")[0]?.deliveryMessageId, 91);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator falls back to HTML when native rich Markdown delivery fails", async () => {
+  const { coordinator, store, sentHtmlMessages, sentRichMessages, cleanup } = await createCoordinatorContext({
+    appServer: {
+      resumeThread: async () => ({
+        thread: {
+          id: "thread-rich-fallback",
+          turns: [{
+            id: "turn-rich-fallback",
+            items: [{ type: "agentMessage", phase: "final_answer", text: "Fallback answer" }]
+          }]
+        }
+      })
+    },
+    safeSendRichMarkdownMessageResult: async () => null
+  });
+
+  try {
+    const session = store.createSession({
+      chatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one"
+    });
+
+    await coordinator.beginActiveTurn(
+      "chat-1",
+      session,
+      "thread-rich-fallback",
+      "turn-rich-fallback",
+      "inProgress"
+    );
+    await coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-rich-fallback",
+      turnId: "turn-rich-fallback",
+      status: "completed"
+    });
+
+    assert.equal(sentRichMessages.length, 0);
+    assert.equal(sentHtmlMessages.length, 1);
+    assert.match(sentHtmlMessages[0]?.html ?? "", /Fallback answer/u);
   } finally {
     await cleanup();
   }
@@ -1688,6 +1797,50 @@ test("TurnCoordinator completes plan-mode turns by sending a plan result with im
     assert.equal(views[0]?.deliveryState, "visible");
     assert.deepEqual(reanchorReasons, []);
     assert.deepEqual(finalizedHandoffs, [{ chatId: "chat-1", sessionId: session.sessionId }]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("TurnCoordinator sends plan results as native rich Markdown with implementation actions", async () => {
+  const planMarkdown = "## Plan\n\n| Step | State |\n| --- | --- |\n| Ship | Ready |";
+  const { coordinator, store, sentHtmlMessages, sentRichMessages, cleanup } = await createCoordinatorContext({
+    appServer: {
+      resumeThread: async () => ({
+        thread: {
+          id: "thread-rich-plan",
+          turns: [{ id: "turn-rich-plan", items: [{ type: "plan", text: planMarkdown }] }]
+        }
+      })
+    },
+    safeSendRichMarkdownMessageResult: async () => ({ messageId: 92 })
+  });
+
+  try {
+    const session = store.createSession({
+      chatId: "chat-1",
+      projectName: "Project One",
+      projectPath: "/tmp/project-one",
+      planMode: true
+    });
+
+    await coordinator.beginActiveTurn(
+      "chat-1",
+      session,
+      "thread-rich-plan",
+      "turn-rich-plan",
+      "inProgress"
+    );
+    await coordinator.handleAppServerNotification("turn/completed", {
+      threadId: "thread-rich-plan",
+      turnId: "turn-rich-plan",
+      status: "completed"
+    });
+
+    assert.equal(sentHtmlMessages.length, 0);
+    assert.equal(sentRichMessages[0]?.markdown, planMarkdown);
+    assert.equal(sentRichMessages[0]?.replyMarkup?.inline_keyboard[0]?.[0]?.text, "实施这个计划");
+    assert.equal(store.listFinalAnswerViews("chat-1")[0]?.deliveryMessageId, 92);
   } finally {
     await cleanup();
   }

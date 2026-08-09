@@ -131,8 +131,10 @@ Rules:
 
 Final-answer handling:
 - send the final assistant answer as a separate Telegram message after the turn finishes
-- render the final assistant answer with Telegram formatting rather than exposing raw Markdown markers
-- if the answer is long enough to harm chat readability, send a collapsed preview with an inline `展开全文` button
+- prefer Telegram's native rich-message Markdown route for final answers and plan results that fit the 32,768-character rich-message limit
+- pass Markdown tables through unchanged so supported Telegram clients render them as native rich tables
+- if native rich-message delivery is unavailable, rejected, or over the rich-message limit, fall back to the existing Telegram-safe HTML renderer
+- when the HTML fallback is long enough to harm chat readability, send a collapsed preview with an inline `展开全文` button
 - keep long final answers on a single bridge-owned message by editing that message for `展开全文`, `收起`, and page navigation
 - persist collapsed previews plus rendered pages locally so final-answer buttons still work after bridge restart
 - if an expanded final answer still exceeds Telegram single-message size, page through the rendered HTML instead of sending a cascade of long continuation messages

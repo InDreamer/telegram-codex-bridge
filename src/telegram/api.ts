@@ -85,6 +85,15 @@ export interface TelegramInlineKeyboardMarkup {
   inline_keyboard: TelegramInlineKeyboardButton[][];
 }
 
+export interface TelegramInputRichMessage {
+  blocks?: unknown[];
+  html?: string;
+  markdown?: string;
+  media?: unknown[];
+  is_rtl?: boolean;
+  skip_entity_detection?: boolean;
+}
+
 export interface TelegramBotCommand {
   command: string;
   description: string;
@@ -168,6 +177,20 @@ export class TelegramApi {
       text,
       reply_markup: options?.replyMarkup,
       parse_mode: options?.parseMode
+    }, 20_000);
+  }
+
+  async sendRichMessage(
+    chatId: string,
+    richMessage: TelegramInputRichMessage,
+    options?: {
+      replyMarkup?: TelegramInlineKeyboardMarkup;
+    }
+  ): Promise<TelegramMessage> {
+    return await this.call<TelegramMessage>("sendRichMessage", {
+      chat_id: chatId,
+      rich_message: richMessage,
+      reply_markup: options?.replyMarkup
     }, 20_000);
   }
 

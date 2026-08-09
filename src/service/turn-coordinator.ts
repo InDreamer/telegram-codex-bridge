@@ -220,6 +220,13 @@ interface TurnCoordinatorDeps {
       inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
     }
   ) => Promise<EgressMessageSendResult | null>;
+  safeSendRichMarkdownMessageResult?: (
+    chatId: string,
+    markdown: string,
+    replyMarkup?: {
+      inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+    }
+  ) => Promise<EgressMessageSendResult | null>;
   handleGlobalRuntimeNotice: (notification: GlobalRuntimeNotice) => Promise<void>;
   handleThreadArchiveNotification: (classified: ThreadArchiveNotification) => Promise<void>;
 }
@@ -1153,6 +1160,21 @@ export class TurnCoordinator {
 
     const directDelivery = createTerminalResultDeliveryView(saved, rendered.truncated);
     const directMarkup = this.buildTerminalResultReplyMarkup(saved, directDelivery.controls);
+    if ([...text].length <= 32_768 && this.deps.safeSendRichMarkdownMessageResult) {
+      const richSent = await this.deps.safeSendRichMarkdownMessageResult(activeTurn.chatId, text);
+      if (richSent) {
+        store.setTerminalResultMessageId(saved.answerId, richSent.messageId);
+        store.setTerminalResultDeliveryState(saved.answerId, "visible");
+        return {
+          answerId: saved.answerId,
+          kind: "final_answer",
+          visible: true,
+          resultVisible: true,
+          deferredNoticeVisible: false
+        };
+      }
+    }
+
     const sent = await executeTelegramHtmlSurfaceOperation({
       intent: "terminal_result",
       chatId: activeTurn.chatId,
@@ -1214,11 +1236,29 @@ export class TurnCoordinator {
     });
 
     const directDelivery = createTerminalResultDeliveryView(saved, rendered.truncated);
+    const directMarkup = this.buildTerminalResultReplyMarkup(saved, directDelivery.controls);
+    if ([...planMarkdown].length <= 32_768 && this.deps.safeSendRichMarkdownMessageResult) {
+      const richSent = await this.deps.safeSendRichMarkdownMessageResult(activeTurn.chatId, planMarkdown, {
+        inline_keyboard: buildPlanResultActionRows(saved.answerId)
+      });
+      if (richSent) {
+        store.setTerminalResultMessageId(saved.answerId, richSent.messageId);
+        store.setTerminalResultDeliveryState(saved.answerId, "visible");
+        return {
+          answerId: saved.answerId,
+          kind: "plan_result",
+          visible: true,
+          resultVisible: true,
+          deferredNoticeVisible: false
+        };
+      }
+    }
+
     const sent = await executeTelegramHtmlSurfaceOperation({
       intent: "terminal_result",
       chatId: activeTurn.chatId,
       html: directDelivery.html,
-      replyMarkup: this.buildTerminalResultReplyMarkup(saved, directDelivery.controls),
+      replyMarkup: directMarkup,
       deferredIntent: "terminal_result_deferred_notice",
       requirements: {
         requiresCallbacks: true,
